@@ -19,12 +19,14 @@ BuildRequires:  gcc gcc-c++ make git pkgconf-pkg-config pam-devel libxkbcommon-d
 # cargo/rustc >= 1.89: the distribution's or rustup's (install.sh checks and provides one)
 
 Requires:       mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig
+# the apps draw all text themselves: a monospace font must exist
+Requires:       dejavu-sans-mono-fonts
 Requires:       NetworkManager wpa_supplicant iproute util-linux kmod git-core wireplumber
 # niri is the compositor: Fedora's own package, the yalter/niri COPR on EL10, or built from
 # source into /usr/local on EL9 by install.sh — hence a weak dependency
 Recommends:     niri
 Recommends:     greetd terminus-fonts-console brightnessctl xdg-desktop-portal-gnome libnotify
-Recommends:     alsa-sof-firmware alsa-ucm dejavu-sans-mono-fonts google-noto-sans-cjk-fonts
+Recommends:     alsa-sof-firmware alsa-ucm google-noto-sans-cjk-fonts
 Suggests:       age gh iwd
 Provides:       shadow-network = %{version}-%{release}
 Obsoletes:      shadow-network < 7

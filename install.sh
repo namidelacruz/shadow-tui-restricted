@@ -379,10 +379,10 @@ rpm_install() {
   run sudo $DNF builddep -y "$SRC/packaging/shadow-tui-restricted.spec" || warn "dnf builddep could not read the spec; using the list above"
   ensure_niri
   say "Runtime dependencies"
-  dnf_require mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig NetworkManager \
-    wpa_supplicant iproute util-linux kmod git-core wireplumber pipewire
+  dnf_require mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig dejavu-sans-mono-fonts \
+    NetworkManager wpa_supplicant iproute util-linux kmod git-core wireplumber pipewire
   dnf_install_available brightnessctl xdg-desktop-portal-gnome libnotify alsa-sof-firmware alsa-ucm \
-    dejavu-sans-mono-fonts jetbrains-mono-fonts-all google-noto-sans-cjk-fonts age gh iwd \
+    jetbrains-mono-fonts-all google-noto-sans-cjk-fonts age gh iwd \
     terminus-fonts-console pipewire-pulseaudio
   say "Building the RPMs (side bar, apps, terminal, daemons — first build ~5-10 min, tests included)"
   rpm -q shadow-network &>/dev/null && info "the old shadow-network package is replaced"

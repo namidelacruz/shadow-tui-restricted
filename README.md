@@ -83,6 +83,10 @@ Optional extras the repositories don't carry are skipped with a note: `age`, `gh
 
 On RHEL without `--greeter`, GDM stays. Pick **Shadow TUI Restricted** from the gear menu on its login screen.
 
+**Testing on Fedora / RHEL.** `tests/distro-test.sh` runs the real installer in throwaway containers (podman or docker): Fedora 43, AlmaLinux 10 and Rocky Linux 9 by default, or any images you name. In each one it does a dry run, the full install and `--check`, then prints a pass/fail summary. Logs go to `test-results/`.
+
+Containers can't show the graphical session, running services, greetd at boot or SELinux enforcement. Test those in a VM: RHEL itself (the free developer subscription works), Rocky or Alma, with `./install.sh --greeter` and then a login.
+
 Other entry points:
 
 - `packaging/build-rpm.sh OUTDIR` builds the RPMs on their own.
@@ -263,6 +267,7 @@ sec/       shadow-sec (optional package)
 modules/   default Lua behaviour modules
 system/    units, slices, session, greeter wrapper, hooks, PAM, desktop entries
 packaging/ RPM spec, build-rpm.sh, install-files.sh (shared file layout), post-install.sh (shared scriptlets)
+tests/     distro-test.sh: the installer in Fedora / Alma / Rocky containers
 share/     hardware tables, shell integration
 docs/      SPEC-TRACE.md
 ```
