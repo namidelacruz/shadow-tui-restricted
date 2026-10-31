@@ -1,0 +1,355 @@
+#!/bin/sh
+# Shadow TUI Wi-Fi DEVICE helper (root, via pkexec or the boot service).
+#
+# Brings the Wi-Fi hardware into a usable state for NetworkManager:
+# "device not ready" (NM state: unavailable), "device down" (link down),
+# radio switched off, rfkill soft-block, device unmanaged, NetworkManager not running,
+# stuck supplicant, wedged driver.
+#
+# Safety: only the fixed actions below exist and they take NO arguments from the caller.
+# Interfaces are discovered from /sys, never passed in.
+set -u
+# pkexec and systemd both start this with a clean environment; the overrides only exist for tests.
+PATH=${SHADOWNET_TEST_PATH:+$SHADOWNET_TEST_PATH:}/usr/bin:/usr/sbin:/bin:/sbin
+SYS=${SHADOWNET_SYSFS_ROOT:-/sys}
+ETC=${SHADOWNET_ETC_ROOT:-/etc}
+RUN=${SHADOWNET_RUN_ROOT:-/run}/shadow-network
+NMCONF=$ETC/NetworkManager/conf.d
+IWD_CONF=$NMCONF/90-shadow-network-iwd.conf
+MANAGED_CONF=$NMCONF/95-shadow-network-wifi-managed.conf
+SCANMAC_CONF=$NMCONF/96-shadow-network-scan-mac.conf
+
+changed=0
+say() {
+    case "$*" in fixed:*) changed=1 ;; esac
+    echo "$*"
+    # last actions, readable by the settings apps (Settings → Wi-Fi → Log)
+    mkdir -p "$RUN" 2>/dev/null && { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$RUN/wifi-device.log"; } 2>/dev/null
+    if [ -f "$RUN/wifi-device.log" ] && [ "$(wc -l < "$RUN/wifi-device.log")" -gt 400 ]; then
+        tail -n 200 "$RUN/wifi-device.log" > "$RUN/wifi-device.log.tmp" && mv "$RUN/wifi-device.log.tmp" "$RUN/wifi-device.log"
+    fi
+    chmod 644 "$RUN/wifi-device.log" 2>/dev/null
+    return 0
+}
+
+wifi_ifaces() {
+    for d in "$SYS"/class/net/*; do
+        [ -e "$d/wireless" ] || [ -e "$d/phy80211" ] || continue
+        basename "$d"
+    done
+}
+
+nm_backend_iwd() {
+    grep -rqsE '^[[:space:]]*wifi\.backend[[:space:]]*=[[:space:]]*iwd' "$ETC/NetworkManager/NetworkManager.conf" "$NMCONF" 2>/dev/null
+}
+
+nm_start() {
+    for u in NetworkManager.service wpa_supplicant.service; do
+        if [ "$(systemctl is-enabled $u 2>/dev/null)" = masked ]; then
+            if [ $u = wpa_supplicant.service ] && nm_backend_iwd; then continue; fi
+            systemctl unmask $u && say "fixed: $u was masked — unmasked"
+        fi
+    done
+    if [ "$(systemctl is-enabled NetworkManager.service 2>/dev/null)" != enabled ]; then
+        systemctl enable NetworkManager.service >/dev/null 2>&1 && say "fixed: NetworkManager enabled at boot"
+    fi
+    if ! systemctl is-active -q NetworkManager.service; then
+        systemctl start NetworkManager.service && say "fixed: NetworkManager started"
+        sleep 3
+    fi
+}
+
+have_wpa() { command -v wpa_supplicant >/dev/null 2>&1 || [ -x /usr/bin/wpa_supplicant ]; }
+have_iwd() { command -v iwd >/dev/null 2>&1 || [ -x /usr/lib/iwd/iwd ]; }
+
+backend() {
+    # "device not ready" (NM: unavailable) is most often the Wi-Fi supplicant: missing, masked, not
+    # running, or iwd and wpa_supplicant fighting over the card. Make exactly one of them serve NM.
+    if nm_backend_iwd; then
+        if ! have_iwd; then
+            if [ -f "$IWD_CONF" ]; then
+                rm -f "$IWD_CONF"
+                say "fixed: NetworkManager was set to iwd but iwd is not installed — back to wpa_supplicant"
+                systemctl restart NetworkManager.service; sleep 3
+            else
+                say "PROBLEM: NetworkManager is configured for iwd (wifi.backend=iwd) but iwd is not installed — pacman -S iwd, or remove that setting"
+                return 0
+            fi
+        else
+            [ "$(systemctl is-enabled iwd.service 2>/dev/null)" = masked ] && systemctl unmask iwd.service && say "fixed: iwd.service was masked — unmasked"
+            if ! systemctl is-active -q iwd.service; then
+                systemctl enable --now iwd.service >/dev/null 2>&1 && say "fixed: started iwd (NetworkManager's Wi-Fi backend)"
+            fi
+            if systemctl is-active -q wpa_supplicant.service; then
+                systemctl stop wpa_supplicant.service && say "fixed: stopped wpa_supplicant (it competes with iwd for the card)"
+            fi
+            return 0
+        fi
+    fi
+    if ! have_wpa; then
+        if have_iwd; then
+            mkdir -p "$NMCONF"
+            printf '# Shadow TUI: wpa_supplicant is not installed, so NetworkManager uses iwd\n[device]\nwifi.backend=iwd\n' > "$IWD_CONF"
+            systemctl enable --now iwd.service >/dev/null 2>&1
+            systemctl restart NetworkManager.service; sleep 3
+            say "fixed: wpa_supplicant is missing — switched NetworkManager to iwd"
+        else
+            say "PROBLEM: no Wi-Fi supplicant installed — pacman -S wpa_supplicant (needs a cable/phone tether once)"
+        fi
+        return 0
+    fi
+    [ "$(systemctl is-enabled wpa_supplicant.service 2>/dev/null)" = masked ] && systemctl unmask wpa_supplicant.service && say "fixed: wpa_supplicant.service was masked — unmasked"
+    if systemctl is-active -q iwd.service; then
+        systemctl disable --now iwd.service >/dev/null 2>&1 && say "fixed: stopped standalone iwd (it grabs the card from NetworkManager)"
+    fi
+    if ! systemctl is-active -q wpa_supplicant.service; then
+        systemctl start wpa_supplicant.service 2>/dev/null && say "fixed: started wpa_supplicant"
+    fi
+    return 0
+}
+
+unblock() {
+    if command -v rfkill >/dev/null 2>&1; then
+        rfkill unblock wifi 2>/dev/null || rfkill unblock wlan 2>/dev/null || true
+    fi
+    for r in "$SYS"/class/rfkill/rfkill*; do
+        [ -e "$r/type" ] || continue
+        [ "$(cat "$r/type")" = wlan ] || continue
+        if [ "$(cat "$r/soft" 2>/dev/null)" = 1 ]; then
+            echo 0 > "$r/soft" 2>/dev/null && say "fixed: rfkill soft-block cleared ($(cat "$r/name" 2>/dev/null))"
+        fi
+        if [ "$(cat "$r/hard" 2>/dev/null)" = 1 ]; then
+            say "BLOCKED: hardware switch is OFF for $(cat "$r/name" 2>/dev/null) — use the Wi-Fi key/switch (often Fn+F2..F12) or enable wireless in BIOS"
+        fi
+    done
+    command -v nmcli >/dev/null 2>&1 && nmcli radio wifi on 2>/dev/null
+    return 0
+}
+
+link_up() {
+    for i in $(wifi_ifaces); do
+        if ! ip -o link show "$i" 2>/dev/null | grep -q '[<,]UP[,>]'; then
+            ip link set "$i" up 2>/dev/null && say "fixed: $i was down — set up" || say "could not bring $i up (still blocked or driver/firmware problem)"
+        fi
+    done
+}
+
+set_managed() {
+    mkdir -p "$NMCONF"
+    if [ ! -f "$MANAGED_CONF" ]; then
+        printf '# Shadow TUI: NetworkManager must manage Wi-Fi devices\n[device-shadow-network-wifi]\nmatch-device=type:wifi\nmanaged=1\n' > "$MANAGED_CONF"
+        say "fixed: NetworkManager told to manage Wi-Fi devices ($MANAGED_CONF)"
+    fi
+    for i in $(wifi_ifaces); do nmcli device set "$i" managed yes 2>/dev/null; done
+    for f in /etc/NetworkManager/NetworkManager.conf $NMCONF/*.conf; do
+        [ -f "$f" ] || continue
+        if grep -qsE '^[[:space:]]*unmanaged-devices[[:space:]]*=.*(type:wifi|interface-name:wl|wlan|\*)' "$f"; then
+            say "note: $f marks Wi-Fi as unmanaged (unmanaged-devices=…) — remove that line if the device keeps dropping out"
+        fi
+    done
+    for f in /etc/udev/rules.d/*.rules; do
+        [ -f "$f" ] || continue
+        grep -qs 'NM_UNMANAGED' "$f" && say "note: $f sets NM_UNMANAGED — it can hide Wi-Fi from NetworkManager"
+    done
+}
+
+release() {
+    # Other network managers grabbing the card make NetworkManager report it unavailable/unmanaged.
+    for i in $(wifi_ifaces); do
+        for u in "wpa_supplicant@$i.service" "dhcpcd@$i.service" "netctl-auto@$i.service" "wpa_supplicant-nl80211@$i.service"; do
+            if systemctl is-active -q "$u" || [ "$(systemctl is-enabled "$u" 2>/dev/null)" = enabled ]; then
+                systemctl disable --now "$u" >/dev/null 2>&1 && say "fixed: stopped conflicting $u"
+            fi
+        done
+    done
+    for u in dhcpcd.service connman.service; do
+        if systemctl is-active -q "$u"; then
+            systemctl disable --now "$u" >/dev/null 2>&1 && say "fixed: stopped conflicting $u"
+        fi
+    done
+    if ! nm_backend_iwd && systemctl is-active -q iwd.service; then
+        systemctl disable --now iwd.service >/dev/null 2>&1 && say "fixed: stopped standalone iwd (NetworkManager uses wpa_supplicant)"
+    fi
+    if systemctl is-active -q systemd-networkd.service; then
+        for f in /etc/systemd/network/*.network; do
+            [ -f "$f" ] || continue
+            grep -qsE '^[[:space:]]*(Name|Type)=.*(wl|wlan)' "$f" && \
+                say "note: systemd-networkd also manages Wi-Fi via $f — remove it or stop systemd-networkd"
+        done
+    fi
+    set_managed
+}
+
+restart_net() {
+    systemctl daemon-reload
+    if nm_backend_iwd; then
+        systemctl restart iwd.service 2>/dev/null
+    else
+        systemctl restart wpa_supplicant.service 2>/dev/null
+    fi
+    systemctl restart NetworkManager.service && say "fixed: restarted NetworkManager and the Wi-Fi supplicant"
+    sleep 4
+}
+
+module_of() {  # $1 = sysfs device dir
+    m=$(readlink "$1/driver/module" 2>/dev/null) && basename "$m"
+}
+
+reload_driver() {
+    mods=""
+    for i in $(wifi_ifaces); do
+        m=$(module_of "$SYS/class/net/$i/device") && mods="$mods $m"
+    done
+    if [ -z "$mods" ]; then
+        # no Wi-Fi interface at all: look for wireless PCI controllers (class 0x0280)
+        for d in "$SYS"/bus/pci/devices/*; do
+            case "$(cat "$d/class" 2>/dev/null)" in 0x0280*) ;; *) continue ;; esac
+            m=$(module_of "$d") && mods="$mods $m" || say "no driver bound to wireless controller $(basename "$d") — the driver/firmware package is missing"
+        done
+    fi
+    for m in $(echo $mods | tr ' ' '\n' | sort -u); do
+        holders=$(ls "$SYS/module/$m/holders" 2>/dev/null)
+        modprobe -r $holders "$m" 2>/dev/null
+        sleep 1
+        if modprobe "$m"; then say "fixed: reloaded Wi-Fi driver $m"; else say "driver $m failed to load"; fi
+    done
+    sleep 3
+    systemctl restart NetworkManager.service
+    sleep 4
+}
+
+scan_mac_off() {
+    mkdir -p "$NMCONF"
+    printf '# Shadow TUI: some drivers report "device not ready" with randomised scan MACs\n[device-shadow-network-scan]\nmatch-device=type:wifi\nwifi.scan-rand-mac-address=no\n' > "$SCANMAC_CONF"
+    say "fixed: disabled scan MAC randomisation"
+    restart_net
+}
+
+diag() {
+    say "interfaces: $(wifi_ifaces | tr '\n' ' ')"
+    for r in "$SYS"/class/rfkill/rfkill*; do
+        [ -e "$r/type" ] && [ "$(cat "$r/type")" = wlan ] && say "rfkill $(cat "$r/name"): soft=$(cat "$r/soft") hard=$(cat "$r/hard")"
+    done
+    for i in $(wifi_ifaces); do say "driver $i: $(module_of "$SYS/class/net/$i/device")"; done
+    dmesg 2>/dev/null | grep -iE 'firmware.*(fail|error|not found)|iwlwifi.*(error|fail)|ath1.k.*(fail|error)|brcmf.*(fail|error)|rtw.*(fail|error)|mt7.*(fail|error)' | tail -n 8 | sed 's/^/kernel: /'
+    say "NetworkManager: $(systemctl is-active NetworkManager.service 2>/dev/null) / $(systemctl is-enabled NetworkManager.service 2>/dev/null)"
+    nm_backend_iwd && say "backend: iwd" || say "backend: wpa_supplicant ($(systemctl is-active wpa_supplicant.service 2>/dev/null))"
+}
+
+nm_wifi_state() {
+    # prints the NM state of the first Wi-Fi device, "" if NM lists none; returns 1 if nmcli itself failed
+    out=$(nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device 2>/dev/null) || return 1
+    printf '%s\n' "$out" | awk -F: '$2=="wifi"{print $3; exit}'
+}
+
+boot() {
+    # At boot (before anyone logs in) and after resume: make sure Wi-Fi comes up usable.
+    # $1 = keep-off: Wi-Fi was switched off before suspend — leave the radio alone.
+    nm_start; backend; release
+    if [ "${1:-}" = keep-off ]; then say "resume: Wi-Fi was off before suspend — leaving it off"; return 0; fi
+    unblock; link_up
+    n=0
+    while [ $n -lt 15 ]; do
+        s=$(nm_wifi_state)
+        case "$s" in ""|unavailable|unmanaged) ;; *) say "wifi device state: $s"; return 0 ;; esac
+        sleep 1; n=$((n + 1))
+    done
+    say "wifi still '$(nm_wifi_state)' after 15s — restarting the network stack"
+    restart_net
+    case "$(nm_wifi_state)" in ""|unavailable|unmanaged) ;; *) return 0 ;; esac
+    reload_driver; link_up
+    say "wifi device state after driver reload: $(nm_wifi_state)"
+}
+
+radio_enabled() { [ "$(nmcli radio wifi 2>/dev/null)" = enabled ]; }
+
+soft_blocked() {
+    for r in "$SYS"/class/rfkill/rfkill*; do
+        [ -e "$r/type" ] && [ "$(cat "$r/type")" = wlan ] || continue
+        [ "$(cat "$r/soft" 2>/dev/null)" = 1 ] || [ "$(cat "$r/hard" 2>/dev/null)" = 1 ] && return 0
+    done
+    return 1
+}
+
+any_link_down() {
+    for i in $(wifi_ifaces); do
+        ip -o link show "$i" 2>/dev/null | grep -q '[<,]UP[,>]' || return 0
+    done
+    return 1
+}
+
+watch() {
+    # Root self-correction loop (shadow-wifi-device.service). Runs before anyone logs in and needs
+    # no password. It never turns the radio back on at runtime: Wi-Fi switched off / airplane mode is
+    # treated as the user's choice (only boot and resume, or "Fix device", re-enable it).
+    interval=${SHADOWNET_WATCH_INTERVAL:-10}
+    boot
+    bad=0; level=0; budget_start=$(date +%s); budget=0; last_reload=0
+    while :; do
+        sleep "$interval"
+        now=$(date +%s)
+        [ $((now - budget_start)) -ge 3600 ] && { budget_start=$now; budget=0; }
+        if ! systemctl is-active -q NetworkManager.service; then
+            # stopped on purpose by an admin? only restart if it is still enabled
+            [ "$(systemctl is-enabled NetworkManager.service 2>/dev/null)" = enabled ] && nm_start
+            continue
+        fi
+        if ! radio_enabled || soft_blocked; then bad=0; level=0; continue; fi
+        st=$(nm_wifi_state) || { bad=0; continue; }     # nmcli unavailable/busy: never act blind
+        problem=""
+        case "$st" in
+            unavailable) problem="device not ready (unavailable)" ;;
+            unmanaged)   problem="device unmanaged" ;;
+            "")          [ -n "$(wifi_ifaces)" ] && problem="NetworkManager does not see the Wi-Fi card" ;;
+        esac
+        [ -z "$problem" ] && [ -n "$st" ] && any_link_down && problem="device down (link down)"
+        if [ -z "$problem" ]; then
+            [ $level -gt 0 ] && say "watch: Wi-Fi device healthy again (state: $st)"
+            bad=0; level=0; continue
+        fi
+        bad=$((bad + 1))
+        [ $bad -lt 2 ] && continue            # ignore transient states (scanning, resume, driver reset)
+        if [ $budget -ge 6 ]; then
+            [ $bad -eq 2 ] && say "watch: $problem — repair budget used up for this hour, waiting"
+            continue
+        fi
+        budget=$((budget + 1)); bad=0; level=$((level + 1))
+        say "watch: $problem — repair level $level"
+        case $level in
+            1) backend; release; set_managed; link_up ;;
+            2) restart_net; link_up ;;
+            *) if [ $((now - last_reload)) -ge 1800 ]; then last_reload=$now; reload_driver; link_up
+               else restart_net; fi
+               level=3 ;;
+        esac
+    done
+}
+
+pre_sleep() {
+    mkdir -p "$RUN"
+    if radio_enabled && ! soft_blocked; then echo on > "$RUN/pre-sleep"; else echo off > "$RUN/pre-sleep"; fi
+}
+
+resume() {
+    # drivers often come back from suspend wedged or soft-blocked → "device not ready" / "device down"
+    was=$(cat "$RUN/pre-sleep" 2>/dev/null || echo on)
+    rm -f "$RUN/pre-sleep"
+    sleep 2
+    if [ "$was" = off ]; then boot keep-off; else boot; fi
+}
+
+case "${1:-}" in
+    pre-sleep)     pre_sleep ;;
+    resume)        resume ;;
+    ensure)        nm_start; backend; unblock; link_up ;;
+    backend)       backend; [ "$changed" = 1 ] && restart_net ;;
+    watch)         watch ;;
+    release)       release ;;
+    restart)       restart_net ;;
+    reload-driver) reload_driver; link_up ;;
+    scan-mac-off)  scan_mac_off ;;
+    diag)          diag ;;
+    boot)          boot ;;
+    *) echo "usage: wifi-device-helper ensure|backend|release|restart|reload-driver|scan-mac-off|diag|boot|watch|pre-sleep|resume" >&2; exit 64 ;;
+esac
+exit 0

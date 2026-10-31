@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=shadow-term
+GenericName=Terminal
+Comment=Shadow Network tactical terminal
+Exec=shadow-term
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;commandline;terminal;
+StartupWMClass=shadow-term

@@ -1,0 +1,13 @@
+[Unit]
+Description=Shadow TUI network daemon (UC-Secure / eduroam self-repair, EAP state for the HUD)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Slice=shadow.slice
+ExecStart=/opt/shadow-tui/bin/shadow-netd
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

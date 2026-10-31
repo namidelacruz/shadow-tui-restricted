@@ -1,0 +1,52 @@
+{
+  "id": "red-cell",
+  "name": "Red Cell",
+  "inspired_by": "Ghost in the Shell (assault)",
+  "description": "Charcoal and signal orange with sand readouts. Assault-team alert posture.",
+  "bar_style": "tactical",
+  "wallpaper_style": "tactical",
+  "corner_radius": 0,
+  "font": "JetBrainsMono Nerd Font",
+  "bar_label": "\u25e2 SN//RED CELL",
+  "colors": {
+    "bg": "#0c0b0a",
+    "bg_alt": "#151311",
+    "surface": "#1d1a17",
+    "fg": "#ddd5cc",
+    "fg_dim": "#7a6f66",
+    "accent": "#ff6a13",
+    "accent2": "#e8d5b5",
+    "accent3": "#c0392b",
+    "alert": "#ff2d2d",
+    "warn": "#ffb000",
+    "ok": "#8fbf4a",
+    "inactive": "#2a2521"
+  },
+  "terminal": [
+    "#141210",
+    "#ff2d2d",
+    "#8fbf4a",
+    "#ffb000",
+    "#6fa8dc",
+    "#c27ba0",
+    "#76c7b7",
+    "#ddd5cc",
+    "#3a342f",
+    "#ff6161",
+    "#b5dd7c",
+    "#ffcd5c",
+    "#9fc5e8",
+    "#e0a4c4",
+    "#a6e3d6",
+    "#f6f1ea"
+  ],
+  "terminal_effects": {
+    "hud": true,
+    "gutter": true,
+    "boot_sequence": true,
+    "frame": true,
+    "unit": "SHADOW NETWORK // RED CELL",
+    "scanlines": true,
+    "cursor_style": "underline"
+  }
+}

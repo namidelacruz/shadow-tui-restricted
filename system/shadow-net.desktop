@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Network
+GenericName=Network Manager
+Comment=Wi-Fi, campus networks (UC-Secure / eduroam) and connections
+Exec=shadow-term --app-id=shadow-net -e sakura net
+Icon=network-wireless
+Terminal=false
+Categories=Settings;Network;

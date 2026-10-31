@@ -1,0 +1,52 @@
+{
+  "id": "thermoptic",
+  "name": "Thermoptic",
+  "inspired_by": "Ghost in the Shell (optical camo)",
+  "description": "Steel-blue cyberbrain interface with white telemetry and violet signals.",
+  "bar_style": "tactical",
+  "wallpaper_style": "tactical",
+  "corner_radius": 0,
+  "font": "JetBrainsMono Nerd Font",
+  "bar_label": "\u25e2 SN//THERMOPTIC",
+  "colors": {
+    "bg": "#070b10",
+    "bg_alt": "#0d141c",
+    "surface": "#131d28",
+    "fg": "#c9d6e2",
+    "fg_dim": "#5a6b7c",
+    "accent": "#5ac8fa",
+    "accent2": "#e0e6ec",
+    "accent3": "#9b8cff",
+    "alert": "#ff4757",
+    "warn": "#ffb020",
+    "ok": "#3ddc97",
+    "inactive": "#1b2836"
+  },
+  "terminal": [
+    "#0b1119",
+    "#ff4757",
+    "#3ddc97",
+    "#ffb020",
+    "#5ac8fa",
+    "#9b8cff",
+    "#4fd1e0",
+    "#c9d6e2",
+    "#24364a",
+    "#ff7a85",
+    "#7aefc0",
+    "#ffcd6b",
+    "#93dcff",
+    "#c2b8ff",
+    "#8fe9f5",
+    "#f2f7fb"
+  ],
+  "terminal_effects": {
+    "hud": true,
+    "gutter": true,
+    "boot_sequence": true,
+    "frame": true,
+    "unit": "SHADOW NETWORK // THERMOPTIC",
+    "scanlines": false,
+    "cursor_style": "beam"
+  }
+}

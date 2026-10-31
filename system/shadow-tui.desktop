@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Shadow TUI Restricted
+Comment=Keyboard-first tactical desktop (shadow-compositor)
+Exec=/opt/shadow-tui/bin/shadow-session
+Type=Application
+DesktopNames=ShadowTUI

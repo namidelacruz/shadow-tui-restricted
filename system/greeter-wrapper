@@ -1,0 +1,26 @@
+#!/bin/sh
+# Shadow TUI Restricted login screen, run by greetd as the "greeter" user.
+#  1. shadow-compositor --greeter: the graphical login that blends into the session
+#     (exit 3 = the user asked for a rescue shell)
+#  2. sakura greeter: the text login (works without a GPU; offers the rescue shell on F2)
+#  3. agreety: greetd's own prompt — you can always log in
+C=/opt/shadow-tui/bin/shadow-compositor
+if [ -x "$C" ] && [ -z "$SHADOW_GREETER_TEXT" ]; then
+    "$C" --greeter --udev 2>>/var/cache/shadow-tui-greeter/greeter.log
+    rc=$?
+    [ "$rc" -eq 0 ] && exit 0
+fi
+/opt/shadow-tui/bin/sakura greeter "$@"
+rc=$?
+[ "$rc" -eq 0 ] && exit 0
+cmd=$(sed -n 's/^fallback_cmd=//p' /etc/shadow-tui/greeter.conf 2>/dev/null | head -n 1)
+[ -n "$cmd" ] || cmd='${SHELL:-/bin/sh} -l'
+printf '\033c\033]R'
+echo "Shadow TUI login screen exited (code $rc); using the fallback login prompt."
+echo "Afterwards check:  shadow greeter status"
+echo
+if command -v agreety >/dev/null 2>&1; then
+    exec agreety --cmd "$cmd"
+fi
+sleep 15
+exit "$rc"

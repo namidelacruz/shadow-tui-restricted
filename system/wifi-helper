@@ -1,0 +1,68 @@
+#!/bin/sh
+# Shadow TUI Wi-Fi system helper (run as root via pkexec).
+# Only these fixed actions exist; nothing is taken from the caller but the action name.
+set -eu
+CONF_DIR=/etc/shadow-tui
+OSSL=$CONF_DIR/wpa-openssl.cnf
+DROPIN_DIR=/etc/systemd/system/wpa_supplicant.service.d
+DROPIN=$DROPIN_DIR/shadow-network-legacy-tls.conf
+IWD_CONF=/etc/NetworkManager/conf.d/90-shadow-network-iwd.conf
+
+restart_net() {
+    systemctl daemon-reload
+    systemctl try-restart wpa_supplicant.service 2>/dev/null || true
+    systemctl restart NetworkManager.service
+}
+
+case "${1:-}" in
+  legacy-tls-on)
+    # Old campus RADIUS servers: allow legacy renegotiation + TLS 1.0/1.1 for wpa_supplicant only.
+    mkdir -p "$CONF_DIR" "$DROPIN_DIR"
+    cat > "$OSSL" <<'CNF'
+# Shadow TUI: OpenSSL settings for wpa_supplicant only (enterprise Wi-Fi compatibility).
+openssl_conf = openssl_init
+[openssl_init]
+ssl_conf = ssl_module
+[ssl_module]
+system_default = tls_system_default
+[tls_system_default]
+CipherString = DEFAULT@SECLEVEL=0
+MinProtocol = TLSv1
+Options = UnsafeLegacyRenegotiation,UnsafeLegacyServerConnect
+CNF
+    printf '[Service]\nEnvironment=OPENSSL_CONF=%s\n' "$OSSL" > "$DROPIN"
+    restart_net
+    echo "legacy TLS compatibility enabled for wpa_supplicant"
+    ;;
+  legacy-tls-off)
+    rm -f "$DROPIN" "$OSSL"
+    restart_net
+    echo "legacy TLS compatibility removed"
+    ;;
+  iwd-on)
+    command -v iwd >/dev/null 2>&1 || [ -x /usr/lib/iwd/iwd ] || { echo "iwd is not installed (pacman -S iwd)" >&2; exit 2; }
+    mkdir -p /etc/NetworkManager/conf.d
+    printf '[device]\nwifi.backend=iwd\n' > "$IWD_CONF"
+    systemctl unmask iwd.service 2>/dev/null || true
+    systemctl stop wpa_supplicant.service 2>/dev/null || true
+    # iwd must be running before NetworkManager restarts, or the card shows "device not ready"
+    systemctl enable --now iwd.service || { rm -f "$IWD_CONF"; restart_net; echo "iwd failed to start — kept wpa_supplicant" >&2; exit 3; }
+    restart_net
+    echo "NetworkManager now uses iwd"
+    ;;
+  iwd-off)
+    rm -f "$IWD_CONF"
+    systemctl disable --now iwd.service 2>/dev/null || true
+    systemctl start wpa_supplicant.service 2>/dev/null || true
+    restart_net
+    echo "NetworkManager back on wpa_supplicant"
+    ;;
+  status)
+    [ -f "$DROPIN" ] && echo "legacy-tls: on" || echo "legacy-tls: off"
+    [ -f "$IWD_CONF" ] && echo "backend: iwd" || echo "backend: wpa_supplicant"
+    ;;
+  *)
+    echo "usage: wifi-helper legacy-tls-on|legacy-tls-off|iwd-on|iwd-off|status" >&2
+    exit 64
+    ;;
+esac

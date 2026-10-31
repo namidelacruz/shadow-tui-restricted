@@ -1,0 +1,10 @@
+# Session half of the 20 % ceiling (installed as the *user* unit shadow.slice): the compositor,
+# the HUD, sakura apps and the Lua runtime. memory.high triggers cache eviction first.
+[Unit]
+Description=Shadow TUI Restricted session (compositor + TUI apps)
+
+[Slice]
+MemoryAccounting=yes
+MemoryHigh=13%
+MemoryMax=16%
+MemorySwapMax=0

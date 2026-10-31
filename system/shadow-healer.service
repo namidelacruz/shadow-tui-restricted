@@ -1,0 +1,12 @@
+[Unit]
+Description=Shadow TUI healer (sandboxed self-correction of Lua behaviour modules)
+
+[Service]
+Slice=shadow.slice
+ExecStart=/opt/shadow-tui/bin/shadow-healer daemon
+Restart=on-failure
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

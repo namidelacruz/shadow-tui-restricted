@@ -1,0 +1,12 @@
+[Unit]
+Description=Shadow TUI power daemon (thermal/EPP/RAPL, charging, predictive tuning)
+After=power-profiles-daemon.service
+
+[Service]
+Slice=shadow.slice
+ExecStart=/opt/shadow-tui/bin/shadow-powerd daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

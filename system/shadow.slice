@@ -1,0 +1,11 @@
+# System half of the 20 % ceiling (spec §3.4): shadow-powerd, -netd, -healer, -audiod, -sec.
+# shadow-powerd also writes memory.high / memory.max here from MemTotal at start.
+[Unit]
+Description=Shadow TUI Restricted system daemons
+Before=slices.target
+
+[Slice]
+MemoryAccounting=yes
+MemoryHigh=3%
+MemoryMax=4%
+MemorySwapMax=0

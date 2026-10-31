@@ -1,0 +1,10 @@
+#!/bin/sh
+# systemd-sleep hook (/usr/lib/systemd/system-sleep/shadow-tui): Wi-Fi device state across
+# suspend, and the Lunar Lake audio re-check after resume (both in the background).
+H=/opt/shadow-tui/lib/wifi-device-helper
+case "$1" in
+    pre)  [ -x "$H" ] && "$H" pre-sleep ;;
+    post) [ -x "$H" ] && ( "$H" resume >/dev/null 2>&1 & )
+          ( /opt/shadow-tui/bin/shadow-audiod >/dev/null 2>&1 & ) ;;
+esac
+exit 0

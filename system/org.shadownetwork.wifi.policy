@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Shadow TUI</vendor>
+  <action id="org.shadownetwork.wifi-helper">
+    <description>Apply a system-level Wi-Fi compatibility fix</description>
+    <message>Shadow TUI needs administrator rights to apply a Wi-Fi fix (wpa_supplicant/NetworkManager settings)</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/opt/shadow-tui/lib/wifi-helper</annotate>
+  </action>
+  <!-- Device repair: radio on, rfkill soft-unblock, link up, restart NetworkManager, reload the
+       Wi-Fi driver. Allowed without a password for the user at the active local seat only, so the
+       background guard can self-correct "device not ready" / "device down". Remote/inactive: admin. -->
+  <action id="org.shadownetwork.wifi-device">
+    <description>Repair the Wi-Fi device</description>
+    <message>Shadow TUI needs administrator rights to repair the Wi-Fi device</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/opt/shadow-tui/lib/wifi-device-helper</annotate>
+  </action>
+</policyconfig>

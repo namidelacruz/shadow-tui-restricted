@@ -1,0 +1,10 @@
+[Unit]
+Description=Shadow TUI security monitor (optional: USB lockdown while locked, intrusion monitor)
+
+[Service]
+Slice=shadow.slice
+ExecStart=/opt/shadow-tui/bin/shadow-sec daemon
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

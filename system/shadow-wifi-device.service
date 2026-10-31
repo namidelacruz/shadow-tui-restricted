@@ -1,0 +1,18 @@
+[Unit]
+Description=Shadow TUI: keep the Wi-Fi device enabled and ready (self-correcting)
+Documentation=file:///opt/shadow-tui/share/doc/README.md
+After=NetworkManager.service systemd-rfkill.service
+Wants=NetworkManager.service
+
+[Service]
+# Fixes "device not ready" / "device down" at boot, then watches and repairs as root
+# (supplicant, conflicting services, unmanaged device, link down, wedged driver).
+# Never re-enables Wi-Fi the user switched off; boot/resume and "Fix device" do.
+Type=simple
+ExecStart=/opt/shadow-tui/lib/wifi-device-helper watch
+Restart=on-failure
+RestartSec=15
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

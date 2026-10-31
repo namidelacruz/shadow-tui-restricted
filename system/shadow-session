@@ -1,0 +1,26 @@
+#!/bin/sh
+# Shadow TUI Restricted session (started by greetd, or from a TTY).
+# The compositor and the Shadow TUI apps run in the user unit shadow.slice (memory.high 13 %,
+# memory.max 16 % of RAM); the system daemons have the other 4 % in the system shadow.slice:
+# together ≤ 20 % (spec §3.4). User programs go to app.slice and keep the other 80 %.
+export XDG_CURRENT_DESKTOP=ShadowTUI XDG_SESSION_DESKTOP=shadow-tui XDG_SESSION_TYPE=wayland
+export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland SDL_VIDEODRIVER=wayland
+C=/opt/shadow-tui/bin/shadow-compositor
+LOG=${XDG_STATE_HOME:-$HOME/.local/state}/shadow-tui/session.log
+mkdir -p "$(dirname "$LOG")"
+run() {
+    if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+        systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null
+        systemd-run --user --scope --slice=shadow.slice --collect --quiet -- "$C" "$@"
+    else
+        "$C" "$@"
+    fi
+}
+run --udev 2>>"$LOG"
+rc=$?
+# failsafe: a broken config.toml can't stop the compositor (it falls back to defaults), but if it
+# still died at once, start one more time with a clean state dir so you get a working desktop
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ]; then
+    echo "$(date -Is) compositor exited $rc — restarting with default settings" >>"$LOG"
+    SHADOW_STATE=$(mktemp -d) run --udev 2>>"$LOG"
+fi

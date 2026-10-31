@@ -1,0 +1,15 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = linux
+Target = linux-lts
+Target = linux-zen
+Target = linux-hardened
+
+[Action]
+Description = Shadow TUI: checking the new kernel against known regressions on this laptop...
+When = PreTransaction
+Exec = /opt/shadow-tui/bin/shadow-powerd kernel check-upgrade
+NeedsTargets
+AbortOnFail

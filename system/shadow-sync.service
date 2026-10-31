@@ -1,0 +1,6 @@
+[Unit]
+Description=Shadow TUI state sync (commit + push ~/.config/shadow-state)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/shadow-tui/bin/shadow-sync push -m "automatic sync"

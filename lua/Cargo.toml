@@ -1,0 +1,10 @@
+[package]
+name = "shadow-lua"
+version = "6.0.0"
+edition = "2021"
+description = "Shadow TUI Restricted adaptive layer: sandboxed LuaJIT runtime, capability policy (AST) and input sanitiser"
+license = "MIT"
+
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored"] }
+full_moon = { version = "1", default-features = false, features = ["luajit"] }

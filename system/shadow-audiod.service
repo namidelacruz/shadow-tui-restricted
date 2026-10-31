@@ -1,0 +1,11 @@
+[Unit]
+Description=Shadow TUI audio initialiser (Intel Core Ultra Series 2 / SOF / SoundWire)
+After=sound.target systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+Slice=shadow.slice
+ExecStart=/opt/shadow-tui/bin/shadow-audiod
+
+[Install]
+WantedBy=multi-user.target
