@@ -45,6 +45,12 @@ use smithay_client_toolkit::{
     },
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
+use smithay_client_toolkit::reexports::client::{Dispatch, Proxy};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
+use wayland_protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::{Duration, Instant};
@@ -143,7 +149,8 @@ struct App {
 
     width: u32,  // logical
     height: u32, // logical
-    scale: i32,
+    scale: f64, // preferred scale (fractional when wp_fractional_scale_v1 is available)
+    frac: Option<(WpViewport, WpFractionalScaleV1)>,
     configured: bool,
     frame_pending: bool,
     needs_draw: bool,
@@ -171,10 +178,13 @@ struct App {
 }
 
 impl App {
+    fn phys_size(&self) -> (i32, i32) {
+        ((self.width as f64 * self.scale).round() as i32, (self.height as f64 * self.scale).round() as i32)
+    }
+
     fn grid_size(&self) -> (usize, usize) {
         let v = render::layout(&self.cfg, &self.fonts, self.scale);
-        let w = self.width as i32 * self.scale;
-        let h = self.height as i32 * self.scale;
+        let (w, h) = self.phys_size();
         let cols = ((w - v.x0 - v.pad).max(0) / self.fonts.cell_w as i32).max(2) as usize;
         let rows = ((h - v.y0 - v.pad).max(0) / self.fonts.cell_h as i32).max(2) as usize;
         (cols, rows)
@@ -184,7 +194,7 @@ impl App {
         let v = render::layout(&self.cfg, &self.fonts, self.scale);
         let w = v.x0 + v.pad + cols as i32 * self.fonts.cell_w as i32;
         let h = v.y0 + v.pad + rows as i32 * self.fonts.cell_h as i32;
-        ((w / self.scale) as u32, (h / self.scale) as u32)
+        ((w as f64 / self.scale).round() as u32, (h as f64 / self.scale).round() as u32)
     }
 
     fn apply_size(&mut self) {
@@ -324,8 +334,8 @@ impl App {
 
     fn cell_at(&self, x: f64, y: f64) -> (usize, usize) {
         let v = render::layout(&self.cfg, &self.fonts, self.scale);
-        let px = (x * self.scale as f64) as i32 - v.x0;
-        let py = (y * self.scale as f64) as i32 - v.y0;
+        let px = (x * self.scale) as i32 - v.x0;
+        let py = (y * self.scale) as i32 - v.y0;
         let col = (px.max(0) / self.fonts.cell_w as i32) as usize;
         let row = (py.max(0) / self.fonts.cell_h as i32) as usize;
         (col.min(self.term.cols - 1), row.min(self.term.rows - 1))
@@ -431,8 +441,8 @@ impl App {
         if !self.configured {
             return;
         }
-        let w = (self.width as i32 * self.scale).max(1);
-        let h = (self.height as i32 * self.scale).max(1);
+        let (w, h) = self.phys_size();
+        let (w, h) = (w.max(1), h.max(1));
         let stride = w * 4;
         let (buffer, canvas) = match self.pool.create_buffer(w, h, stride, wl_shm::Format::Argb8888) {
             Ok(b) => b,
@@ -456,7 +466,11 @@ impl App {
         let mut cv = render::Canvas { buf: canvas, w: w as usize, h: h as usize };
         render::draw(&mut cv, &mut self.fonts, &self.term, &view, &ui);
         let surface = self.window.wl_surface();
-        surface.set_buffer_scale(self.scale);
+        match &self.frac {
+            // Fractional path: buffer is w x h physical px, viewport maps it to the logical size.
+            Some((vp, _)) => vp.set_destination(self.width.max(1) as i32, self.height.max(1) as i32),
+            None => surface.set_buffer_scale(self.scale as i32),
+        }
         surface.damage_buffer(0, 0, w, h);
         surface.frame(qh, FrameCallbackData(surface.clone()));
         let _ = buffer.attach_to(surface);
@@ -556,6 +570,16 @@ fn main() {
     window.set_title(args.title.clone().unwrap_or_else(|| "shadow-term".into()));
     window.set_app_id(args.app_id.clone());
     window.set_min_size(Some((160, 100)));
+    // Fractional scaling (e.g. 1.5 on the Dell 14 Plus): render at the exact
+    // preferred scale and let wp_viewporter present it at logical size, so text
+    // is crisp instead of being resampled by the compositor.
+    let frac = match (globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()), globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ())) {
+        (Ok(fm), Ok(vpr)) => {
+            let surf = window.wl_surface();
+            Some((vpr.get_viewport(surf, &qh, ()), fm.get_fractional_scale(surf, &qh, ())))
+        }
+        _ => None,
+    };
     window.commit();
 
     let pool = SlotPool::new(1024 * 768 * 4, &shm).expect("shm pool");
@@ -582,7 +606,8 @@ fn main() {
         pty,
         width: 0,
         height: 0,
-        scale: 1,
+        scale: 1.0,
+        frac,
         configured: false,
         frame_pending: false,
         needs_draw: true,
@@ -666,8 +691,9 @@ fn main() {
 // ====================================================================== handlers
 impl CompositorHandler for App {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, factor: i32) {
-        if factor != self.scale && factor > 0 {
-            self.scale = factor;
+        // Integer wl_surface.preferred_buffer_scale; ignored once fractional scale is bound.
+        if self.frac.is_none() && factor > 0 && factor as f64 != self.scale {
+            self.scale = factor as f64;
             self.set_font_px();
         }
     }
@@ -953,6 +979,30 @@ impl ProvidesRegistryState for App {
 }
 
 smithay_client_toolkit::delegate_dispatch2!(App);
+
+impl Dispatch<WpFractionalScaleManagerV1, ()> for App {
+    fn event(_: &mut Self, _: &WpFractionalScaleManagerV1, _: <WpFractionalScaleManagerV1 as Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+impl Dispatch<WpViewporter, ()> for App {
+    fn event(_: &mut Self, _: &WpViewporter, _: <WpViewporter as Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+impl Dispatch<WpViewport, ()> for App {
+    fn event(_: &mut Self, _: &WpViewport, _: <WpViewport as Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+impl Dispatch<WpFractionalScaleV1, ()> for App {
+    fn event(app: &mut Self, _: &WpFractionalScaleV1, ev: wp_fractional_scale_v1::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = ev {
+            let s = (scale as f64 / 120.0).clamp(0.5, 4.0);
+            if (s - app.scale).abs() > f64::EPSILON {
+                app.scale = s;
+                app.set_font_px();
+                if app.configured && !app.frame_pending {
+                    app.draw(qh);
+                }
+            }
+        }
+    }
+}
 
 #[allow(dead_code)]
 fn _assert_fd<T: AsFd>(_: &T) {}

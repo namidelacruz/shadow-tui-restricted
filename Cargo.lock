@@ -1753,6 +1753,7 @@ dependencies = [
  "smithay-client-toolkit 0.21.1",
  "unicode-width",
  "vte",
+ "wayland-protocols",
 ]
 
 [[package]]

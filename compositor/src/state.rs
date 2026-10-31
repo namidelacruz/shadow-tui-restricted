@@ -24,7 +24,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Serial},
     wayland::{
         buffer::BufferHandler,
-        compositor::{get_parent, is_sync_subsurface, with_states, CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{get_parent, is_sync_subsurface, send_surface_state, with_states, CompositorClientState, CompositorHandler, CompositorState},
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         fractional_scale::{with_fractional_scale, FractionalScaleHandler, FractionalScaleManagerState},
         output::{OutputHandler, OutputManagerState},
@@ -430,6 +430,7 @@ impl XdgShellHandler for State {
         surface.with_pending_state(|s| {
             s.decoration_mode = Some(DecoMode::ServerSide);
         });
+        self.send_scale(surface.wl_surface());
         let window = Window::new_wayland_window(surface);
         let id = self.next_id;
         self.next_id += 1;
@@ -528,6 +529,7 @@ impl WlrLayerShellHandler for State {
     }
     fn new_layer_surface(&mut self, surface: WlrLayerSurface, _output: Option<wl_output::WlOutput>, _layer: Layer, namespace: String) {
         let Some(o) = self.output.clone() else { return };
+        self.send_scale(surface.wl_surface());
         let mut map = layer_map_for_output(&o);
         let _ = map.map_layer(&LayerSurface::new(surface, namespace));
     }
@@ -578,8 +580,36 @@ impl OutputHandler for State {}
 
 impl FractionalScaleHandler for State {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
+        self.send_scale(&surface);
+    }
+}
+
+impl State {
+    /// Tell a client surface the output scale: exact value via wp_fractional_scale_v1,
+    /// and ceil(scale) as wl_surface.preferred_buffer_scale for clients without it, so
+    /// legacy clients are downsampled (sharp) rather than upscaled (blurry).
+    pub fn send_scale(&self, surface: &WlSurface) {
         let scale = self.scale();
-        with_states(&surface, |st| with_fractional_scale(st, |fs| fs.set_preferred_scale(scale)));
+        with_states(surface, |st| {
+            send_surface_state(surface, st, scale.ceil() as i32, smithay::utils::Transform::Normal);
+            with_fractional_scale(st, |fs| fs.set_preferred_scale(scale));
+        });
+    }
+
+    /// Apply a new output scale live (config-reload) and re-announce it to every client.
+    pub fn set_output_scale(&mut self, scale: f64) {
+        let Some(o) = self.output.clone() else { return };
+        if (o.current_scale().fractional_scale() - scale).abs() < 1e-6 {
+            return;
+        }
+        o.change_current_state(None, None, Some(smithay::output::Scale::Fractional(scale)), None);
+        let surfaces: Vec<WlSurface> = self.wins.iter().filter_map(|w| w.window.toplevel().map(|t| t.wl_surface().clone()))
+            .chain(layer_map_for_output(&o).layers().map(|l| l.wl_surface().clone())).collect();
+        for s in &surfaces {
+            self.send_scale(s);
+        }
+        self.text.forget("");
+        self.relayout();
     }
 }
 

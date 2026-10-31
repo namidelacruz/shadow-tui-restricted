@@ -98,6 +98,9 @@ pub fn command(st: &mut State, line: &str) -> String {
             st.cfg = c;
             st.cfg_problem = p.clone();
             st.binds = crate::input::compile_binds(st);
+            if matches!(st.backend, crate::state::Backend::Udev(_)) {
+                st.set_output_scale(crate::winit::scale_override(st.cfg.look.scale));
+            }
             st.relayout();
             p.map(|p| format!("error: {p} (defaults in use)")).unwrap_or_else(|| "ok".into())
         }

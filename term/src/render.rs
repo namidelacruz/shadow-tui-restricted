@@ -365,11 +365,14 @@ pub struct View {
     pub y0: i32,
 }
 
-pub fn layout(cfg: &Config, fonts: &Fonts, scale: i32) -> View {
-    let pad = cfg.padding as i32 * scale;
-    let hud_h = if cfg.hud { fonts.cell_h as i32 + 8 * scale } else { 0 };
+/// `scale` is the (possibly fractional) output scale; geometry is in physical px.
+pub fn layout(cfg: &Config, fonts: &Fonts, scale: f64) -> View {
+    let px = |v: f64| (v * scale).round() as i32;
+    let s = (scale.round() as i32).max(1); // line thickness
+    let pad = px(cfg.padding as f64);
+    let hud_h = if cfg.hud { fonts.cell_h as i32 + px(8.0) } else { 0 };
     let gutter_w = if cfg.gutter { (fonts.cell_w as i32 * 3) / 2 } else { 0 };
-    View { scale, pad, hud_h, gutter_w, x0: pad + gutter_w, y0: pad + hud_h + if cfg.hud { 4 * scale } else { 0 } }
+    View { scale: s, pad, hud_h, gutter_w, x0: pad + gutter_w, y0: pad + hud_h + if cfg.hud { px(4.0) } else { 0 } }
 }
 
 pub struct Ui<'a> {

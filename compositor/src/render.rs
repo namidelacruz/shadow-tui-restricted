@@ -12,6 +12,7 @@ use smithay::{
     backend::renderer::{
         element::{
             memory::MemoryRenderBufferRenderElement,
+            utils::RescaleRenderElement,
             solid::SolidColorRenderElement,
             surface::WaylandSurfaceRenderElement,
             AsRenderElements, Id, Kind,
@@ -31,7 +32,7 @@ render_elements! {
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Shader=PixelShaderElement,
     Solid=SolidColorRenderElement,
-    Mem=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Mem=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
 }
 
 struct Slot {
@@ -116,8 +117,13 @@ impl State {
 
     fn text_el(&mut self, r: &mut GlesRenderer, out: &mut Vec<El>, key: &str, s: &str, px: f32, col: [f32; 3], at: (i32, i32), alpha: f32) -> i32 {
         if let Some((buf, (w, _))) = self.text.line(key, s, px, col) {
-            if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(r, Point::<f64, Physical>::from((at.0 as f64, at.1 as f64)), &buf, Some(alpha), None, None, Kind::Unspecified) {
-                out.push(El::Mem(e));
+            // Text is rasterised at physical pixel size. The element's natural
+            // size is buffer-px x output-scale, so rescale by 1/scale to map one
+            // glyph pixel to one screen pixel at any fractional scale.
+            let at = Point::<f64, Physical>::from((at.0 as f64, at.1 as f64));
+            if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(r, at, &buf, Some(alpha), None, None, Kind::Unspecified) {
+                let inv = Scale::from(1.0 / self.scale());
+                out.push(El::Mem(RescaleRenderElement::from_element(e, at.to_i32_round(), inv)));
             }
             return w;
         }

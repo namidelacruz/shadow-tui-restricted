@@ -11,4 +11,5 @@ vte = "0.15"
 fontdue = "0.9"
 unicode-width = "0.2"
 libc = "0.2"
+wayland-protocols = { version = "0.32", default-features = false, features = ["client", "staging"] }
 
