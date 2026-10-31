@@ -8,6 +8,7 @@
 #  ./install.sh --sec                   also the optional security package
 #  ./install.sh --bootstrap URL         new machine: install, then restore your state repo
 #  ./install.sh --dry-run               show every command it would run, change nothing
+#  ./install.sh --check                 only verify an existing installation (pass / warn / fail)
 #  ./install.sh --uninstall [--purge]   remove the packages
 #  Options: -y/--yes (no questions) · --no-greeter · --niri-ref TAG (source builds, default v25.08)
 #
@@ -18,10 +19,12 @@
 # ════════════════════════════════════════════════════════════════════════
 set -Eeuo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-YES=0; GREETER=ask; SEC=0; UNINSTALL=0; PURGE=0; BOOT=""; DRY=0
+YES=0; GREETER=ask; SEC=0; UNINSTALL=0; PURGE=0; BOOT=""; DRY=0; CHECK=0
 NIRI_REF=${NIRI_REF:-v25.08}
 GREETD_REF=${GREETD_REF:-0.10.3}
 RUST_MIN=1.89
+NIRI_MIN=25.08          # the niri release the generated config is validated against
+DISK_MIN_GB=5           # cargo build of Shadow; +5 more when niri / greetd are built from source
 a=$'\e[38;2;255;176;0m'; c=$'\e[38;2;0;229;255m'; r=$'\e[38;2;255;42;0m'; z=$'\e[0m'
 say()  { printf '%s▌%s %s\n' "$a" "$z" "$*"; }
 info() { printf '%s  ·%s %s\n' "$c" "$z" "$*"; }
@@ -37,7 +40,7 @@ while (($#)); do
   case "$1" in
     -y|--yes) YES=1 ;; --greeter) GREETER=yes ;; --no-greeter) GREETER=no ;; --sec) SEC=1 ;;
     --bootstrap) BOOT="${2:?URL}"; shift ;; --uninstall) UNINSTALL=1 ;; --purge) PURGE=1 ;;
-    --dry-run) DRY=1 ;; --niri-ref) NIRI_REF="${2:?TAG}"; shift ;;
+    --dry-run) DRY=1 ;; --check) CHECK=1 ;; --niri-ref) NIRI_REF="${2:?TAG}"; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;; *) die "unknown option: $1" ;;
   esac; shift
 done
@@ -66,6 +69,77 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/shadow-tui"; pkgcache="$cache/packages"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 ver_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]; }
+export PATH="/opt/shadow-tui/bin:/usr/local/bin:$PATH"
+
+# ── failsafes before anything is changed ────────────────────────────────
+free_gb() { df -Pk "${1:-$HOME}" 2>/dev/null | awk 'NR==2 {print int($4/1048576)}'; }
+need_disk() {
+  local want=$1 got; got=$(free_gb "$HOME")
+  [[ -z $got ]] && return 0
+  ((got >= want)) || die "only ${got} GB free in $HOME; building needs about ${want} GB (cargo build cache in ~/.cache/shadow-tui)"
+}
+preflight() {
+  say "Pre-flight checks"
+  case "$(uname -m)" in x86_64|aarch64) ;; *) die "unsupported CPU architecture $(uname -m) (x86_64 or aarch64)";; esac
+  if [[ -e /run/ostree-booted ]]; then
+    die "this is an image-based system (Fedora Atomic / Silverblue / Kinoite): packages are layered with rpm-ostree, which this installer does not do"
+  fi
+  have sudo || die "sudo is required"
+  if ((!DRY)); then sudo -v || die "sudo access is required to install packages"; fi
+  have git || [[ $FAM == arch ]] || ((DRY)) || dnf_install git
+  need_disk "$DISK_MIN_GB"
+  if [[ $FAM == el && $ID == rhel ]] && have subscription-manager && ((!DRY)); then
+    sudo subscription-manager identity >/dev/null 2>&1 || die "this RHEL system is not registered, so CodeReady Builder (needed for the -devel packages) is unavailable: sudo subscription-manager register"
+  fi
+  info "architecture $(uname -m), $(free_gb "$HOME") GB free, sudo OK"
+}
+
+# Where a package comes from when it can't be found (for the error message)
+repo_hint() {
+  case "$1" in
+    *-devel|rpm-build) [[ $FAM == el ]] && echo "CodeReady Builder (crb)" || echo "Fedora base/updates" ;;
+    libseat*|libdisplay-info*|terminus-fonts*|age|seatd) [[ $FAM == el ]] && echo "EPEL $MAJOR" || echo "Fedora base/updates" ;;
+    niri) [[ $FAM == el ]] && echo "the yalter/niri COPR (EL10) or a source build (EL9)" || echo "Fedora base/updates" ;;
+    *) [[ $FAM == el ]] && echo "BaseOS / AppStream" || echo "Fedora base/updates" ;;
+  esac
+}
+
+# Required packages: verify ALL of them can be installed before installing any; name what's missing
+dnf_require() {
+  if ((DRY)); then dnf_install "$@"; return; fi
+  local avail=() missing=() p
+  mapfile -t avail < <($DNF -q repoquery --latest-limit 1 --queryformat '%{name}\n' "$@" 2>/dev/null | sort -u)
+  for p in "$@"; do
+    [[ $p == http* || $p == */* ]] && continue
+    printf '%s\n' "${avail[@]}" | grep -qx "$p" || rpm -q --whatprovides "$p" &>/dev/null || missing+=("$p")
+  done
+  if ((${#missing[@]})); then
+    warn "required packages not available from your enabled repositories:"
+    for p in "${missing[@]}"; do warn "   $p   (normally from $(repo_hint "$p"))"; done
+    [[ $FAM == el ]] && warn "check: sudo dnf repolist   (crb and epel must be enabled)"
+    die "nothing was installed in this step — fix the repositories and re-run ./install.sh"
+  fi
+  dnf_install "$@"
+}
+
+# a built or installed binary must run and find all its libraries
+check_binary() {
+  local f=$1
+  ((DRY)) && return 0
+  [[ -x $f ]] || die "$f was not produced"
+  if ldd "$f" 2>/dev/null | grep -q "not found"; then
+    die "$f is missing libraries: $(ldd "$f" | grep 'not found' | awk '{print $1}' | tr '\n' ' ')"
+  fi
+}
+
+niri_version() { niri --version 2>/dev/null | awk '{print $2}' || true; }
+niri_ok() {
+  local v; v=$(niri_version)
+  [[ -n $v ]] || return 1
+  # packaged git snapshots (0.0.git…) can't be compared; the config check after setup decides
+  [[ $v == 0.0.git* ]] && return 0
+  ver_ge "$v" "$NIRI_MIN"
+}
 
 # ── uninstall ───────────────────────────────────────────────────────────
 if ((UNINSTALL)); then
@@ -161,14 +235,16 @@ ensure_rust() {
 }
 
 build_niri_from_source() {
-  say "Building niri $NIRI_REF from source (no package for $NAME)"
-  dnf_install gcc clang git pkgconf-pkg-config systemd-devel mesa-libgbm-devel mesa-libEGL-devel \
+  say "Building niri $NIRI_REF from source (no suitable package for $NAME)"
+  need_disk $((DISK_MIN_GB + 5))
+  dnf_require gcc clang git pkgconf-pkg-config systemd-devel mesa-libgbm-devel mesa-libEGL-devel \
     libxkbcommon-devel wayland-devel libinput-devel dbus-devel libseat-devel pipewire-devel \
     pango-devel cairo-gobject-devel libdisplay-info-devel
   local d="$cache/niri-src"
   if [[ -d "$d/.git" ]]; then run git -C "$d" fetch --depth 1 origin tag "$NIRI_REF"; run git -C "$d" checkout -q "$NIRI_REF"
   else run git clone -q --depth 1 --branch "$NIRI_REF" https://github.com/YaLTeR/niri "$d"; fi
   run_in "$d" cargo build --release --locked
+  check_binary "$d/target/release/niri"
   run sudo install -Dm755 "$d/target/release/niri" /usr/local/bin/niri
   run sudo install -Dm755 "$d/resources/niri-session" /usr/local/bin/niri-session
   run sudo install -Dm644 "$d/resources/niri.service" /etc/systemd/user/niri.service
@@ -176,27 +252,41 @@ build_niri_from_source() {
   run sudo sed -i 's|/usr/bin/niri|/usr/local/bin/niri|g' /etc/systemd/user/niri.service
   run sudo install -Dm644 "$d/resources/niri-portals.conf" /usr/local/share/xdg-desktop-portal/niri-portals.conf
   command -v restorecon >/dev/null && run sudo restorecon -R /usr/local/bin /etc/systemd/user || true
+  ((DRY)) || /usr/local/bin/niri --version >/dev/null || die "the niri that was just built does not run"
 }
 
 ensure_niri() {
   say "Compositor (niri)"
-  if have niri; then info "niri $(niri --version 2>/dev/null | awk '{print $2}') already installed"; return; fi
+  if have niri && niri_ok; then info "niri $(niri_version) already installed"; return; fi
+  if have niri; then warn "the installed niri ($(niri_version)) is older than $NIRI_MIN, which Shadow's config needs"; fi
   case "$FAM/$MAJOR" in
-    fedora/*) dnf_install niri ;;
-    el/10)
-      if run sudo $DNF copr enable -y yalter/niri && dnf_install niri; then :; else
-        warn "the yalter/niri COPR did not work here — building from source instead"; build_niri_from_source; fi ;;
-    el/9) build_niri_from_source ;;
+    fedora/*) run sudo $DNF install -y niri || run sudo $DNF upgrade -y niri || true ;;
+    el/10) { run sudo $DNF copr enable -y yalter/niri && { run sudo $DNF install -y niri || run sudo $DNF upgrade -y niri; }; } || warn "the yalter/niri COPR did not work here" ;;
   esac
+  ((DRY)) && [[ $FAM/$MAJOR != el/9 ]] && return
+  if [[ $FAM/$MAJOR == el/9 ]] || ! niri_ok; then
+    [[ $FAM/$MAJOR == el/9 ]] || warn "no package gives niri >= $NIRI_MIN here (have: $(niri_version || true)) — building it from source"
+    ask "Build niri $NIRI_REF from source into /usr/local (about 10 minutes)?" || die "Shadow needs niri >= $NIRI_MIN"
+    build_niri_from_source
+    hash -r
+    ((DRY)) || niri_ok || die "niri still reports $(niri_version) — check that /usr/local/bin comes first in PATH"
+  fi
+  info "niri $(niri_version)"
 }
 
 build_greetd_from_source() {
   say "Building greetd $GREETD_REF from source (not packaged for $NAME)"
-  dnf_install gcc git pam-devel policycoreutils-python-utils
+  dnf_require gcc git pam-devel policycoreutils-python-utils
+  if have getenforce && [[ $(getenforce) == Enforcing ]] && ! have semanage && ((!DRY)); then
+    warn "SELinux is enforcing and semanage is unavailable: a greetd without its SELinux label could not log you in"
+    return 1
+  fi
   local d="$cache/greetd-src"
   if [[ -d "$d/.git" ]]; then run git -C "$d" fetch --depth 1 origin tag "$GREETD_REF"; run git -C "$d" checkout -q "$GREETD_REF"
   else run git clone -q --depth 1 --branch "$GREETD_REF" https://git.sr.ht/~kennylevinsen/greetd "$d"; fi
   run_in "$d" cargo build --release --locked
+  check_binary "$d/target/release/greetd"
+  check_binary "$d/target/release/agreety"
   run sudo install -Dm755 "$d/target/release/greetd" /usr/local/bin/greetd
   run sudo install -Dm755 "$d/target/release/agreety" /usr/local/bin/agreety
   # RHEL PAM stack for logins through greetd
@@ -246,6 +336,10 @@ EOF
     run sudo semanage fcontext -a -t xdm_exec_t /usr/local/bin/greetd 2>/dev/null || run sudo semanage fcontext -m -t xdm_exec_t /usr/local/bin/greetd
     run sudo restorecon -v /usr/local/bin/greetd /usr/local/bin/agreety /etc/pam.d/greetd /etc/systemd/system/greetd.service
   fi
+  if ((!DRY)) && have getenforce && [[ $(getenforce) != Disabled ]] && [[ $(stat -c %C /usr/local/bin/greetd 2>/dev/null) != *xdm_exec_t* ]]; then
+    warn "greetd did not get the display-manager SELinux label"
+    return 1
+  fi
   run sudo systemctl daemon-reload
 }
 
@@ -253,11 +347,13 @@ rpm_install() {
   have dnf || ((DRY)) || die "dnf not found"
   [[ $FAM == el ]] && el_repos
   say "Build tools"
-  dnf_install gcc gcc-c++ make git curl pkgconf-pkg-config pam-devel libxkbcommon-devel rpm-build
+  dnf_require gcc gcc-c++ make git curl pkgconf-pkg-config pam-devel libxkbcommon-devel rpm-build
   ensure_rust
+  # the spec's own BuildRequires, exactly as rpmbuild will check them
+  run sudo $DNF builddep -y "$SRC/packaging/shadow-tui-restricted.spec" || warn "dnf builddep could not read the spec; using the list above"
   ensure_niri
   say "Runtime dependencies"
-  dnf_install mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig NetworkManager \
+  dnf_require mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig NetworkManager \
     wpa_supplicant iproute util-linux kmod git-core wireplumber pipewire
   dnf_install_available brightnessctl xdg-desktop-portal-gnome libnotify alsa-sof-firmware alsa-ucm \
     dejavu-sans-mono-fonts jetbrains-mono-fonts-all google-noto-sans-cjk-fonts age gh iwd \
@@ -284,19 +380,84 @@ rpm_greeter() {
       info "greetd is not packaged for $NAME; it can be built from source (SELinux: run as the display-manager domain)."
       info "Otherwise keep GDM and pick \"Shadow TUI Restricted\" from the gear menu on its login screen."
       ask "Build and install greetd $GREETD_REF?" || return 1
-      build_greetd_from_source
+      # a failure here must not end the installation: keep the current login manager instead
+      local rc=0
+      set +e; ( trap - ERR; set -e; build_greetd_from_source ); rc=$?; set -e
+      if ((rc)); then warn "greetd could not be set up — your current login manager (GDM) stays"; return 1; fi
     fi
     dnf_install_available terminus-fonts-console
   fi
 }
 
 # ════════════════════════════════════════════════════════════════════════
+#  Verification: does the installed system have everything it needs?
+# ════════════════════════════════════════════════════════════════════════
+verify() {
+  local fails=0 warns=0
+  pass() { printf '%s  ✓%s %s\n' "$c" "$z" "$*"; }
+  wrn()  { printf '%s  ~%s %s\n' "$a" "$z" "$*"; warns=$((warns + 1)); }
+  bad()  { printf '%s  ✗ %s%s\n' "$r" "$*" "$z"; fails=$((fails + 1)); }
+  say "Verifying the installation"
+  local v
+  if [[ $FAM == arch ]]; then v=$(pacman -Q shadow-tui-restricted 2>/dev/null | awk '{print $2}' || true)
+  else v=$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' shadow-tui-restricted 2>/dev/null || true); fi
+  [[ -n $v && $v != *"not installed"* ]] && pass "package shadow-tui-restricted $v" || bad "package shadow-tui-restricted is not installed"
+  local b missing=()
+  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-greet \
+           shadow-sessiond shadow-displayd shadow-term shadow-powerd; do
+    f=/opt/shadow-tui/bin/$b
+    if [[ ! -x $f ]]; then missing+=("$b"); elif ldd "$f" 2>/dev/null | grep -q "not found"; then missing+=("$b(libraries)"); fi
+  done
+  ((${#missing[@]})) && bad "programs missing or broken: ${missing[*]}" || pass "all 12 programs present, libraries resolved"
+  if have niri; then
+    if niri_ok; then pass "niri $(niri_version) ($(command -v niri))"; else bad "niri $(niri_version) is older than $NIRI_MIN — re-run ./install.sh"; fi
+    local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state/niri.kdl"
+    if [[ -f $cfg ]]; then
+      if niri validate -c "$cfg" >/dev/null 2>&1; then pass "niri accepts the generated config ($cfg)"
+      else bad "niri rejects $cfg: $(niri validate -c "$cfg" 2>&1 | grep -v '^$' | tail -n1)"; fi
+    else wrn "no niri config yet — run: shadow setup"; fi
+  else bad "niri is not installed (the compositor) — re-run ./install.sh"; fi
+  [[ -f /usr/share/wayland-sessions/shadow-tui.desktop ]] && pass "login session entry present" || bad "/usr/share/wayland-sessions/shadow-tui.desktop missing"
+  if [[ -f /etc/pam.d/shadow-lock ]]; then
+    local stack; stack=$(awk '$2=="include"{print $3; exit}' /etc/pam.d/shadow-lock)
+    [[ -z $stack || -f /etc/pam.d/$stack ]] && pass "lock screen PAM (stack: ${stack:-own})" || bad "/etc/pam.d/shadow-lock includes $stack, which does not exist — the lock screen could not unlock"
+  else bad "/etc/pam.d/shadow-lock missing — the lock screen could not unlock"; fi
+  local u off=()
+  for u in shadow-powerd shadow-netd shadow-healer; do systemctl is-enabled -q "$u.service" 2>/dev/null || off+=("$u"); done
+  ((${#off[@]})) && wrn "services not enabled: ${off[*]} (sudo systemctl enable --now ${off[*]/%/.service})" || pass "system services enabled"
+  local font; font=$(fc-match -f '%{file}' monospace 2>/dev/null || true)
+  [[ -n $font && -f $font ]] && pass "monospace font: $(basename "$font")" || bad "no monospace font found (Shadow's apps cannot draw text): install dejavu-sans-mono-fonts / ttf-dejavu"
+  ls /usr/share/glvnd/egl_vendor.d/*mesa*.json >/dev/null 2>&1 && pass "Mesa EGL (OpenGL) present" || wrn "Mesa EGL vendor file not found — niri needs Mesa's EGL"
+  systemctl is-active -q NetworkManager 2>/dev/null && pass "NetworkManager running" || wrn "NetworkManager is not running (shadow-net and the Wi-Fi repair need it)"
+  if [[ $FAM != arch ]] && have getenforce && [[ $(getenforce) != Disabled ]]; then
+    local mis; mis=$(restorecon -n -R -v /opt/shadow-tui 2>/dev/null | wc -l || true)
+    [[ ${mis:-0} -eq 0 ]] && pass "SELinux labels of /opt/shadow-tui correct ($(getenforce))" || wrn "$mis files under /opt/shadow-tui have the wrong SELinux label: sudo restorecon -R /opt/shadow-tui"
+  fi
+  if grep -qs shadow-tui /etc/greetd/config.toml; then
+    have greetd && pass "greetd installed ($(command -v greetd))" || bad "the login screen is enabled but greetd is missing — sudo shadow greeter disable"
+    local gu; gu=$(sed -n 's/^user *= *"\(.*\)"/\1/p' /etc/greetd/config.toml | head -n1)
+    id -u "$gu" >/dev/null 2>&1 && pass "login screen user: $gu" || bad "greetd runs as \"$gu\", which does not exist"
+    shadow-greet --self-test >/dev/null 2>&1 && pass "login screen self-test" || bad "shadow-greet --self-test fails: $(shadow-greet --self-test 2>&1 | head -n1)"
+    if [[ $(command -v greetd) == /usr/local/bin/greetd ]] && have getenforce && [[ $(getenforce) != Disabled ]]; then
+      [[ $(stat -c %C /usr/local/bin/greetd 2>/dev/null) == *xdm_exec_t* ]] && pass "greetd SELinux label (xdm_exec_t)" || bad "greetd lacks its SELinux label: sudo semanage fcontext -a -t xdm_exec_t /usr/local/bin/greetd && sudo restorecon /usr/local/bin/greetd"
+    fi
+    systemctl is-enabled -q greetd.service 2>/dev/null && pass "greetd enabled (from the next boot)" || wrn "greetd.service is not enabled"
+  fi
+  if ((fails)); then
+    warn "$fails problem(s) must be fixed before Shadow will work properly (see ✗ above); $warns warning(s)"
+    return 1
+  fi
+  if ((warns)); then say "All required checks passed ($warns warning(s) above)."; else say "All checks passed."; fi
+}
+
+if ((CHECK)); then trap - ERR; verify; exit $?; fi
+
+preflight
 case $FAM in
   arch) arch_install ;;
   *) rpm_install ;;
 esac
 
-export PATH="/opt/shadow-tui/bin:$PATH"
 say "Your account"
 run shadow setup --yes
 if origin="$(git -C "$SRC" remote get-url origin 2>/dev/null)" && [[ -n "$origin" ]]; then
@@ -310,12 +471,14 @@ fi
 if [[ "$GREETER" != no ]] && { [[ "$GREETER" == yes ]] || ask "Use the Shadow login screen (greetd; next boot)?"; }; then
   say "Login screen"
   if { [[ $FAM == arch ]] && arch_greeter; } || { [[ $FAM != arch ]] && rpm_greeter; }; then
-    run sudo shadow greeter enable
+    run sudo shadow greeter enable || warn "shadow greeter enable failed — the login screen is unchanged (shadow greeter status explains)"
   else
     info "login screen unchanged"
   fi
 fi
-say "Installed."
+verified=0
+if ((DRY)); then info "(dry run: verification skipped)"; elif verify; then verified=1; fi
+((verified || DRY)) && say "Installed." || warn "Installed, but the checks above found problems. After fixing them: ./install.sh --check"
 cat <<EOF
 
   ${c}Start${z}     pick "Shadow TUI Restricted" at login, or run ${a}shadow-session${z} on a TTY

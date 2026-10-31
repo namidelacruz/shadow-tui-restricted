@@ -43,6 +43,7 @@ git clone <this repo> && cd shadow-tui-restricted
 ./install.sh                    # dependencies, build, package, install, account setup
 ./install.sh --greeter --sec    # also the login screen and the optional security package
 ./install.sh --dry-run          # print every command it would run, change nothing
+./install.sh --check            # verify an existing installation (✓ / ~ / ✗ with fixes)
 ./install.sh --bootstrap git@github.com:you/shadow-state.git   # new machine: restore your state too
 ./install.sh --uninstall
 ```
@@ -58,6 +59,25 @@ What it does on each system:
 | Login screen (`--greeter`) | `greetd`, `terminus-font` | `greetd`, `greetd-selinux`, `terminus-fonts-console` | greetd built from source, run in the display-manager SELinux domain; or keep GDM | same as 10 |
 
 rustup is only used, after asking, when the distribution's Rust is older than 1.89. It installs into `~/.cargo`, and `rustup self uninstall` removes it.
+
+**Safeguards.** The installer stops before changing anything that would leave a half-working system:
+
+- **Pre-flight.** It checks the CPU architecture and refuses image-based Fedora Atomic / Silverblue. It also checks sudo access, at least 5 GB free (10 GB when niri or greetd are built from source), and on RHEL that the system is registered (CodeReady Builder needs it).
+- **Required packages.** All of them are checked against your enabled repositories before any is installed. A missing one is named, with the repository that normally provides it.
+- **Build requirements.** These are installed straight from the RPM recipe (`dnf builddep`), exactly as `rpmbuild` will check them.
+- **niri version.** niri must be at least 25.08, the release the generated config is validated against. An older package is upgraded, or replaced by a source build if you agree.
+- **Source builds.** Every binary built from source must run and resolve all its libraries before it is installed.
+- **greetd on RHEL.** A failed greetd build never ends the installation; your current login manager stays. Under enforcing SELinux, a greetd that couldn't get its display-manager label is not enabled, because it could not log you in.
+- **Verification.** The installation ends with a check, which you can also run any time with `./install.sh --check`. It looks at:
+  - the package and all 12 programs;
+  - niri and whether it accepts your generated config;
+  - the session entry;
+  - the lock screen's PAM stack;
+  - services, fonts, Mesa EGL and NetworkManager;
+  - SELinux labels;
+  - when enabled, the login screen (greetd, its user, its self-test, its SELinux label).
+
+  Each item shows ✓ / ~ / ✗ with the command that fixes it.
 
 Optional extras the repositories don't carry are skipped with a note: `age`, `gh`, `alsa-sof-firmware`, CJK fonts, the Terminus console font and so on. RHEL-family systems have no Terminus console font, so the login screen keeps the default console font size there.
 
