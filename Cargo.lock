@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "shadow"
-version = "7.2.1"
+version = "7.3.0"
 dependencies = [
  "shadow-lua",
  "shadow-niri",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-apps"
-version = "7.2.1"
+version = "7.3.0"
 dependencies = [
  "libc",
  "shadow-niri",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-bar"
-version = "7.2.1"
+version = "7.3.0"
 dependencies = [
  "libc",
  "shadow-niri",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-desktop"
-version = "7.2.1"
+version = "7.3.0"
 dependencies = [
  "libc",
  "shadow-lua",
@@ -654,11 +654,11 @@ dependencies = [
 
 [[package]]
 name = "shadow-greet"
-version = "7.2.1"
+version = "7.3.0"
 
 [[package]]
 name = "shadow-lua"
-version = "7.2.1"
+version = "7.3.0"
 dependencies = [
  "full_moon",
  "mlua",
@@ -666,18 +666,18 @@ dependencies = [
 
 [[package]]
 name = "shadow-niri"
-version = "7.2.1"
+version = "7.3.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "shadow-powerd"
-version = "7.2.1"
+version = "7.3.0"
 
 [[package]]
 name = "shadow-sec"
-version = "7.2.1"
+version = "7.3.0"
 
 [[package]]
 name = "shadow-term"
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-ui"
-version = "7.2.1"
+version = "7.3.0"
 dependencies = [
  "ab_glyph",
  "libc",

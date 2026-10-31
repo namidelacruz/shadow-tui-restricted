@@ -204,7 +204,7 @@ pub trait App {
     fn click(&mut self, _x: i32, _y: i32, _ctx: &mut Ctx) {}
     /// Wheel: positive = down, in lines.
     fn scroll(&mut self, _lines: i32, _ctx: &mut Ctx) {}
-    /// Called every `tick_ms` milliseconds when non-zero.
+    /// Called every `tick_ms` milliseconds. Read at start (0 = no timer); returning 0 later stops it.
     fn tick(&mut self, _ctx: &mut Ctx) {}
     fn tick_ms(&self) -> u64 {
         0
@@ -371,7 +371,11 @@ pub fn run(app: Box<dyn App>, messages: Option<Channel<String>>) -> Result<(), S
                 let mut ctx = Ctx::default();
                 sh.app.tick(&mut ctx);
                 sh.apply(ctx);
-                TimeoutAction::ToDuration(Duration::from_millis(sh.app.tick_ms().max(16)))
+                // 0 = the app no longer wants ticks: stop (never spin at the 16 ms floor)
+                match sh.app.tick_ms() {
+                    0 => TimeoutAction::Drop,
+                    t => TimeoutAction::ToDuration(Duration::from_millis(t.max(16))),
+                }
             })
             .map_err(|e| e.to_string())?;
     }

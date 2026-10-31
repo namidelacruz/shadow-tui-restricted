@@ -9,7 +9,10 @@
 //! While an update writes files no new desktop session can start; if one is cut off, it's offered
 //! here as "Recover interrupted update" (and recovered on its own at the next boot).
 //!
-//!   c  check      u  update      z  undo / recover      Esc  close      (or click the buttons)
+//! A policy-compliant update source is required (see `shadow update setup`): until there is one,
+//! only "Set up update source" is available; its rules are shown under the source line.
+//!
+//!   s  source     c  check      u  update      z  undo / recover      Esc  close      (or click)
 use shadow_ui::calloop::channel::{self, Sender};
 use shadow_ui::widgets::{button, chrome, footer, Input, Rect};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
@@ -25,12 +28,13 @@ enum Job {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Btn {
+    Setup,
     Check,
     Update,
     Undo,
     Close,
 }
-const BTNS: [Btn; 4] = [Btn::Check, Btn::Update, Btn::Undo, Btn::Close];
+const BTNS: [Btn; 5] = [Btn::Setup, Btn::Check, Btn::Update, Btn::Undo, Btn::Close];
 
 struct Upd {
     tx: Sender<String>,
@@ -53,6 +57,8 @@ struct Upd {
     scroll: usize,
     /// an update is running elsewhere / was interrupted (from `shadow update in-progress`)
     pending: Option<String>,
+    /// the update-source policy (offline rules): (level, name, detail)
+    policy: Vec<(String, String, String)>,
 }
 
 fn shadow() -> String {
@@ -102,11 +108,28 @@ fn wipe(s: &mut String) {
 }
 
 impl Upd {
+    fn policy_ok(&self) -> bool {
+        !self.policy.is_empty() && !self.policy.iter().any(|(l, _, _)| l == "fail")
+    }
+
+    fn load_policy(&mut self) {
+        let (_, o) = shadow_apps::cmd_out(&[&shadow(), "update", "policy", "--offline", "--porcelain"]);
+        self.policy = o
+            .lines()
+            .filter_map(|l| {
+                let (lv, r) = l.split_once(' ')?;
+                let (n, d) = r.split_once(' ').unwrap_or((r, ""));
+                ["pass", "warn", "fail"].contains(&lv).then(|| (lv.to_string(), n.to_string(), d.to_string()))
+            })
+            .collect();
+    }
+
     fn interrupted(&self) -> bool {
         self.pending.as_deref().is_some_and(|p| p.contains("interrupted"))
     }
 
     fn load_status(&mut self) {
+        self.load_policy();
         let (rc, o) = shadow_apps::cmd_out(&[&shadow(), "update", "in-progress"]);
         self.pending = (rc == 0).then(|| o.trim().to_string());
         let (_, o) = shadow_apps::cmd_out(&[&shadow(), "update", "status"]);
@@ -121,8 +144,9 @@ impl Upd {
 
     fn enabled(&self, b: Btn) -> bool {
         match b {
-            Btn::Check => self.busy.is_none(),
-            Btn::Update => self.busy.is_none() && self.pending.is_none() && self.status == "available" && self.reinstall.is_none(),
+            Btn::Setup => self.busy.is_none(),
+            Btn::Check => self.busy.is_none() && self.policy_ok(),
+            Btn::Update => self.busy.is_none() && self.policy_ok() && self.pending.is_none() && self.status == "available" && self.reinstall.is_none(),
             Btn::Undo => self.busy.is_none() && (self.pending.is_none() || self.interrupted()),
             Btn::Close => true,
         }
@@ -133,6 +157,8 @@ impl Upd {
             return;
         }
         match b {
+            // the wizard is interactive (it shows the deploy key to add): it runs in a terminal
+            Btn::Setup => shadow_apps::spawn("shadow-term --hold -e shadow update setup"),
             Btn::Check => self.start(Job::Check, None),
             Btn::Update | Btn::Undo => {
                 let job = if b == Btn::Update { Job::Apply } else { Job::Undo };
@@ -264,6 +290,7 @@ impl App for Upd {
         match k.sym {
             Keysym::Escape | Keysym::q => ctx.quit(),
             Keysym::c => self.press(Btn::Check, ctx),
+            Keysym::s => self.press(Btn::Setup, ctx),
             Keysym::u => self.press(Btn::Update, ctx),
             Keysym::z => self.press(Btn::Undo, ctx),
             Keysym::Left | Keysym::Right | Keysym::Tab => {
@@ -281,6 +308,22 @@ impl App for Upd {
                 ctx.redraw();
             }
             _ => {}
+        }
+    }
+
+    fn tick_ms(&self) -> u64 {
+        3000
+    }
+
+    /// While the source isn't set up yet (the wizard runs in its own terminal), re-read the policy.
+    fn tick(&mut self, ctx: &mut Ctx) {
+        if self.busy.is_some() || self.policy_ok() {
+            return;
+        }
+        let before = self.policy.clone();
+        self.load_status();
+        if self.policy != before {
+            ctx.redraw();
         }
     }
 
@@ -324,14 +367,40 @@ impl App for Upd {
         };
         kv(f, y, "installed  ", if self.installed.is_empty() { "?" } else { &self.installed });
         y += lh + f.px(2.0);
-        kv(f, y, "source     ", if self.source.is_empty() { "(not set — Settings → Updates)" } else { &self.source });
-        y += lh + f.px(12.0);
+        kv(f, y, "source     ", if self.source.is_empty() { "(required — press “Set up update source”)" } else { &self.source });
+        y += lh + f.px(4.0);
+        // the policy every fetch must satisfy (offline rules; access + privacy are checked on Check)
+        let mut px = x0;
+        for (lv, name, detail) in &self.policy {
+            let (mark, col) = match lv.as_str() {
+                "pass" => ("✓", th.green),
+                "warn" => ("!", th.amber),
+                _ => ("✗", th.crimson),
+            };
+            let item = format!("{mark} {name}  ");
+            let iw = f.text_w(&item, small, false);
+            if px + iw > w - pad {
+                px = x0;
+                y += slh;
+            }
+            f.text(px, y, &item, small, col, lv == "fail");
+            px += iw;
+            let _ = detail;
+        }
+        y += slh + f.px(2.0);
+        if let Some((_, name, detail)) = self.policy.iter().find(|(l, _, _)| l == "fail") {
+            let m = f.fit(&format!("{name}: {detail}"), small, false, w - 2 * pad - f.px(16.0));
+            f.text(x0, y, &m, small, th.crimson, false);
+            y += slh;
+        }
+        y += f.px(8.0);
 
         // buttons
         self.rects.clear();
         let mut bx = x0;
         for (i, b) in BTNS.iter().enumerate() {
             let label = match b {
+                Btn::Setup => if self.policy_ok() { "Update source…" } else { "Set up update source" },
                 Btn::Check => "Check for updates",
                 Btn::Update => "Update",
                 Btn::Undo => if self.interrupted() { "Recover interrupted update" } else { "Undo last update" },
@@ -374,6 +443,7 @@ impl App for Upd {
             (None, "up-to-date") => (th.green, format!("✓ {}", self.message)),
             (None, "error" | "not-configured") => (th.crimson, format!("✗ {}", self.message)),
             (None, "checking") => (th.cyan, self.message.clone()),
+            _ if !self.policy_ok() => (th.crimson, "An update source that meets the policy is required before anything can be checked.".into()),
             _ => (th.dim, "Nothing is checked automatically. Press “Check for updates” when you want to.".into()),
         };
         let hl = f.fit(&headline, pt, true, w - 2 * pad - f.px(16.0));
@@ -417,7 +487,7 @@ impl App for Upd {
             f.text(x0, y, &s, small, *c, false);
             y += slh;
         }
-        footer(f, "c check · u update · z undo · ←→ Enter or click buttons · wheel scroll · Esc close");
+        footer(f, "s source · c check · u update · z undo · ←→ Enter or click buttons · wheel scroll · Esc close");
     }
 }
 
@@ -442,6 +512,7 @@ fn main() {
         rects: vec![],
         scroll: 0,
         pending: None,
+        policy: vec![],
     };
     u.load_status();
     if let Err(e) = run(Box::new(u), Some(rx)) {

@@ -144,6 +144,42 @@ Every app renders at the exact fractional scale (`wp_fractional_scale_v1` + `wp_
 
 ## Updates
 
+### Update source (required)
+
+Updates come only from one repository you set up. Until it is set up and meets the policy below, nothing can be checked, fetched or built.
+
+`./install.sh` runs the setup:
+- it uses `--update-repo URL`, or this checkout's origin by default;
+- later, run `shadow update setup` again, or press **Set up update source** in the Update app.
+
+The setup does four things:
+
+1. It creates a dedicated SSH deploy key, `~/.config/shadow-state/update-deploy-key` (mode 600).
+2. It shows you the key so you can add it to the repository **read-only**. With `gh` logged in it can do this for you: `gh repo deploy-key add` adds keys read-only unless `--allow-write` is given. Otherwise: repository → Settings → Deploy keys → Add, and leave "Allow write access" unchecked.
+3. It pins the server's SSH host key. GitHub's published keys are built in. Any other server's fingerprint must be confirmed, interactively or with `--host-fingerprint SHA256:…`.
+4. It saves the repository, branch and auth method (no secret), then checks the policy.
+
+The policy (`shadow update policy` shows it; every fetch enforces it):
+
+| Rule | Default |
+|---|---|
+| Only ssh or https. http:// and git:// are refused. A local path is allowed as a mirror. | always |
+| No token or password in the URL or in `config.toml`. `credential.helper=store` (a plain-text token file) is refused too. | always |
+| Authentication: read-only deploy key (SSH), or your credential helper for https (`gh auth setup-git`, libsecret). Use a fine-grained token with read-only *Contents* access for this one repository. | `auth = "deploy-key"` |
+| Host key pinned; an unknown or changed key fails closed. | always (ssh) |
+| The repository must be private: a credential-free probe that succeeds means it's public, and updates are refused. | `require_private = true` |
+| History may not be rewritten: the new head must descend from the installed commit. | `allow_history_rewrite = false` |
+| Every new commit is signed by a key in `update-allowed-signers` (git's SSH allowed-signers format). | `require_signed = false` |
+
+Git runs isolated for updates:
+- No system or global git config and no `GIT_CONFIG_*` variables apply, so a `url.insteadOf` rewrite can't silently redirect the source.
+- Hooks, submodules and file:// are off (file:// stays on for a local mirror).
+- Every object received is fsck-checked, TLS verification is forced on, and nothing prompts.
+
+Fetching and building run as you. The administrator step only copies files that are already built.
+
+### Checking and installing
+
 Nothing checks for updates in the background. Open **Update** (`Mod+U`, or from the launcher) and:
 
 - **Check for updates** fetches your repository (Settings → Updates). It lists the new commits, the changed source files and which programs they affect.

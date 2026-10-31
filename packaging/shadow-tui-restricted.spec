@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        7.2.1
+Version:        7.3.0
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: side bar, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -21,7 +21,7 @@ BuildRequires:  gcc gcc-c++ make git pkgconf-pkg-config pam-devel libxkbcommon-d
 Requires:       mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig
 # the apps draw all text themselves: a monospace font must exist
 Requires:       dejavu-sans-mono-fonts
-Requires:       NetworkManager wpa_supplicant iproute util-linux kmod git-core wireplumber
+Requires:       NetworkManager wpa_supplicant iproute util-linux kmod git-core openssh-clients wireplumber
 # niri is the compositor: Fedora's own package, the yalter/niri COPR on EL10, or built from
 # source into /usr/local on EL9 by install.sh — hence a weak dependency
 Recommends:     niri
@@ -124,6 +124,10 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Sat Oct 31 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.3.0-1
+- required update source with a private-repository policy: read-only deploy key or credential
+  helper (no stored tokens), pinned host keys, private check, no history rewrites, optional
+  signed commits; isolated, hardened git for every update fetch; shadow update setup / policy
 * Sat Oct 31 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.2.1-1
 - update failsafe: no desktop session starts while an update writes files; interrupted updates
   are finished or reversed at boot (shadow-update-recover.service) before any login

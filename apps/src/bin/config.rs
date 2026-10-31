@@ -47,7 +47,7 @@ const PAGES: [(&str, &str); 9] = [
     ("Input", "keyboard layout and repeat"),
     ("Session", "idle lock and monitor power-off"),
     ("Power + NPU", "learning schedule, predictive tuning, modes"),
-    ("Updates + sync", "update source (open shadow-update or Mod+U to check) and the GitHub state repository"),
+    ("Updates + sync", "update source + its policy (set up: shadow update setup) and the GitHub state repository"),
     ("Security", "optional shadow-sec status (read-only)"),
 ];
 
@@ -90,6 +90,10 @@ fn rows(page: usize, outputs: &[String]) -> Vec<Row> {
         7 => vec![
             r("updates", "repo", "Update source (git URL)", Kind::Text, ""),
             r("updates", "branch", "Branch", Kind::Text, "main"),
+            r("updates", "auth", "Authentication (deploy key = read-only SSH key)", Kind::Choice(&["deploy-key", "credential-helper"]), "deploy-key"),
+            r("updates", "require_private", "Require a private repository", Kind::Bool, "true"),
+            r("updates", "require_signed", "Require signed commits (update-allowed-signers)", Kind::Bool, "false"),
+            r("updates", "allow_history_rewrite", "Allow force-pushed history", Kind::Bool, "false"),
             r("sync", "age_recipient", "secrets.age recipient (empty = ~/.ssh/id_ed25519.pub)", Kind::Text, ""),
         ],
         _ => vec![],

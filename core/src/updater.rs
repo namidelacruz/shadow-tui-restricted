@@ -66,36 +66,44 @@ pub fn conf(p: &Paths) -> (String, String, bool) {
     (repo, branch, false)
 }
 
+/// The update source must be set up and satisfy the policy (see policy.rs) before anything is
+/// checked, fetched or built. Warnings go to stderr.
 pub fn validate(repo: &str, branch: &str) -> Option<String> {
-    if repo.is_empty() {
-        return Some("no repository configured (Settings → Updates)".into());
+    let _ = (repo, branch);
+    let p = crate::policy::load();
+    match crate::policy::enforce(&p, true) {
+        Ok(warn) => {
+            for w in warn {
+                eprintln!("policy warning: {} — {}", w.name, w.detail);
+            }
+            None
+        }
+        Err(e) => Some(e),
     }
-    let schemes = ["https://", "http://", "ssh://", "git@", "file://", "/"];
-    if !schemes.iter().any(|s| repo.starts_with(s))
-        || repo.contains(char::is_whitespace)
-        || schemes.contains(&repo)
-    {
-        return Some(format!(
-            "repository must be an https://, ssh://, git@, file:// URL or a local path: '{repo}'"
-        ));
-    }
-    if branch.is_empty()
-        || branch.len() > 100
-        || branch.contains("..")
-        || !branch
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c))
-    {
-        return Some(format!("invalid branch name: '{branch}'"));
-    }
-    if sys::which("git").is_none() {
-        return Some("git is not installed".into());
-    }
-    None
+}
+
+fn pgit(dir: Option<&Path>, args: &[&str]) -> (i32, String, String) {
+    crate::policy::load().git(dir, args)
+}
+
+pub fn tty() -> bool {
+    stdin_is_tty()
+}
+
+/// Write a file only you can read (0600), atomically.
+pub fn write_private(p: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = p.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, p)
 }
 
 pub fn remote_head(repo: &str, branch: &str) -> Result<String, String> {
-    let (code, out, err) = sys::run(&["git", "ls-remote", repo, &format!("refs/heads/{branch}")]);
+    let (code, out, err) = pgit(None, &["ls-remote", repo, &format!("refs/heads/{branch}")]);
     if code != 0 {
         let text = if err.is_empty() { out } else { err };
         let lines: Vec<&str> = text.lines().collect();
@@ -181,34 +189,19 @@ fn sh(cmd: &[&str], cwd: Option<&Path>, env: &[(&str, String)]) -> i32 {
 
 fn fetch(repo: &str, branch: &str) -> bool {
     let s = src();
-    let sd = s.to_string_lossy().to_string();
-    if s.join(".git").is_dir() {
-        let url = sys::run(&["git", "-C", &sd, "remote", "get-url", "origin"]).1;
-        if url.trim() == repo
-            && sh(
-                &["git", "-C", &sd, "fetch", "--depth", "1", "origin", branch],
-                None,
-                &[],
-            ) == 0
-            && sh(
-                &["git", "-C", &sd, "reset", "--hard", "FETCH_HEAD"],
-                None,
-                &[],
-            ) == 0
-        {
-            sh(&["git", "-C", &sd, "clean", "-fdx", "-q"], None, &[]);
-            return true;
+    let ok = |r: (i32, String, String)| {
+        if r.0 != 0 {
+            eprint!("{}", r.2);
         }
+        r.0 == 0
+    };
+    if s.join(".git").is_dir() && pgit(Some(&s), &["remote", "get-url", "origin"]).1.trim() == repo && ok(pgit(Some(&s), &["fetch", "-q", "--depth", "1", "origin", branch])) && ok(pgit(Some(&s), &["reset", "-q", "--hard", "FETCH_HEAD"])) {
+        pgit(Some(&s), &["clean", "-fdx", "-q"]);
+        return true;
     }
     let _ = std::fs::remove_dir_all(&s);
     let _ = std::fs::create_dir_all(cache());
-    sh(
-        &[
-            "git", "clone", "--depth", "1", "--branch", branch, repo, &sd,
-        ],
-        None,
-        &[],
-    ) == 0
+    ok(pgit(None, &["clone", "-q", "--depth", "1", "--branch", branch, repo, &s.to_string_lossy()]))
 }
 
 pub fn installed() -> Option<(String, String)> {
@@ -384,6 +377,12 @@ pub fn run_update(p: &Paths, yes: bool, force: bool) -> i32 {
         println!("update: could not fetch the repository — nothing changed.");
         return 3;
     }
+    // shallow fetch: the signature rule applies to the head commit
+    let head = git(&src(), &["rev-parse", "HEAD"]).1.trim().to_string();
+    if let Err(e) = crate::policy::load().verify_history(&src(), "", &head, false) {
+        println!("update: {e}");
+        return 3;
+    }
     build_and_install(&src(), yes, &repo)
 }
 
@@ -454,27 +453,24 @@ pub fn main(p: &Paths, args: &[&str]) -> i32 {
             build_and_install(Path::new(dir), yes, &format!("local tree {dir}"))
         }
         ["rollback", ..] => rollback(yes),
+        // the update source: required, and set up with its private-repository policy
+        ["setup", rest @ ..] => crate::policy::setup(rest),
         ["set-repo", url, rest @ ..] => {
-            let branch = rest
-                .iter()
-                .find(|x| !x.starts_with('-'))
-                .map(|b| b.to_string())
-                .unwrap_or_else(|| conf(p).1);
-            if let Some(e) = validate(url, &branch) {
-                if !e.contains("git is not installed") {
-                    eprintln!("update: {e}");
-                    return 1;
-                }
+            let mut a = vec![*url];
+            if let Some(b) = rest.iter().find(|x| !x.starts_with('-')) {
+                a.extend(["--branch", b]);
             }
-            if st::set("updates", "repo", &st::q(url))
-                .and_then(|_| st::set("updates", "branch", &st::q(&branch)))
-                .is_err()
-            {
-                eprintln!("update: could not write {}", st::config_file().display());
-                return 1;
+            a.push("--yes");
+            crate::policy::setup(&a)
+        }
+        ["policy", rest @ ..] => {
+            let p = crate::policy::load();
+            let mut c = p.offline();
+            if !rest.contains(&"--offline") && !c.iter().any(|x| x.level == crate::policy::Level::Fail) {
+                c.extend(p.online());
             }
-            println!("update source: {url} ({branch})");
-            0
+            crate::policy::print(&c, rest.contains(&"--porcelain"));
+            if c.iter().any(|x| x.level == crate::policy::Level::Fail) { 1 } else { 0 }
         }
         ["status"] | [] => {
             let b = build_info(p);
@@ -502,7 +498,7 @@ pub fn main(p: &Paths, args: &[&str]) -> i32 {
             0
         }
         _ => {
-            eprintln!("usage: shadow update check | check-files [--porcelain] | apply [--porcelain] [--password-stdin] | undo\n                     | run [--yes] [--force] (full package rebuild) | install-local DIR | rollback | status | set-repo URL [BRANCH]");
+            eprintln!("usage: shadow update setup [URL] | policy [--offline] | check | check-files [--porcelain] | apply [--porcelain] [--password-stdin] | undo\n                     | run [--yes] [--force] (full package rebuild) | install-local DIR | rollback | status | set-repo URL [BRANCH]");
             2
         }
     }
@@ -561,10 +557,7 @@ fn out(porcelain: bool, kind: &str, msg: &str) {
 }
 
 fn git(dir: &Path, args: &[&str]) -> (i32, String) {
-    let d = dir.to_string_lossy().to_string();
-    let mut a = vec!["git", "-C", d.as_str()];
-    a.extend_from_slice(args);
-    let (c, o, e) = sys::run(&a);
+    let (c, o, e) = pgit(Some(dir), args);
     (c, if c == 0 { o } else { e })
 }
 
@@ -577,15 +570,7 @@ fn sync_source(repo: &str, branch: &str) -> Result<String, String> {
     if fresh {
         let _ = std::fs::remove_dir_all(&s);
         let _ = std::fs::create_dir_all(cache());
-        let (c, _, e) = sys::run(&[
-            "git",
-            "clone",
-            "-q",
-            "--branch",
-            branch,
-            repo,
-            &s.to_string_lossy(),
-        ]);
+        let (c, _, e) = pgit(None, &["clone", "-q", "--branch", branch, repo, &s.to_string_lossy()]);
         if c != 0 {
             return Err(format!("git clone failed: {}", e.trim()));
         }
@@ -729,6 +714,11 @@ pub fn check_files(p: &Paths, porcelain: bool) -> i32 {
         }
     };
     out(porcelain, "latest", &head);
+    if let Err(e) = crate::policy::load().verify_history(&src(), &base, &head, known_commit(&base)) {
+        out(porcelain, "status", "error");
+        out(porcelain, "message", &e);
+        return 1;
+    }
     let _ = std::fs::create_dir_all(&p.state);
     let _ = std::fs::write(last_check(p), sys::now().to_string());
     if head == base {
@@ -938,6 +928,9 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
         Ok(h) => h,
         Err(e) => return fail(&e),
     };
+    if let Err(e) = crate::policy::load().verify_history(&src(), &base, &head, known_commit(&base)) {
+        return fail(&e);
+    }
     if known_commit(&base) {
         if let Some(r) = reinstall_reason(&base, &head) {
             return fail(&format!(

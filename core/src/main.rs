@@ -18,6 +18,7 @@ mod rx;
 mod setup;
 mod st;
 mod sync;
+mod policy;
 mod updater;
 mod wifi;
 

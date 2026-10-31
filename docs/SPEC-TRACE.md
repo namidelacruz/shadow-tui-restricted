@@ -139,12 +139,24 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (76);
+- unit tests in every crate (82);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- the update source policy (7.3), with unit tests:
+  - URL rules and secret detection;
+  - hardened, isolated git;
+  - the pinned GitHub keys match GitHub's published fingerprints;
+  - a force-push is refused;
+  - unsigned commits are refused and signed ones accepted.
+- the update source policy end to end:
+  - with no source, nothing is checked;
+  - the setup wizard against GitHub created the deploy key, pinned the host keys and refused a URL with a token;
+  - a local mirror updated 1 file;
+  - a rewritten branch was refused.
+  - In this sandbox an authenticating proxy answers every GitHub HTTPS request, so the "private" probe can't give a real answer here.
 - the update failsafe (7.2.1):
   - unit tests cover a write failure partway through (fully reversed, unlocked), a power cut simulated with a stale marker (blocked until recovered, then restored) and the lock against concurrent updates;
   - `shadow-session` refused to start while the marker existed;

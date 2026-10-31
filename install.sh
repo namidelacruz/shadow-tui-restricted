@@ -9,6 +9,8 @@
 #  ./install.sh --bootstrap URL         new machine: install, then restore your state repo
 #  ./install.sh --dry-run               show every command it would run, change nothing
 #  ./install.sh --check                 only verify an existing installation (pass / warn / fail)
+#  ./install.sh --update-repo URL       the repository updates come from (required; default: this
+#                                       checkout's origin). A private repo gets a read-only deploy key.
 #  ./install.sh --uninstall [--purge]   remove the packages
 #  Options: -y/--yes (no questions) · --no-greeter · --niri-ref TAG (source builds, default v25.08)
 #
@@ -19,7 +21,7 @@
 # ════════════════════════════════════════════════════════════════════════
 set -Eeuo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-YES=0; GREETER=ask; SEC=0; UNINSTALL=0; PURGE=0; BOOT=""; DRY=0; CHECK=0
+YES=0; GREETER=ask; SEC=0; UNINSTALL=0; PURGE=0; BOOT=""; DRY=0; CHECK=0; UPDATE_REPO=""
 NIRI_REF=${NIRI_REF:-v25.08}
 GREETD_REF=${GREETD_REF:-0.10.3}
 RUST_MIN=1.89
@@ -42,6 +44,7 @@ while (($#)); do
     -y|--yes) YES=1 ;; --greeter) GREETER=yes ;; --no-greeter) GREETER=no ;; --sec) SEC=1 ;;
     --bootstrap) BOOT="${2:?URL}"; shift ;; --uninstall) UNINSTALL=1 ;; --purge) PURGE=1 ;;
     --dry-run) DRY=1 ;; --check) CHECK=1 ;; --niri-ref) NIRI_REF="${2:?TAG}"; shift ;;
+    --update-repo) UPDATE_REPO="${2:?URL}"; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;; *) die "unknown option: $1" ;;
   esac; shift
 done
@@ -412,7 +415,7 @@ rpm_install() {
   ensure_niri
   say "Runtime dependencies"
   dnf_require mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig dejavu-sans-mono-fonts \
-    NetworkManager wpa_supplicant iproute util-linux kmod git-core wireplumber pipewire
+    NetworkManager wpa_supplicant iproute util-linux kmod git-core openssh-clients wireplumber pipewire
   dnf_install_available brightnessctl xdg-desktop-portal-gnome libnotify alsa-sof-firmware alsa-ucm \
     jetbrains-mono-fonts-all google-noto-sans-cjk-fonts age gh iwd \
     terminus-fonts-console pipewire-pulseaudio
@@ -487,6 +490,8 @@ verify() {
   local u off=()
   for u in shadow-powerd shadow-netd shadow-healer shadow-update-recover; do systemctl is-enabled -q "$u.service" 2>/dev/null || off+=("$u"); done
   ((${#off[@]})) && wrn "services not enabled: ${off[*]} (sudo systemctl enable --now ${off[*]/%/.service})" || pass "system services enabled"
+  if shadow update policy --offline >/dev/null 2>&1; then pass "update source set up and within policy"
+  else bad "update source missing or outside policy (required): shadow update policy   →   shadow update setup"; fi
   if [[ -e /var/lib/shadow-tui/update-in-progress ]]; then
     bad "an update is in progress or was interrupted: the desktop is locked until it finishes (sudo shadow update recover)"
   else pass "no unfinished update"; fi
@@ -525,8 +530,22 @@ esac
 
 say "Your account"
 run shadow setup --yes
-if origin="$(git -C "$SRC" remote get-url origin 2>/dev/null)" && [[ -n "$origin" ]]; then
-  run shadow update set-repo "$origin" "$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)" || true
+# Required: the update source, with its private-repository policy (read-only deploy key, pinned
+# host key, private check). The wizard prints the deploy key to add; nothing secret is stored.
+say "Update source (required)"
+src_url=$UPDATE_REPO
+if [[ -z $src_url ]]; then
+  src_url=$(git -C "$SRC" remote get-url origin 2>/dev/null || true)
+  # never carry a token from a clone URL into the configuration
+  [[ $src_url =~ ^https?://[^/]*@ ]] && { warn "this checkout's origin URL contains credentials — not used"; src_url=""; }
+fi
+src_branch=$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)
+[[ $src_branch == HEAD ]] && src_branch=main
+setup_args=(); [[ -n $src_url ]] && setup_args+=("$src_url" --branch "$src_branch")
+((YES)) && setup_args+=(--yes)
+if ((DRY)); then run shadow update setup "${setup_args[@]}"
+elif ! shadow update setup "${setup_args[@]}"; then
+  warn "the update source is not ready yet: shadow-update stays locked until it is (Mod+U → \"Set up update source\", or: shadow update setup)"
 fi
 if [[ -n "$BOOT" ]]; then
   say "Restoring your state from $BOOT"
@@ -552,5 +571,5 @@ cat <<EOF
   ${c}Monitors${z}  Mod+Ctrl+arrows focus · Mod+Shift+Ctrl+arrows move · scale sets itself per monitor
   ${c}Bar${z}       Mod+Shift+B hide/show (right edge; follows focus when docked)
   ${c}Settings${z}  Mod+Comma  (shadow-config: live, rolled back if niri rejects it)
-  ${c}Update${z}    shadow update run   (rebuilds the $( [[ $FAM == arch ]] && echo "pacman package" || echo RPM ) from your repo)
+  ${c}Update${z}    Mod+U  (shadow-update: on demand; only changed files)   source: shadow update policy
 EOF

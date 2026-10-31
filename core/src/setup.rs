@@ -60,8 +60,16 @@ pub const DEFAULT_CONFIG: &str = r##"# Shadow TUI Restricted — ~/.config/shado
 # learning = true             # learns 7 days, relearns 7 days after each OS update
 
 [updates]
-# repo = ""
+# Required: the repository updates come from. Set it up with  shadow update setup  (or the
+# "Set up update source" button in shadow-update): it creates a read-only deploy key, pins the
+# server's host key and checks the policy below. Tokens/passwords are never stored here.
+# repo = "git@github.com:owner/repo.git"
 # branch = "main"
+# auth = "deploy-key"            # or "credential-helper" for https:// (gh / libsecret)
+# require_private = true         # refuse a repository that anyone can read
+# require_signed = false         # true: every new commit must be signed by a key in
+#                                #   update-allowed-signers (git ssh allowed-signers format)
+# allow_history_rewrite = false  # refuse force-pushed history
 # checks happen only when you press "Check for updates" in shadow-update
 
 [sync]
