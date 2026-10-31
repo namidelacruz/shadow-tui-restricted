@@ -8,6 +8,7 @@ license = "MIT"
 # std-only except the shared Lua sandbox (used by shadow-healer)
 [dependencies]
 shadow-lua = { path = "../lua" }
+shadow-niri = { path = "../niri" }
 
 [[bin]]
 name = "shadow"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Launcher
+Comment=Shadow TUI Restricted launcher (intent-ranked)
+Exec=shadow-launch
+Icon=view-app-grid
+Terminal=false
+NoDisplay=true
+Categories=System;

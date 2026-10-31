@@ -1,20 +1,23 @@
 # Shadow TUI Restricted — local PKGBUILD (build from this directory: makepkg -si, or ./install.sh)
 #
 # Split package:
-#   shadow-tui-restricted   the desktop: shadow-compositor (independent Smithay compositor, no niri),
-#                           shadow-term, sakura apps, shadow-powerd, shadow-netd, shadow-healer,
-#                           shadow-sync, greeter + lock screen
+#   shadow-tui-restricted   the desktop on niri: floating side bar (shadow-bar), dedicated 2D apps
+#                           (shadow-launch, -net, -config, -files, -lock, -term), session services
+#                           (shadow-sessiond, shadow-displayd), static console login (shadow-greet),
+#                           shadow-powerd (7-day learning schedule), shadow-netd, shadow-healer, shadow-sync
 #   shadow-tui-sec          OPTIONAL security subsystem (shadow-sec): nothing changes until enabled
 #
 # Isolated runtime: everything lives in /opt/shadow-tui (bin, lib, share) with commands linked into
-# /usr/bin. Binaries carry DT_RPATH=/opt/shadow-tui/lib, and the input/keyboard/seat libraries are
-# bundled there, so Arch updates to those libraries can't break the session. Mesa, libdrm, glibc,
-# PAM and libudev stay the system's: they must match the running kernel and system.
+# /usr/bin. Binaries carry DT_RPATH=/opt/shadow-tui/lib, and the keyboard library is bundled there.
+# Every Shadow app renders on the CPU into shared memory (no GPU API in the apps); niri does the
+# compositing with OpenGL ES. Mesa, libdrm, glibc and PAM stay the system's.
+# niri itself comes from Arch (extra/niri): Shadow talks to it only through `niri msg` and its
+# config file, so a niri update can't break Shadow's binaries.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
-pkgver=6.1.0
+pkgver=7.0.0
 pkgrel=1
-pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) — own Smithay compositor with an orbital ring, bezel HUD, greeter that blends into the session, power/NPU daemon, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
+pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on niri — floating side bar, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')
 url="https://github.com/namidelacruz/shadow-tui-restricted"
 license=('MIT')
@@ -34,36 +37,36 @@ build() {
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR="$srcdir/target"
   export RUSTFLAGS="-C link-arg=-Wl,-rpath,/opt/shadow-tui/lib -C link-arg=-Wl,--disable-new-dtags"
   cargo build --frozen --release --workspace
-  # sakura: plain rustc, no crates — it has to work when everything else is broken
-  rustc --edition 2021 -C opt-level=3 -C strip=symbols -C codegen-units=1 \
-        -o "$srcdir/sakura" "$_src/tui/src/main.rs"
 }
 
 check() {
   cd "$_src"
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR="$srcdir/target"
   cargo test --frozen --release --workspace
-  rustc --edition 2021 --test -o "$srcdir/sakura-tests" "$_src/tui/src/main.rs"
-  "$srcdir/sakura-tests"
-  "$srcdir/sakura" greeter --self-test --theme tactical >/dev/null
   for m in "$_src"/modules/*.lua; do "$srcdir/target/release/shadow" healer check "$m"; done
+  if command -v niri >/dev/null; then
+    "$srcdir/target/release/shadow-niri-gen" > "$srcdir/niri-check.kdl" && niri validate -c "$srcdir/niri-check.kdl"
+  fi
   for s in wifi-helper wifi-device-helper greeter-wrapper shadow-session shadow-tui.sleep; do sh -n "$_src/system/$s"; done
 }
 
 _bundle_libs() {
-  # input + keyboard + seat stack; never mesa/libdrm/glibc/pam/libudev
+  # keyboard library (the apps' only non-libc runtime dependency); never mesa/glibc/pam
   local lib p
-  for lib in libinput.so.10 libevdev.so.2 libmtdev.so.1 libwacom.so.9 libgudev-1.0.so.0 libseat.so.1 libxkbcommon.so.0; do
+  for lib in libxkbcommon.so.0; do
     p=$(ldconfig -p 2>/dev/null | awk -v l="$lib" '$1==l {print $NF; exit}')
     [ -n "$p" ] && install -Dm755 "$(readlink -f "$p")" "$pkgdir/opt/shadow-tui/lib/$lib"
   done
 }
 
 package_shadow-tui-restricted() {
-  depends=(mesa libinput seatd libxkbcommon pam systemd fontconfig ttf-jetbrains-mono-nerd
+  depends=(niri mesa libxkbcommon pam systemd fontconfig ttf-jetbrains-mono-nerd
            networkmanager wpa_supplicant iproute2 util-linux kmod git wireplumber brightnessctl)
   optdepends=(
     'greetd: the Shadow login screen (shadow greeter enable)'
+    'terminus-font: login screen text sized to the panel (ter-v24n on 2560x1600)'
+    'xdg-desktop-portal-gnome: screen sharing and file pickers under niri'
+    'noto-fonts-cjk: CJK text in the Shadow apps (loaded only when needed)'
     'age: encrypted Wi-Fi credentials in the synced state (secrets.age)'
     'github-cli: shadow-sync init --github (private repository)'
     'iwd: alternative Wi-Fi backend (shadow wifi iwd-provision)'
@@ -72,6 +75,7 @@ package_shadow-tui-restricted() {
     'alsa-ucm-conf: audio profiles for SoundWire laptops'
     'openvino-model-server: local model on the NPU for shadow ai / shadow-healer'
     'mako: desktop notifications (layer-shell)'
+    'libnotify: notify-send for Lua macro notifications'
     'shadow-tui-sec: the optional security subsystem'
   )
   provides=(shadow-network)
@@ -82,14 +86,13 @@ package_shadow-tui-restricted() {
 
   local o="$pkgdir/opt/shadow-tui" b
   install -d "$o/bin" "$o/lib" "$o/share" "$pkgdir/usr/bin"
-  for b in shadow-compositor shadowctl shadow-term shadow-powerd shadow; do
+  for b in shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-greet \
+           shadow-sessiond shadow-displayd shadow-term shadow-powerd shadow; do
     install -Dm755 "$srcdir/target/release/$b" "$o/bin/$b"
   done
-  install -Dm755 "$srcdir/sakura" "$o/bin/sakura"
   install -Dm755 "$_src/system/shadow-session" "$o/bin/shadow-session"
   ln -s shadow-powerd "$o/bin/shadow-audiod"
   for b in shadow-sync shadow-healer shadow-netd shadownet; do ln -s shadow "$o/bin/$b"; done
-  for b in shadow-config shadow-net shadow-files shadow-launch; do ln -s sakura "$o/bin/$b"; done
   for b in "$o"/bin/*; do ln -s "/opt/shadow-tui/bin/$(basename "$b")" "$pkgdir/usr/bin/$(basename "$b")"; done
 
   install -Dm755 "$_src/system/greeter-wrapper"    "$o/lib/greeter-wrapper"
@@ -97,7 +100,7 @@ package_shadow-tui-restricted() {
   install -Dm755 "$_src/system/wifi-device-helper" "$o/lib/wifi-device-helper"
   [ "$_bundle" = 1 ] && _bundle_libs
 
-  cp -r "$_src/share/themes" "$_src/share/hw" "$_src/share/shell" "$o/share/"
+  cp -r "$_src/share/hw" "$_src/share/shell" "$o/share/"
   install -d "$o/share/modules" && install -m644 "$_src"/modules/*.lua "$o/share/modules/"
   install -Dm644 "$_src/README.md"          "$o/share/doc/README.md"
   install -Dm644 "$_src/docs/SPEC-TRACE.md" "$o/share/doc/SPEC-TRACE.md"
@@ -118,7 +121,7 @@ package_shadow-tui-restricted() {
   install -Dm644 "$_src/system/org.shadownetwork.wifi.policy" "$pkgdir/usr/share/polkit-1/actions/org.shadownetwork.wifi.policy"
   install -Dm644 "$_src/system/pam-shadow-lock"     "$pkgdir/etc/pam.d/shadow-lock"
   install -Dm644 "$_src/system/shadow-tui.desktop"  "$pkgdir/usr/share/wayland-sessions/shadow-tui.desktop"
-  for d in shadow-term shadow-config shadow-files shadow-net shadow-drawer; do
+  for d in shadow-term shadow-config shadow-files shadow-net shadow-launch; do
     install -Dm644 "$_src/system/$d.desktop" "$pkgdir/usr/share/applications/$d.desktop"
   done
   install -Dm644 /dev/stdin "$pkgdir/etc/shadow-tui/netd.toml" <<'EOF'
@@ -135,10 +138,11 @@ EOF
 mode = "approve"
 EOF
   install -Dm644 /dev/stdin "$pkgdir/etc/shadow-tui/greeter.conf" <<'EOF'
-# Shadow TUI Restricted login screen — managed by `shadow greeter …`
-# warning=<text above the login fields>   (empty = none; absent = default notice)
-# default_user=
-# default_session=shadow
+# Shadow TUI Restricted login screen (shadow-greet) — managed by `shadow greeter …`
+session=shadow-tui
+console_font=auto
+# title=SHADOW TUI // RESTRICTED
+# warning=<text in the login box>   (empty = none; absent = AUTHORIZED ACCESS ONLY)
 EOF
   install -dm755 "$pkgdir/var/lib/shadow-tui" "$pkgdir/var/lib/shadow-powerd"
   install -dm755 "$pkgdir/var/cache/shadow-tui-greeter"

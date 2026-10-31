@@ -1,85 +1,142 @@
 # Shadow TUI Restricted
 
-A keyboard-first tactical desktop for Arch Linux, built to the clean-room specification CR-SPEC-SHADOW-001 and tuned for the Dell 14 Plus (2560×1600 panel, Lunar Lake, Intel NPU).
+A keyboard-first tactical desktop for Arch Linux, built to the clean-room specification CR-SPEC-SHADOW-001 and tuned for the Dell 14 Plus (2560×1600 panel, Lunar Lake, Arc 140V, Intel NPU).
 
-It has its own Wayland compositor, written from scratch on Smithay, with no niri code. Windows live on an orbital ring around a centre stage, and a bezel HUD shows the machine's state. The login screen is drawn by the same compositor, so it blends into the session. Around that sit a power daemon, a Wi-Fi self-repair daemon, a sandboxed self-correcting Lua layer and GitHub state sync. The security subsystem is a separate, optional package.
+Version 7 runs on **niri** as the compositor. Shadow talks to niri only through its public interfaces (`niri msg --json` and its config file), so niri comes from Arch and updates on its own. On top sit:
 
-`docs/SPEC-TRACE.md` lists, requirement by requirement, what is implemented as specified, what is implemented differently and what is not implemented.
+- a floating information bar on the right edge;
+- every feature as its own Rust application with a 2D interface;
+- scaling that sets itself per monitor and corrects the text size when it can't;
+- a static console login in the style of ly;
+- a power daemon whose habit model learns for a week, relearns for a week after every OS update, then keeps adapting.
+
+The Wi-Fi self-repair daemon, the sandboxed self-correcting Lua layer and GitHub state sync carry over. The security subsystem is a separate, optional package.
+
+Version 6, with its own Smithay compositor and orbital ring, stays on the `v6` branch. `docs/SPEC-TRACE.md` lists, requirement by requirement, what is implemented as specified, what differs, and where you changed the spec.
 
 ## Components
 
 | Component | What it is |
 |---|---|
-| `shadow-compositor` | The display server: Smithay + DRM/KMS + libinput (`--winit` runs nested). Orbital ring layout, tactical GLSL shaders (floor grid, obsidian glass plate, wireframe nodes, globe), bezel HUD, keyboard-first input with pointer masking, damage-only rendering (0 FPS when idle), lock screen (PAM), greeter mode (greetd), LuaJIT behaviour modules, control socket. |
-| `shadowctl` | Control and inspection: `state`, `action focus-next`, `spawn`, `lock`, `refresh 60`, `config-reload`, `lua-reload`. |
+| `shadow-bar` | The floating side bar (layer-shell, right edge). It shows the monitor and scale, workspace, focused app, NPU state, sync, battery and watts, panel Hz, package °C and profile, audio DSP, Wi-Fi SSID/dBm/EAP, Lua widgets and the time. It sits on the laptop panel; when docked it follows the monitor that has focus. `Mod+Shift+B` hides it. |
+| `shadow-launch` | Launcher. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
+| `shadow-net` | Wi-Fi: networks, UC-Secure and eduroam setup, self-repair, with a live EAP/TLS log. |
+| `shadow-config` | Live settings matrix over `config.toml`. Changes apply immediately; if niri rejects one, it is rolled back. |
+| `shadow-files` | Three-column file manager (parent · current · preview). |
+| `shadow-lock` | Session lock (ext-session-lock): one static screen per monitor, PAM. |
 | `shadow-term` | The terminal (amber/cyan, HUD strip, command blocks). |
-| `sakura` | The text apps: `shadow-config` (live settings matrix), `shadow-net`, `shadow-files`, `shadow-launch`, plus the drawer and the text greeter fallback. |
-| `shadow-powerd` | Power daemon (root): platform profile, EPP, RAPL PL1/PL2, charge limits, kernel guard, predictive tuning from compositor telemetry, the 20 % memory ceiling. As `shadow-audiod`: Lunar Lake audio initialiser. |
-| `shadow` | System tools. As `shadow-netd`: Wi-Fi self-repair daemon. As `shadow-sync`: state + GitHub sync. As `shadow-healer`: Lua self-correction. Also `setup`, `greeter`, `wifi`, `ai`, `update`. |
-| `shadow-sec` | Optional package `shadow-tui-sec`. Security modules you enable one at a time. |
+| `shadow-greet` | Static console login for greetd, with no animation, power buttons or command hints. The console font is sized to the panel. |
+| `shadow-sessiond` | Session event hub. It turns niri's event stream into telemetry for shadow-powerd, hosts the Lua layer (window rules, bar widgets, key macros) and records per-app memory. |
+| `shadow-displayd` | Monitors: automatic scale per monitor, text-size correction, 120/60 Hz on AC/battery, dock mode on lid close, idle lock and monitor power-off. |
+| `shadow-powerd` | Power daemon (root): platform profile, EPP, RAPL PL1/PL2, charge limits, kernel guard, the learning schedule and predictive tuning, and the 20 % memory ceiling. As `shadow-audiod`: the Lunar Lake audio initialiser. |
+| `shadow` | System tools. As `shadow-netd`: the Wi-Fi self-repair daemon. As `shadow-sync`: state and GitHub sync. As `shadow-healer`: Lua self-correction. Also `setup` (including `setup niri`), `greeter`, `wifi`, `ai` and `update`. |
+| `shadow-sec` | The optional package `shadow-tui-sec`: security modules you enable one at a time. |
+
+Every Shadow app renders on the CPU into shared memory and repaints only when something it shows changes, so an idle desktop draws 0 frames. Each one uses a few MB (the bar about 7 MB, a terminal about 20–30 MB). No app uses a GPU API. niri composites with OpenGL ES, and the whole session is pinned to OpenGL. The Arc 140V runs on Intel's `xe` kernel driver with Mesa `iris`; GTK and Qt apps are kept off Vulkan.
 
 ## Install
 
 ```bash
 git clone <this repo> && cd shadow-tui-restricted
-./install.sh                    # builds the split package, installs it to /opt/shadow-tui, sets up your account
+./install.sh                    # installs niri if needed, builds the split package into /opt/shadow-tui, sets up your account
 ./install.sh --greeter --sec    # also the login screen and the optional security package
 ./install.sh --bootstrap git@github.com:you/shadow-state.git   # new machine: restore your state too
 ```
 
 After that, pick **Shadow TUI Restricted** at the login screen, or run `shadow-session` from a TTY.
 
-**Upgrading from Shadow Network or NETDIVE.** The package replaces both. The niri fork, the Python engine and the GTK app are removed, and the old services are disabled. `shadow setup` moves configs that the old engine generated (niri, waybar, mako, swaylock, foot, yazi, fuzzel) into `~/.local/state/shadow-tui/retired-*` and keeps your update source, terminal and AI settings.
+Shadow's niri config is generated into `~/.config/shadow-state/niri.kdl`, and the session starts niri with `-c`. A plain niri setup in `~/.config/niri` is never touched.
+
+**Upgrading from 6.x.** The orbital-ring compositor, `shadowctl` and the `sakura` text apps are replaced. Your `config.toml` keeps working: old keys are ignored and new ones have defaults. Run `sudo shadow greeter enable` once to switch the login screen.
 
 ## Keys
 
 | Keys | Action |
 |---|---|
-| `Mod+Tab` / `Mod+J` · `Mod+Shift+Tab` / `Mod+K` | rotate the next / previous ring window into the centre (120 ms) |
-| `Mod+[` / `Mod+]` | centre width preset 45 / 65 / 85 % |
-| `Mod+F` | fullscreen between the HUD bars; again restores the preset |
-| `Mod+Return` `Mod+D` `Mod+A` `Mod+E` `Mod+N` | terminal, launcher, drawer, files, network |
-| `Mod+Shift+,` | shadow-config |
-| `Mod+H` | hide or show the HUD |
+| `Mod+Tab` / `Mod+J` · `Mod+Shift+Tab` / `Mod+K` | focus the next / previous window; the focused window is always centered (120 ms) |
+| `Mod+[` / `Mod+]` | width preset 45 / 65 / 85 % |
+| `Mod+F` · `Mod+Shift+F` | full width (the bar stays visible) · true fullscreen |
+| `Mod+Return` `Mod+Space` `Mod+E` `Mod+N` `Mod+Comma` | terminal, launcher, files, network, settings |
+| `Mod+Ctrl+arrows` · `Mod+Shift+Ctrl+arrows` | focus another monitor · move the window there |
+| `Mod+1…9` · `Mod+Shift+1…9` | workspace · move the window to a workspace |
+| `Mod+O` | overview |
+| `Mod+Shift+B` | hide / show the side bar |
 | `Mod+Alt+L` | lock |
 | `Mod+Shift+Backspace` | revert the healer's last automated fix |
 | `Mod+Q` · `Mod+Shift+E` | close · quit the session |
 
-`Mod` is Super. Set `[input] modifier = "alt"` to use Alt instead. Change any bind in `[binds]` of `config.toml`, or remove one with `"none"`. Lua modules can add binds.
+Media and brightness keys also work on the lock screen. Lua modules can add key macros; the core binds always take precedence. The pointer hides while you type and after 3 s idle.
 
-**Pointer.** The pointer only reaches centre windows listed in `[input] pointer_apps` (browsers, GIMP, Blender, …) or tagged by a Lua rule. Everywhere else it is ignored, so it costs no wakeups.
+## Scaling and monitors
+
+`shadow-displayd` gives every monitor the scale that suits its real pixel density as soon as it is connected. It uses quarter steps, with a closer viewing distance assumed for laptop panels.
+
+| Monitor | Scale |
+|---|---|
+| Dell 14 Plus panel | 1.5 |
+| 27" 4K | 1.5 |
+| 32" 4K | 1.25 |
+| 27" 1440p | 1.0 |
+| 24" 1080p | 1.0 |
+
+To pin a different scale, set it in `[display.scale]`, for example `"DP-1" = 1.25`, or in shadow-config → Displays.
+
+If the scale a monitor ends up with still differs from the ideal (a pinned value, an EDID quirk, a compositor that ignores the request), the text size is corrected instead:
+
+- Shadow apps do it themselves.
+- GTK apps get `text-scaling-factor`.
+
+Every app renders at the exact fractional scale (`wp_fractional_scale_v1` + `wp_viewporter`), so text stays sharp at 1.25 or 1.5. `shadow-displayd status` shows what was decided for each monitor.
+
+**Dock mode.** Closing the lid with an external monitor on turns the panel off instead of locking, and opening it turns the panel back on. The side bar moves to whichever monitor has focus.
 
 ## Configuration
 
-Settings live in `~/.config/shadow-state/config.toml`. `shadow setup` writes every default as a comment. Edit the file directly, or use `shadow-config` (`Mod+Shift+,`), which applies each change live and rolls it back if the compositor rejects it. A broken file never stops the desktop: the defaults are used and the HUD shows `CONFIG ERROR`.
+Settings live in `~/.config/shadow-state/config.toml`. `shadow setup` writes every default as a comment. Edit the file, or use `shadow-config` (`Mod+Comma`), which applies each change live.
 
-The main sections:
+The sections:
 
-- `[layout]`: presets, height and ring geometry;
-- `[look]`: amber, cyan, crimson, obsidian, plate/node opacity, blur, grid, scale (1.5) and font;
-- `[display]`: `refresh_ac = 120`, `refresh_battery = 60`, and `refresh_policy` (`auto`, `powerd`, `ac` or `battery`);
-- `[hud]`, `[lock]` and `[memory]`;
-- `[updates]` and `[sync]`.
+- `[layout]`: presets, default width, gaps, transition time.
+- `[look]`: colours, opacity, font, text size.
+- `[display]`: refresh policy, refresh rates and `[display.scale]` pins.
+- `[bar]`: width.
+- `[input]`: XKB layout and options, key repeat.
+- `[session]`: lock and monitor-off timeouts.
+- `[memory]`, `[power]`, `[updates]` and `[sync]`.
+
+Layout, look and input become niri's config through `shadow setup niri`. niri validates the result before it replaces the running config; a rejected change is not applied.
 
 ## Login screen
 
 ```bash
-sudo pacman -S greetd && sudo shadow greeter enable    # takes effect at the next boot
-shadow greeter preview                                 # try it now (inside the session: nested window)
+sudo pacman -S greetd terminus-font && sudo shadow greeter enable   # takes effect at the next boot
+shadow greeter preview                                              # try it in any terminal (password: shadow)
 ```
 
-greetd runs `/opt/shadow-tui/lib/greeter-wrapper`. That starts `shadow-compositor --greeter`, which falls back to the text greeter (F2 there opens a rescue shell), which falls back to agreety. When you log in, the globe collapses into the floor grid. That final frame is the session compositor's first frame, so the login blends into the desktop instead of cutting to it.
+greetd runs `/opt/shadow-tui/lib/greeter-wrapper`, which starts `shadow-greet` on the console. It shows one static box with two fields, login and password, and an AUTHORIZED ACCESS ONLY line. It has no clock, animation, session menu, power buttons or command hints.
+
+The console font is chosen from the panel's EDID, so the box is the same physical size on any screen: `ter-v24n` on the 2560×1600 panel, `ter-v16n` on a 1080p screen. Set `console_font` in `/etc/shadow-tui/greeter.conf` to `off` or to a font name to override it. If the greeter can't start, greetd's own `agreety` prompt appears instead.
 
 ## Power and the NPU
 
-`shadow-powerd status | mode | charge | rapl | memory | kernel | audio | npu`
+`shadow-powerd status | mode | learn | charge | rapl | memory | kernel | audio | npu`
 
-- On battery the panel runs at 60 Hz; on AC at 120 Hz. The compositor performs the DRM mode change.
-- Every focus change sends the 32-byte telemetry record from the spec. The daemon learns how much CPU each app class really uses.
-  - Light work on battery: PL1 9 W, EPP `power`, profile `cool`.
-  - Heavy work: the firmware limits come back before the load arrives.
-- The learner is a per-class statistical table that runs on the CPU in microseconds. The NPU is reserved for the local language model (`shadow ai`, `shadow-healer`).
-- **Memory ceiling.** The daemons (system `shadow.slice`) plus the compositor and TUI apps (user `shadow.slice`) are capped at 20 % of RAM in total. Everything you launch runs in `app.slice`.
+**Learning schedule.**
+
+- **First week.** For the first 7 days the model only watches and fits quickly. Power stays on the firmware defaults plus the AC/battery policy, and the bar shows `LEARNING d/7`.
+- **After the week.** Its predictions drive the power settings:
+  - light work on battery: PL1 9 W, EPP `power`, profile `cool`;
+  - heavy work: the firmware limits come back before the load arrives.
+- **Dynamic self-learning.** Learning continues slowly, and apps it hasn't seen still learn fast.
+- **OS update.** A completed `pacman -Syu` or a new kernel starts a fresh 7-day relearn (`reason: os update`). Installing a single package does not.
+- **Drift.** If predictions keep missing (error above 25 % over 40+ samples), a 2-day relearn starts.
+- **Commands.** `shadow-powerd learn` shows where it is; `shadow-powerd learn --relearn` starts a fresh week.
+
+**How it works.** Every focus change in niri sends the spec's 32-byte telemetry record. The model is a per-app statistical table that runs on the CPU in microseconds. The NPU is reserved for the local language model (`shadow ai`, `shadow-healer`).
+
+**Refresh rate.** The panel runs at 60 Hz on battery and 120 Hz on AC. `shadow-displayd` switches the mode through niri.
+
+**Memory ceiling.** niri and the Shadow apps (user `shadow.slice`) plus the daemons (system `shadow.slice`) are capped at 20 % of RAM in total. Everything you launch runs in `app.slice`.
 
 ## Wi-Fi (UC-Secure / eduroam)
 
@@ -97,7 +154,7 @@ The root daemon `shadow-netd` keeps the card usable and repairs failed connectio
 - ARP flush and lease renew;
 - connected but no internet: DNS-over-TLS fallback.
 
-Password failures are never retried more than once. The HUD shows the SSID, signal (dBm) and EAP/TLS state. For the iwd backend, `shadow wifi iwd-provision` writes the `.8021x` files.
+Password failures are never retried more than once. The side bar shows the SSID, signal (dBm) and EAP/TLS state, and `shadow-net` streams each connection's EAP/TLS phases live. For the iwd backend, `shadow wifi iwd-provision` writes the `.8021x` files.
 
 ## Self-correction
 
@@ -128,7 +185,7 @@ The repository holds:
 - `secrets.age` (Wi-Fi credentials, encrypted with age to your SSH key);
 - package and service lists.
 
-Plaintext secrets are refused by a scanner. The HUD shows the sync state.
+Plaintext secrets are refused by a scanner. The side bar shows the sync state.
 
 ## Optional security subsystem
 
@@ -145,21 +202,31 @@ Each module states what it actually enforces. The spec items it cannot honestly 
 ## Layout of this repository
 
 ```
-compositor/   shadow-compositor + shadowctl (Smithay)
-lua/          shared LuaJIT sandbox, AST policy, input sanitiser
-powerd/       shadow-powerd / shadow-audiod (std-only)
-core/         shadow / shadow-netd / shadow-sync / shadow-healer
-sec/          shadow-sec (optional package)
-term/         shadow-term
-tui/          sakura (std-only, built with plain rustc)
-modules/      default Lua behaviour modules
-system/       units, slices, session, greeter wrapper, hooks, PAM
-share/        themes, hardware tables, shell integration
-docs/         SPEC-TRACE.md
+ui/        shadow-ui: the shared 2D toolkit (windows, layer panels, lock surfaces, fractional scale, text correction)
+bar/       shadow-bar
+apps/      shadow-launch, shadow-net, shadow-config, shadow-files, shadow-lock
+desktop/   shadow-sessiond, shadow-displayd
+niri/      niri IPC client (niri msg --json), event-stream model, config generator
+greet/     shadow-greet (static console login, no dependencies)
+term/      shadow-term
+powerd/    shadow-powerd / shadow-audiod (learning schedule in schedule.rs)
+core/      shadow / shadow-netd / shadow-sync / shadow-healer
+lua/       shared LuaJIT sandbox, AST policy, input sanitiser
+sec/       shadow-sec (optional package)
+modules/   default Lua behaviour modules
+system/    units, slices, session, greeter wrapper, hooks, PAM, desktop entries
+share/     hardware tables, shell integration
+docs/      SPEC-TRACE.md
 ```
 
-`cargo test --workspace` plus `rustc --test tui/src/main.rs` run the unit tests. `makepkg` runs them too, and refuses to package if any fail.
+`cargo test --workspace` runs the unit tests. `makepkg` runs them too, validates the generated niri config with `niri validate`, and refuses to package if anything fails.
 
 ## Licences
 
-The project is MIT. Third-party crates keep their own licences: Smithay and mlua/LuaJIT are MIT; fontdue is MIT/Apache-2.0; full_moon is MPL-2.0.
+The project is MIT. Third-party crates keep their own licences:
+
+- smithay-client-toolkit, mlua/LuaJIT and ab_glyph: MIT;
+- fontdue: MIT/Apache-2.0;
+- full_moon: MPL-2.0.
+
+niri (GPL-3.0) is a separate program that Shadow runs and configures; none of its code is part of this repository.

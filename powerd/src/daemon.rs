@@ -76,7 +76,13 @@ struct State {
     last_apply: Instant,
     model: crate::predict::Model,
     last_learn: Option<Instant>,
+    sched: crate::schedule::Schedule,
+    os_checked: Option<(Instant, Option<std::time::SystemTime>)>,
     pl: String,
+}
+
+fn sched_path() -> PathBuf {
+    sys::p("var/lib/shadow-powerd/schedule.state")
 }
 
 fn learn_path() -> PathBuf {
@@ -179,17 +185,21 @@ impl State {
         let _ = sys::atomic_write(&state_path(), &json);
         let refresh = if src.ac { self.conf.refresh_ac } else { self.conf.refresh_battery };
         run_state("power.state", &format!("ac={}\nmode={}\nrefresh={refresh}\npl={}\n", src.ac as u8, self.mode, self.pl));
-        let learning = self.last_learn.map(|t| t.elapsed() < Duration::from_secs(10)).unwrap_or(false);
-        run_state("npu.state", &format!("state={}\nbackend=cpu-statistical\nclasses={}\n", if learning { "learning" } else { "idle" }, self.model.table.len()));
+        let npu = match self.sched.progress(sys::now()) {
+            Some((day, days, why)) => format!("state=learning\nday={day}\ndays={days}\nreason={why}\n"),
+            None => "state=idle\nphase=learned\n".to_string(),
+        };
+        run_state("npu.state", &format!("{npu}backend=cpu-statistical\nclasses={}\n", self.model.table.len()));
     }
 
     /// a 32-byte focus record from the compositor
     fn telemetry(&mut self, rec: crate::predict::Record) {
         use crate::predict::Load;
-        if let Some((class, util)) = self.model.focus(rec.class, crate::predict::cpu_times()) {
-            self.learned(class, util);
+        if let Some((class, util, prior)) = self.model.focus(rec.class, crate::predict::cpu_times()) {
+            self.learned(class, util, prior);
         }
-        if !self.conf.learning {
+        // while (re)learning, the model only watches: no power decisions until it has a week
+        if !self.conf.learning || !self.sched.feed_forward() {
             return;
         }
         let ac = self.src.as_ref().map_or(rec.ac, |s| s.ac);
@@ -211,18 +221,71 @@ impl State {
         }
     }
 
-    fn learned(&mut self, class: u32, util: f64) {
+    fn learned(&mut self, class: u32, util: f64, prior: Option<f64>) {
         self.last_learn = Some(Instant::now());
+        if let Some(p) = prior {
+            if let Some(msg) = self.sched.prediction_error(sys::now(), (util - p).abs()) {
+                sys::log_line(&log_path(), &msg);
+                self.hint = None;
+            }
+            self.save_sched();
+        }
         let _ = std::fs::create_dir_all(learn_path().parent().unwrap());
         let _ = sys::atomic_write(&learn_path(), &self.model.save());
         sys::log_line(&log_path(), &format!("learned: class {class:08x} used {:.0}% CPU", util * 100.0));
         self.write_state();
     }
 
+    fn save_sched(&self) {
+        let _ = std::fs::create_dir_all(sched_path().parent().unwrap());
+        let _ = sys::atomic_write(&sched_path(), &self.sched.save());
+    }
+
+    /// OS fingerprint when pacman.log changes (or hourly); phase completion every poll.
+    fn check_schedule(&mut self) {
+        let mt = std::fs::metadata(sys::p("var/log/pacman.log")).and_then(|m| m.modified()).ok();
+        let due = match self.os_checked {
+            None => true,
+            Some((t, m)) => m != mt || t.elapsed() >= Duration::from_secs(3600),
+        };
+        let os = if due {
+            self.os_checked = Some((Instant::now(), mt));
+            crate::schedule::os_fingerprint()
+        } else {
+            String::new()
+        };
+        let was = self.sched.feed_forward();
+        self.model.stable = was;
+        if let Some(msg) = self.sched.tick(sys::now(), &os) {
+            sys::log_line(&log_path(), &msg);
+            self.save_sched();
+            if was && !self.sched.feed_forward() && self.hint.take().is_some() {
+                self.apply(false); // drop predicted settings while relearning
+            }
+            self.model.stable = self.sched.feed_forward();
+            self.write_state();
+        } else if due {
+            self.save_sched();
+        }
+    }
+
     fn handle(&mut self, line: &str) -> String {
         let w: Vec<&str> = line.split_whitespace().collect();
         match w.as_slice() {
             ["status"] => std::fs::read_to_string(state_path()).unwrap_or_else(|_| "{}".into()).trim().to_string(),
+            ["relearn"] => {
+                self.sched.relearn(sys::now(), crate::schedule::LEARN_DAYS, "manual");
+                self.model.stable = false;
+                self.hint = None;
+                self.save_sched();
+                self.apply(false);
+                self.write_state();
+                format!("ok relearning for {} days", crate::schedule::LEARN_DAYS)
+            }
+            ["learning"] => match self.sched.progress(sys::now()) {
+                Some((d, n, why)) => format!("ok learning day {d}/{n} ({why}); predictions apply after day {n}"),
+                None => "ok learned; adapting continuously, relearns for 7 days after an OS update".into(),
+            },
             ["mode", m, rest @ ..] if power::valid_mode(m) => {
                 let ac = self.src.as_ref().map_or(true, |s| s.ac);
                 let keep = rest.first() == Some(&"keep");
@@ -309,6 +372,8 @@ pub fn run() -> Result<(), String> {
         last_apply: Instant::now() - Duration::from_secs(3600),
         model: crate::predict::Model::load(&std::fs::read_to_string(learn_path()).unwrap_or_default()),
         last_learn: None,
+        sched: crate::schedule::Schedule::load(&std::fs::read_to_string(sched_path()).unwrap_or_default(), sys::now(), &crate::schedule::os_fingerprint()),
+        os_checked: None,
         pl: String::new(),
     };
     if let Some(m) = memory_governance() {
@@ -347,9 +412,10 @@ pub fn run() -> Result<(), String> {
             }
             st.src = Some(src);
             st.apply(changed);
-            if let Some((class, util)) = st.model.tick(crate::predict::cpu_times()) {
-                st.learned(class, util);
+            if let Some((class, util, prior)) = st.model.tick(crate::predict::cpu_times()) {
+                st.learned(class, util, prior);
             }
+            st.check_schedule();
             loops += 1;
             if max_loops.map_or(false, |m| loops >= m) {
                 return Ok(());

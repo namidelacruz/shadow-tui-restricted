@@ -1,0 +1,31 @@
+[package]
+name = "shadow-apps"
+version = "7.0.0"
+edition = "2021"
+description = "Shadow TUI Restricted applications, each its own 2D Wayland app: launcher, network, config, files, lock"
+license = "MIT"
+
+[[bin]]
+name = "shadow-launch"
+path = "src/bin/launch.rs"
+
+[[bin]]
+name = "shadow-config"
+path = "src/bin/config.rs"
+
+[[bin]]
+name = "shadow-net"
+path = "src/bin/net.rs"
+
+[[bin]]
+name = "shadow-files"
+path = "src/bin/files.rs"
+
+[[bin]]
+name = "shadow-lock"
+path = "src/bin/lock.rs"
+
+[dependencies]
+shadow-ui = { path = "../ui" }
+shadow-niri = { path = "../niri" }
+libc = "0.2"

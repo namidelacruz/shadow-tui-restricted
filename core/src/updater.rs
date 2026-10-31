@@ -201,8 +201,9 @@ pub fn build_and_install(srcdir: &Path, yes: bool, label: &str) -> i32 {
             }
         }
     }
-    step("Reloading the compositor configuration (takes full effect at the next login)");
-    sh(&["shadowctl", "config-reload"], None, &[]);
+    step("Regenerating the niri configuration and reloading the Lua modules");
+    sh(&["shadow", "setup", "niri"], None, &[]);
+    sh(&["shadow-sessiond", "reload"], None, &[]);
     step(&format!("Updated.{}", if previous().exists() { "  Roll back with: shadow update rollback" } else { "" }));
     0
 }
@@ -246,7 +247,8 @@ pub fn rollback(yes: bool) -> i32 {
     if sh(&cmd, None, &[]) != 0 {
         return 5;
     }
-    sh(&["shadowctl", "config-reload"], None, &[]);
+    sh(&["shadow", "setup", "niri"], None, &[]);
+    sh(&["shadow-sessiond", "reload"], None, &[]);
     0
 }
 

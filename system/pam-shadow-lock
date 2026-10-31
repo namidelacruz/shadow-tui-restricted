@@ -1,5 +1,5 @@
 #%PAM-1.0
-# shadow-compositor lock screen. Add hardware-token MFA here, e.g.:
+# shadow-lock (the session lock screen). Add hardware-token MFA here, e.g.:
 #   auth required pam_u2f.so cue
 auth       include      system-local-login
 account    include      system-local-login

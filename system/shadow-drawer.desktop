@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Applications
-Comment=Shadow Network application drawer
-Exec=shadow-term --app-id=shadow-drawer -e sakura drawer
-Icon=view-app-grid
-Terminal=false
-Categories=System;

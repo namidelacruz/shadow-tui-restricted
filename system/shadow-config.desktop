@@ -1,7 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Shadow Config
-Comment=Live settings matrix (centre stage, look, power, NPU learning, healer, sync)
-Exec=shadow-term --app-id=shadow-config -e sakura settings
-Icon=preferences-desktop
-Categories=Settings;DesktopSettings;
+Name=Shadow Settings
+GenericName=Settings
+Comment=Shadow TUI Restricted live settings matrix
+Exec=shadow-config
+Icon=preferences-system
+Terminal=false
+Categories=System;Settings;

@@ -40,7 +40,8 @@ say "Build tools"
 need=(); for p in base-devel rust clang git; do pacman -Qq $p &>/dev/null || { [ $p = rust ] && pacman -Qq rustup &>/dev/null; } || need+=($p); done
 ((${#need[@]})) && { info "need: ${need[*]}"; ask "Install them (sudo pacman -S --needed)?" || die "cannot build"; sudo pacman -S --needed --noconfirm "${need[@]}"; }
 
-say "Building (compositor, terminal, daemons, apps — first build ~5-10 min)"
+say "Building (side bar, apps, terminal, daemons — first build ~5-10 min)"
+pacman -Qq niri &>/dev/null || { info "niri is the compositor (extra/niri)"; ask "Install niri (sudo pacman -S)?" && sudo pacman -S --needed --noconfirm niri; }
 pacman -Qq shadow-network &>/dev/null && info "the old shadow-network package (niri fork, Python engine) is replaced"
 pkgcache="${XDG_CACHE_HOME:-$HOME/.cache}/shadow-tui/packages"; mkdir -p "$pkgcache"
 ( cd "$SRC" && PKGDEST="$pkgcache" makepkg -s -f --noconfirm )
@@ -58,16 +59,18 @@ if [[ -n "$BOOT" ]]; then
   shadow-sync bootstrap "$BOOT" $( ((YES)) && echo --yes )
 fi
 if [[ "$GREETER" != no ]] && { [[ "$GREETER" == yes ]] || ask "Use the Shadow login screen (greetd; next boot)?"; }; then
-  sudo pacman -S --needed --noconfirm greetd
+  sudo pacman -S --needed --noconfirm greetd terminus-font
   sudo shadow greeter enable
 fi
 say "Installed."
 cat <<EOF
 
   ${c}Start${z}     pick "Shadow TUI Restricted" at login, or run ${a}shadow-session${z} on a TTY
-  ${c}Ring${z}      Mod+Tab/J/K rotate · Mod+[ / ] width 45/65/85 % · Mod+F fullscreen · Mod+Q close
-  ${c}Apps${z}      Mod+Return terminal · Mod+D launcher · Mod+A drawer · Mod+E files · Mod+N network
-  ${c}Settings${z}  Mod+Shift+,  (shadow-config: live, rolled back if rejected)
+  ${c}Stage${z}     Mod+Tab/J/K cycle · Mod+[ / ] width 45/65/85 % · Mod+F full width · Mod+Q close
+  ${c}Apps${z}      Mod+Return terminal · Mod+Space launcher · Mod+E files · Mod+N network · Mod+Alt+L lock
+  ${c}Monitors${z}  Mod+Ctrl+arrows focus · Mod+Shift+Ctrl+arrows move · scale sets itself per monitor
+  ${c}Bar${z}       Mod+Shift+B hide/show (right edge; follows focus when docked)
+  ${c}Settings${z}  Mod+Comma  (shadow-config: live, rolled back if niri rejects it)
   ${c}State${z}     shadow-sync init --github shadow-state && shadow-sync push
   ${c}Healer${z}    shadow-healer status · Mod+Shift+Backspace reverts the last automated fix
   ${c}Security${z}  optional: ./install.sh --sec, then sudo shadow-sec status

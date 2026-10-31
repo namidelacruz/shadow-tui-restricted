@@ -1,33 +1,44 @@
 #!/bin/sh
-# Shadow TUI Restricted session (started by greetd, or from a TTY).
-# The compositor and the Shadow TUI apps run in the user unit shadow.slice (memory.high 13 %,
+# Shadow TUI Restricted session (started by greetd through shadow-greet, or from a TTY).
+#
+# niri is the compositor. Its config is generated from ~/.config/shadow-state/config.toml into
+# ~/.config/shadow-state/niri.kdl (so a plain niri setup in ~/.config/niri is never touched), and
+# niri starts the Shadow session services and side bar itself (spawn-at-startup).
+#
+# Memory: niri and the Shadow apps run in the user unit shadow.slice (memory.high 13 %,
 # memory.max 16 % of RAM); the system daemons have the other 4 % in the system shadow.slice:
-# together ≤ 20 % (spec §3.4). User programs go to app.slice and keep the other 80 %.
-export XDG_CURRENT_DESKTOP=ShadowTUI XDG_SESSION_DESKTOP=shadow-tui XDG_SESSION_TYPE=wayland
-export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland SDL_VIDEODRIVER=wayland
+# together <= 20 % (spec §3.4). Programs you start go to app.slice and keep the other 80 %.
+export XDG_CURRENT_DESKTOP=niri XDG_SESSION_DESKTOP=shadow-tui XDG_SESSION_TYPE=wayland
+export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland SDL_VIDEODRIVER=wayland ELECTRON_OZONE_PLATFORM_HINT=wayland
 # OpenGL only, no Vulkan, for the whole session. The Arc 140V (Lunar Lake / Xe2) runs on the
-# xe kernel driver with Mesa iris for OpenGL; the compositor itself only uses OpenGL ES via EGL.
+# xe kernel driver with Mesa iris for OpenGL; niri renders with OpenGL ES through EGL.
 # GTK >= 4.16 and Qt 6 would otherwise pick Vulkan on their own. Override in
 # ~/.config/shadow-state/session.env if you ever want it back.
 export GSK_RENDERER=ngl QSG_RHI_BACKEND=opengl
 [ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ] && export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state/session.env" ] && . "${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state/session.env"
-C=/opt/shadow-tui/bin/shadow-compositor
+export PATH="/opt/shadow-tui/bin:$PATH"
+STATE=${SHADOW_STATE:-${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state}
+[ -f "$STATE/session.env" ] && . "$STATE/session.env"
 LOG=${XDG_STATE_HOME:-$HOME/.local/state}/shadow-tui/session.log
-mkdir -p "$(dirname "$LOG")"
+mkdir -p "$(dirname "$LOG")" "$STATE"
+
+# first login: per-user setup; every login: niri config in step with config.toml
+[ -f "$STATE/config.toml" ] || /opt/shadow-tui/bin/shadow setup --yes >>"$LOG" 2>&1
+/opt/shadow-tui/bin/shadow setup niri >>"$LOG" 2>&1
+
 run() {
     if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-        systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null
-        systemd-run --user --scope --slice=shadow.slice --collect --quiet -- "$C" "$@"
+        systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GSK_RENDERER QSG_RHI_BACKEND PATH 2>/dev/null
+        systemd-run --user --scope --slice=shadow.slice --collect --quiet -- "$@"
     else
-        "$C" "$@"
+        "$@"
     fi
 }
-run --udev 2>>"$LOG"
+run niri --session -c "$STATE/niri.kdl" 2>>"$LOG"
 rc=$?
-# failsafe: a broken config.toml can't stop the compositor (it falls back to defaults), but if it
-# still died at once, start one more time with a clean state dir so you get a working desktop
+# failsafe: a config niri refuses can't keep you out — niri falls back to its built-in defaults
+# for an invalid file, and if it still died at once, start it once more with no Shadow config
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ]; then
-    echo "$(date -Is) compositor exited $rc — restarting with default settings" >>"$LOG"
-    SHADOW_STATE=$(mktemp -d) run --udev 2>>"$LOG"
+    echo "$(date -Is) niri exited $rc — starting once more without the Shadow config" >>"$LOG"
+    run niri --session 2>>"$LOG"
 fi

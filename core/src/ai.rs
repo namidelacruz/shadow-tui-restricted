@@ -210,7 +210,7 @@ pub fn files_for(issue: &str, repo: &Path) -> Vec<(String, Option<usize>)> {
             let mut parts = loc.split(':');
             let rel = parts.next().unwrap_or("");
             let line = parts.next().and_then(|x| x.parse().ok());
-            for crate_dir in ["tui", "term", "powerd", "core", "compositor", "lua", "sec"] {
+            for crate_dir in ["ui", "bar", "apps", "desktop", "niri", "greet", "term", "powerd", "core", "lua", "sec"] {
                 if repo.join(crate_dir).join(rel).is_file() {
                     out.push((format!("{crate_dir}/{rel}"), line));
                 }
@@ -289,15 +289,7 @@ pub fn quick_tests(work: &Path, touched: &[String]) -> (bool, String) {
             ok = false;
         }
     };
-    if touched.iter().any(|f| f.starts_with("tui/")) {
-        let out = std::env::temp_dir().join(format!("sakura-ai-test-{}", std::process::id()));
-        run("sakura build+tests", &["rustc", "--edition", "2021", "--test", "-o", &out.to_string_lossy(), "tui/src/main.rs"], work);
-        if out.exists() {
-            run("sakura unit tests", &[&out.to_string_lossy()], work);
-            let _ = std::fs::remove_file(out);
-        }
-    }
-    for (c, pkg) in [("term", "shadow-term"), ("powerd", "shadow-powerd"), ("core", "shadow"), ("compositor", "shadow-compositor"), ("lua", "shadow-lua"), ("sec", "shadow-sec")] {
+    for (c, pkg) in [("ui", "shadow-ui"), ("bar", "shadow-bar"), ("apps", "shadow-apps"), ("desktop", "shadow-desktop"), ("niri", "shadow-niri"), ("greet", "shadow-greet"), ("term", "shadow-term"), ("powerd", "shadow-powerd"), ("core", "shadow"), ("lua", "shadow-lua"), ("sec", "shadow-sec")] {
         if touched.iter().any(|f| f.starts_with(&format!("{c}/"))) {
             run(&format!("{c} tests"), &["cargo", "test", "--offline", "--release", "-q", "-p", pkg], work);
         }
@@ -439,8 +431,8 @@ pub fn ask(q: &str) -> Result<String, String> {
         sys::run(&["shadow-powerd", "status"]).1,
         sys::run(&["shadow", "wifi", "status"]).1
     );
-    chat("You are the built-in assistant of Shadow TUI Restricted (Arch Linux, Dell 14 Plus, keyboard-first TUI desktop). \
-          Answer briefly and concretely. Prefer the system's own commands (shadow, shadowctl, shadow-powerd, shadow-sync, shadow-healer, sakura) when they solve the problem. \
+    chat("You are the built-in assistant of Shadow TUI Restricted (Arch Linux, Dell 14 Plus, keyboard-first desktop on niri). \
+          Answer briefly and concretely. Prefer the system's own commands (shadow, shadow-powerd, shadow-displayd, shadow-sync, shadow-healer, niri msg) when they solve the problem. \
           Never ask for passwords.", &format!("{ctx}\nQuestion: {q}"))
 }
 

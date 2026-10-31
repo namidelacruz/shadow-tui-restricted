@@ -1,0 +1,22 @@
+[package]
+name = "shadow-desktop"
+version = "7.0.0"
+edition = "2021"
+description = "Shadow TUI Restricted session services on niri: shadow-sessiond (events, telemetry, Lua) and shadow-displayd (scale, text size, refresh, dock, idle)"
+license = "MIT"
+
+[[bin]]
+name = "shadow-sessiond"
+path = "src/bin/sessiond.rs"
+
+[[bin]]
+name = "shadow-displayd"
+path = "src/bin/displayd.rs"
+
+[dependencies]
+shadow-niri = { path = "../niri" }
+shadow-ui = { path = "../ui" }
+shadow-lua = { path = "../lua" }
+smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop"] }
+wayland-protocols = { version = "0.32", default-features = false, features = ["client", "staging"] }
+libc = "0.2"

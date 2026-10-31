@@ -1,7 +1,6 @@
 //! shadow — Shadow TUI Restricted system tools. One binary, several names:
 //!   shadow-sync    state + GitHub synchronisation        shadow-netd   Wi-Fi self-repair daemon
 //!   shadow-healer  Lua module self-correction            shadownet     compatibility name
-#[path = "../../tui/src/json.rs"]
 #[allow(dead_code)]
 mod json;
 #[path = "../../powerd/src/sys.rs"]
@@ -32,7 +31,8 @@ shadow — Shadow TUI Restricted system tools
   ai status|setup|ask|collect|issues|propose|review|approve|reject   local model + approved code fixes
   update check|run|rollback|status|set-repo URL [BRANCH]
 
-Also: shadow-compositor, shadowctl, shadow-powerd, shadow-sec (optional), shadow-term, sakura.
+Also: shadow-bar, shadow-launch, shadow-net, shadow-config, shadow-files, shadow-lock, shadow-greet,
+      shadow-sessiond, shadow-displayd, shadow-powerd, shadow-term, shadow-sec (optional).
 ";
 
 fn out(r: Result<String, String>) -> i32 {

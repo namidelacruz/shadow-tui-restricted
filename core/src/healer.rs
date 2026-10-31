@@ -250,7 +250,7 @@ pub fn approve(n: &str) -> Result<String, String> {
     }
     let _ = std::fs::write(pd.join("status"), "applied");
     set_state("idle", "");
-    Ok(format!("applied proposal #{n} to {name}; `shadowctl lua-reload` (or the next login) loads it"))
+    Ok(format!("applied proposal #{n} to {name}; `shadow-sessiond reload` (or the next login) loads it"))
 }
 
 /// undo the most recent automated commit — never touches commits made by people

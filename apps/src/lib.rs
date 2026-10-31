@@ -1,0 +1,88 @@
+//! Shared code for the Shadow TUI Restricted applications.
+pub mod cfg;
+pub mod desktop;
+pub mod fsops;
+pub mod pam;
+
+use std::path::{Path, PathBuf};
+
+pub fn home() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into()))
+}
+
+pub fn state_dir() -> PathBuf {
+    shadow_ui::theme::state_dir()
+}
+
+pub fn config_path() -> PathBuf {
+    state_dir().join("config.toml")
+}
+
+pub fn atomic_write(p: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = p.with_extension("tmp~");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, p)
+}
+
+/// (exit code, stdout+stderr); 127 when the program is missing
+pub fn cmd_out(args: &[&str]) -> (i32, String) {
+    match std::process::Command::new(args[0]).args(&args[1..]).stdin(std::process::Stdio::null()).output() {
+        Ok(o) => {
+            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&o.stderr));
+            (o.status.code().unwrap_or(1), s)
+        }
+        Err(_) => (127, format!("{}: not found", args[0])),
+    }
+}
+
+/// Start a program detached. User programs go to app.slice (outside Shadow's 20 % memory
+/// ceiling); Shadow's own apps stay in the session slice.
+pub fn spawn(cmd: &str) {
+    let prog = cmd.split_whitespace().next().unwrap_or("");
+    let base = prog.rsplit('/').next().unwrap_or(prog);
+    let have_run = Path::new("/usr/bin/systemd-run").exists() && std::env::var_os("SHADOW_NO_SCOPES").is_none();
+    let full = if base.starts_with("shadow") || !have_run {
+        cmd.to_string()
+    } else {
+        format!("systemd-run --user --scope --slice=app.slice --collect --quiet -- sh -c {}", sh_quote(cmd))
+    };
+    let _ = std::process::Command::new("sh")
+        .args(["-c", &format!("setsid -f sh -c {} >/dev/null 2>&1", sh_quote(&full))])
+        .stdin(std::process::Stdio::null())
+        .status();
+}
+
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub fn local_hour() -> usize {
+    #[repr(C)]
+    struct Tm {
+        v: [i32; 9],
+        gmtoff: i64,
+        zone: *const i8,
+    }
+    extern "C" {
+        fn time(t: *mut i64) -> i64;
+        fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
+    }
+    // SAFETY: libc calls with valid pointers
+    unsafe {
+        let t = time(std::ptr::null_mut());
+        let mut tm: Tm = std::mem::zeroed();
+        if localtime_r(&t, &mut tm).is_null() {
+            return 12;
+        }
+        tm.v[2].clamp(0, 23) as usize
+    }
+}
+
+/// app id of the window niri has focused right now ("" if none / not in niri)
+pub fn focused_app() -> String {
+    shadow_niri::json(&["focused-window"]).ok().and_then(|v| v.get("app_id").and_then(|a| a.as_str()).map(|s| s.to_lowercase())).unwrap_or_default()
+}

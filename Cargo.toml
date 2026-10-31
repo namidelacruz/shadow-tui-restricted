@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["compositor", "lua", "term", "powerd", "core", "sec"]
+members = ["ui", "niri", "bar", "apps", "desktop", "greet", "term", "core", "powerd", "lua", "sec"]
 
 [profile.release]
 opt-level = 3

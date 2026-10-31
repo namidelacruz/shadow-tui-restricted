@@ -46,6 +46,8 @@ pub struct Model {
     /// class → (ewma CPU utilisation 0..1, samples)
     pub table: HashMap<u32, (f64, u32)>,
     active: Option<(u32, std::time::Instant, (u64, u64))>,
+    /// set by the learning schedule: after the learning phase, known classes adapt slowly
+    pub stable: bool,
 }
 
 pub const MIN_SAMPLES: u32 = 3;
@@ -61,26 +63,30 @@ impl Model {
         }
     }
 
-    /// learn from an observed utilisation for a class
-    pub fn observe(&mut self, class: u32, util: f64) {
+    /// learn from an observed utilisation for a class; returns the value predicted before it
+    pub fn observe(&mut self, class: u32, util: f64) -> Option<f64> {
+        let stable = self.stable;
         let e = self.table.entry(class).or_insert((util, 0));
-        e.0 = if e.1 == 0 { util } else { 0.7 * e.0 + 0.3 * util };
+        let prior = (e.1 >= MIN_SAMPLES).then_some(e.0);
+        let alpha = crate::schedule::alpha(e.1, stable);
+        e.0 = if e.1 == 0 { util } else { (1.0 - alpha) * e.0 + alpha * util };
         e.1 = (e.1 + 1).min(10_000);
+        prior
     }
 
     /// a focus record arrived: close the previous window of observation and open a new one
-    pub fn focus(&mut self, class: u32, cpu: (u64, u64)) -> Option<(u32, f64)> {
+    pub fn focus(&mut self, class: u32, cpu: (u64, u64)) -> Option<(u32, f64, Option<f64>)> {
         let closed = self.close(cpu);
         self.active = Some((class, std::time::Instant::now(), cpu));
         closed
     }
 
     /// every poll: a class that has been focused for 30 s gets a sample
-    pub fn tick(&mut self, cpu: (u64, u64)) -> Option<(u32, f64)> {
+    pub fn tick(&mut self, cpu: (u64, u64)) -> Option<(u32, f64, Option<f64>)> {
         match self.active {
             Some((_, t, _)) if t.elapsed().as_secs() >= 30 => {
                 let r = self.close(cpu);
-                if let Some((c, _)) = r {
+                if let Some((c, _, _)) = r {
                     self.active = Some((c, std::time::Instant::now(), cpu));
                 }
                 r
@@ -89,14 +95,14 @@ impl Model {
         }
     }
 
-    fn close(&mut self, cpu: (u64, u64)) -> Option<(u32, f64)> {
+    fn close(&mut self, cpu: (u64, u64)) -> Option<(u32, f64, Option<f64>)> {
         let (class, t, (busy0, total0)) = self.active.take()?;
         if t.elapsed().as_secs() < 5 || cpu.1 <= total0 {
             return None;
         }
         let util = (cpu.0.saturating_sub(busy0)) as f64 / (cpu.1 - total0) as f64;
-        self.observe(class, util);
-        Some((class, util))
+        let prior = self.observe(class, util);
+        Some((class, util, prior))
     }
 
     pub fn save(&self) -> String {

@@ -36,8 +36,8 @@ post_install() {
   cat <<'MSG'
 ==> Shadow TUI Restricted installed (/opt/shadow-tui). Next, as your normal user:
       shadow setup                         # config.toml + migration from Shadow Network
-    Login screen (graphical, blends into the session):
-      sudo pacman -S greetd && sudo shadow greeter enable
+    Login screen (static console login, sized to the panel):
+      sudo pacman -S greetd terminus-font && sudo shadow greeter enable
     Or start from a TTY:  shadow-session
     State on GitHub (private):  shadow-sync init --github shadow-state && shadow-sync push
     Optional security subsystem:  sudo pacman -S shadow-tui-sec   (nothing is active until enabled)
@@ -50,7 +50,10 @@ post_upgrade() {
   systemctl daemon-reload >/dev/null 2>&1
   for u in $_units; do systemctl enable "$u" >/dev/null 2>&1 || true; done
   systemctl try-restart shadow-powerd.service shadow-netd.service shadow-healer.service >/dev/null 2>&1 || true
-  echo "==> Shadow TUI Restricted upgraded. The compositor picks up the new version at the next login."
+  echo "==> Shadow TUI Restricted upgraded. The side bar and session services pick up the new version at the next login."
+  if grep -qs 'shadow-compositor\|sakura' /etc/shadow-tui/greeter.conf 2>/dev/null || grep -qs '^theme=' /etc/shadow-tui/greeter.conf 2>/dev/null; then
+    echo "==> 7.0 replaced the login screen with shadow-greet: run  sudo shadow greeter enable  once to refresh its settings"
+  fi
 }
 
 pre_remove() {

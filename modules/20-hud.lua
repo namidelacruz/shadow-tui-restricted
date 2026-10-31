@@ -1,5 +1,5 @@
--- HUD widgets: shadow.hud(name, fn) adds "NAME value" to the top bar (re-evaluated every 2 s,
--- 20 ms budget). Keep them cheap: the HUD only redraws when the text changes.
+-- Side bar widgets: shadow.hud(name, fn) adds a "NAME value" row to the side bar (re-evaluated
+-- every 2 s, 20 ms budget). Keep them cheap: the bar only repaints when the text changes.
 
 shadow.hud("win", function()
   local s = shadow.state()

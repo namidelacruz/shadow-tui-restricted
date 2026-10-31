@@ -1,0 +1,13 @@
+[package]
+name = "shadow-niri"
+version = "7.0.0"
+edition = "2021"
+description = "Shadow TUI Restricted: client for niri's public IPC (niri msg --json), event-stream model, config generation"
+license = "MIT"
+
+[dependencies]
+serde_json = "1"
+
+[[bin]]
+name = "shadow-niri-gen"
+path = "src/bin/gen.rs"

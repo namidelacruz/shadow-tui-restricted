@@ -1,5 +1,5 @@
 //! shadow-powerd — Shadow TUI's Dell optimizer (Dell 14 Plus / Intel Core Ultra 200V).
-#[path = "../../tui/src/json.rs"]
+#[path = "../../core/src/json.rs"]
 #[allow(dead_code)]
 mod json;
 mod agent;
@@ -11,6 +11,7 @@ mod learn;
 mod power;
 mod predict;
 mod rapl;
+mod schedule;
 #[allow(dead_code)]
 mod sys;
 
@@ -28,7 +29,7 @@ shadow-powerd — Dell optimizer for Shadow TUI
   charge [MODE] [START END]      standard adaptive express ac custom (custom START 50-95, END 55-100)
   refresh [auto|max|60|HZ] [--keep]
                                  built-in panel refresh: auto = highest on AC, 60 Hz on battery
-  learn [--reset|--on|--off]     show / reset / toggle learning from your choices
+  learn [--reset|--on|--off|--relearn]  show / reset / toggle learning; --relearn starts a fresh week
   audio [--fix]                  Lunar Lake audio doctor (\"Dummy Output\", firmware, UCM, kernel)
   kernel [status|ensure-fallback|check-upgrade]
                                  known-bad kernel guard and linux-lts fallback
@@ -152,7 +153,7 @@ fn main() {
         ["npu"] => npu(),
         ["daemon"] => fail(daemon::run()),
         ["agent"] => {
-            println!("the session agent is no longer needed: shadow-compositor switches the refresh rate and reports focus");
+            println!("the session agent is no longer needed: shadow-displayd switches the refresh rate and shadow-sessiond reports focus");
             0
         }
         ["rapl"] => {
@@ -241,12 +242,12 @@ fn show_charge() -> i32 {
 
 fn show_refresh() -> i32 {
     match agent::compositor_refresh() {
-        Some(hz) => println!("panel   : {hz} Hz (shadow-compositor switches between [display] refresh_ac / refresh_battery in config.toml)"),
-        None => println!("panel   : compositor not reachable (run inside the Shadow TUI session)"),
+        Some(hz) => println!("panel   : {hz} Hz (shadow-displayd switches between [display] refresh_ac / refresh_battery in config.toml)"),
+        None => println!("panel   : niri not reachable (run inside the Shadow TUI session)"),
     }
     let st = sys::read("run/shadow/power.state").unwrap_or_default();
     if let Some(r) = st.lines().find_map(|l| l.strip_prefix("refresh=")) {
-        println!("powerd  : suggests {r} Hz (used when [display] refresh_policy = \"powerd\")");
+        println!("powerd  : suggests {r} Hz (followed when [display] refresh_policy = \"auto\")");
     }
     0
 }
@@ -255,7 +256,7 @@ fn set_refresh(r: &str, keep: bool) -> i32 {
     let hz: u32 = match r {
         "max" => 240,
         "auto" => {
-            println!("refresh: auto — the compositor follows the power source ([display] refresh_policy = \"auto\")");
+            println!("refresh: auto — shadow-displayd follows the power source ([display] refresh_policy = \"auto\")");
             return 0;
         }
         n => match n.parse::<f64>() {
@@ -270,8 +271,14 @@ fn set_refresh(r: &str, keep: bool) -> i32 {
     if agent::learning_on() {
         learn::record("refresh", &ctx, &hz.to_string());
     }
-    let (code, out, err) = sys::run(&["shadowctl", "refresh", &hz.to_string()]);
-    println!("{}", if code == 0 { out } else { err });
+    let Some((name, w, h, _, rates)) = agent::panel() else {
+        eprintln!("shadow-powerd: niri not reachable (run inside the Shadow TUI session)");
+        return 1;
+    };
+    let best = rates.iter().min_by_key(|r| (**r - hz as i64 * 1000).abs()).copied().unwrap_or(hz as i64 * 1000);
+    let mode = format!("{w}x{h}@{:.3}", best as f64 / 1000.0);
+    let (code, out, err) = sys::run(&["niri", "msg", "output", &name, "mode", &mode]);
+    println!("{}", if code == 0 { format!("{name}: {mode} (until the power source changes){out}") } else { err });
     if keep {
         println!("to make it permanent: set [display] refresh_{} = {hz} in ~/.config/shadow-state/config.toml (or Settings → Display)", if ctx.ac { "ac" } else { "battery" });
     }
@@ -280,6 +287,16 @@ fn set_refresh(r: &str, keep: bool) -> i32 {
 
 fn learn_cmd(rest: &[&str]) -> i32 {
     match rest {
+        ["--relearn"] => match daemon::request("relearn") {
+            Ok(r) => {
+                println!("{}", r.trim_start_matches("ok "));
+                0
+            }
+            Err(e) => {
+                eprintln!("shadow-powerd: {e}");
+                1
+            }
+        },
         ["--reset"] => match learn::reset() {
             Ok(()) => {
                 let _ = daemon::request("hint clear");
@@ -305,6 +322,9 @@ fn learn_cmd(rest: &[&str]) -> i32 {
             }
         },
         _ => {
+            if let Ok(r) = daemon::request("learning") {
+                println!("schedule: {}", r.trim_start_matches("ok "));
+            }
             let m = learn::Model::load();
             println!("learning: {} · {} observations (from your manual choices; old ones fade over ~2 weeks)",
                 if agent::learning_on() { "on" } else { "off" }, m.len());

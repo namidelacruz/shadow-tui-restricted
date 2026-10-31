@@ -2,8 +2,8 @@
 Type=Application
 Name=Files
 GenericName=File Manager
-Comment=Shadow Network file manager (dot//sakura)
-Exec=shadow-term --app-id=shadow-files -e sakura files %f
+Comment=Shadow TUI Restricted file manager
+Exec=shadow-files %f
 Icon=system-file-manager
 Terminal=false
 Categories=System;FileManager;

@@ -10,7 +10,7 @@ const ND_CONF: &str = "/etc/shadow-tui/greeter.conf";
 const PREV_DM: &str = "/etc/shadow-tui/previous-dm";
 const WRAPPER: &str = "/opt/shadow-tui/lib/greeter-wrapper";
 const DM_LINK: &str = "/etc/systemd/system/display-manager.service";
-const USAGE: &str = "usage: shadow greeter enable [--theme ID] [--warning TEXT | --no-warning] | disable | status\n                         | preview [--theme ID] | warning TEXT | warning --off | warning (reset)";
+const USAGE: &str = "usage: shadow greeter enable [--warning TEXT | --no-warning] [--font auto|off|NAME] | disable | status\n                         | preview | warning TEXT | warning --off | warning (reset)";
 
 fn need_root(args: &[&str]) -> Result<(), i32> {
     if sys::is_root() {
@@ -46,11 +46,11 @@ fn flag_val<'a>(args: &[&'a str], f: &str) -> Option<&'a str> {
 }
 
 fn conf_value(key: &str) -> Option<String> {
-    read(ND_CONF)?.lines().find_map(|l| l.strip_prefix(&format!("{key}=")).map(String::from))
+    read(ND_CONF)?.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_string()))
 }
 
-fn theme_arg(args: &[&str]) -> String {
-    flag_val(args, "--theme").map(String::from).or_else(|| conf_value("theme").map(|t| t.trim().to_string())).unwrap_or_else(|| "nightwatch".into())
+fn font_arg(args: &[&str]) -> String {
+    flag_val(args, "--font").map(String::from).or_else(|| conf_value("console_font")).unwrap_or_else(|| "auto".into())
 }
 
 fn warning_line(args: &[&str]) -> String {
@@ -80,22 +80,24 @@ fn enable(args: &[&str]) -> i32 {
     if sys::which("greetd").is_none() {
         return fail("greetd is not installed: sudo pacman -S greetd");
     }
-    if sys::which("shadow-compositor").is_none() || sys::which("sakura").is_none() {
-        return fail("shadow-compositor / sakura missing — reinstall the shadow-tui-restricted package");
+    if sys::which("shadow-greet").is_none() {
+        return fail("shadow-greet missing — reinstall the shadow-tui-restricted package");
     }
-    let theme = theme_arg(args);
-    // the compositor greeter needs a GPU at boot; the text greeter is its fallback, so test that one here
-    let (code, out) = sh(&["sakura", "greeter", "--self-test", "--theme", &theme]);
+    let font = font_arg(args);
+    let (code, out) = sh(&["shadow-greet", "--self-test"]);
     println!("{out}");
     if code != 0 {
-        return fail("fallback (text) greeter self-test failed; nothing changed");
+        return fail("login screen self-test failed (no desktop session found); nothing changed");
+    }
+    if font == "auto" && !std::path::Path::new("/usr/share/kbd/consolefonts/ter-v24n.psf.gz").exists() {
+        println!("note: terminus-font is not installed — the login screen keeps the default console font size");
     }
     if sys::which("agreety").is_none() {
         println!("warning: agreety (greetd's fallback prompt) not found — fallback will be a short message only");
     }
-    let fallback = if sys::which("shadow-session").is_some() { "shadow-session" } else if sys::which("niri-session").is_some() { "niri-session" } else { "${SHELL:-/bin/sh} -l" };
+    let fallback = if sys::which("shadow-session").is_some() { "/opt/shadow-tui/bin/shadow-session" } else if sys::which("niri-session").is_some() { "niri-session" } else { "${SHELL:-/bin/sh} -l" };
     let conf = format!(
-        "# Shadow TUI Restricted login screen (shadow-compositor --greeter; text greeter and agreety as fallbacks)\ntheme={theme}\n# warning=<text shown above the login box>  (empty = no warning; absent = default notice)\n{}# default_user=\n# default_session=shadow\nfallback_cmd={fallback}\n",
+        "# Shadow TUI Restricted login screen (shadow-greet: static console login; agreety as fallback)\nsession=shadow-tui\nconsole_font={font}\n# title=SHADOW TUI // RESTRICTED\n# warning=<text in the login box>  (empty = none; absent = AUTHORIZED ACCESS ONLY)\n{}fallback_cmd={fallback}\n",
         warning_line(args)
     );
     if let Err(e) = write(ND_CONF, &conf) {
@@ -143,7 +145,7 @@ fn enable(args: &[&str]) -> i32 {
     }
     println!("\nShadow TUI Restricted login screen enabled — it appears at the next boot.");
     println!("Preview it now in any terminal:  shadow greeter preview");
-    println!("Failsafe: if it can't start it falls back to greetd's plain prompt (agreety); F2 on the login screen picks a rescue shell.");
+    println!("Failsafe: if it can't start it falls back to greetd's plain prompt (agreety).");
     0
 }
 
@@ -181,9 +183,9 @@ fn status() -> i32 {
         Some(t) => println!("greetd config   : {} ({GREETD_CONF})", if t.contains("shadow-tui/lib/greeter-wrapper") { "Shadow TUI Restricted greeter" } else { "not Shadow TUI Restricted" }),
         None => println!("greetd config   : missing"),
     }
-    println!("theme           : {}", theme_arg(&[]));
+    println!("console font    : {}", font_arg(&[]));
     println!("previous DM     : {}", read(PREV_DM).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "-".into()));
-    println!("{}", sh(&["sakura", "greeter", "--self-test"]).1);
+    println!("{}", sh(&["shadow-greet", "--self-test"]).1);
     0
 }
 
@@ -203,16 +205,11 @@ fn set_warning(args: &[&str]) -> i32 {
     0
 }
 
-fn preview(args: &[&str]) -> i32 {
+fn preview(_args: &[&str]) -> i32 {
     use std::os::unix::process::CommandExt;
-    let Some(t) = sys::which("sakura") else { return fail("sakura not found") };
-    // inside a graphical session: the real (compositor) login screen in demo mode; else the text one
-    let e = if std::env::var_os("WAYLAND_DISPLAY").is_some() && sys::which("shadow-compositor").is_some() {
-        std::process::Command::new("shadow-compositor").args(["--greeter", "--demo", "--winit"]).exec()
-    } else {
-        std::process::Command::new(t).args(["greeter", "--demo", "--theme", &theme_arg(args)]).exec()
-    };
-    fail(&format!("sakura: {e}"))
+    let Some(g) = sys::which("shadow-greet") else { return fail("shadow-greet not found") };
+    let e = std::process::Command::new(g).arg("--demo").exec();
+    fail(&format!("shadow-greet: {e}"))
 }
 
 pub fn main(_p: &Paths, args: &[&str]) -> i32 {
