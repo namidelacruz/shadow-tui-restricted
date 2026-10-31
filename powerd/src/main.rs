@@ -12,6 +12,9 @@ mod power;
 mod predict;
 mod rapl;
 mod schedule;
+#[path = "../../core/src/distro.rs"]
+#[allow(dead_code)]
+mod distro;
 #[allow(dead_code)]
 mod sys;
 

@@ -2,6 +2,8 @@
 
 This file traces each requirement of the clean-room functional specification to the code that implements it.
 
+Target platforms: the spec names Arch Linux. Since 7.1, `install.sh` also installs on Fedora 41+ and RHEL-family 9/10 (RPM packaging, dnf dependencies, niri from Fedora, a COPR or source).
+
 Status:
 
 - ✅ implemented as specified;
@@ -90,7 +92,7 @@ Everything was built and tested in a Linux container, including niri 25.08 runni
 
 | Requirement | Status | Where / how |
 |---|---|---|
-| Self-contained hashed `/opt/shadow-tui` | ◐ | Shadow's binaries live there with `MANIFEST.sha512` and DT_RPATH; libxkbcommon is bundled. niri comes from Arch (`depends=niri`), and Shadow talks to it only over IPC and the config file, so a niri update cannot break Shadow's binaries. Mesa, glibc and PAM stay the system's. |
+| Self-contained hashed `/opt/shadow-tui` | ◐ | Shadow's binaries live there with `MANIFEST.sha512` on Arch and on Fedora/RHEL (RPM, the same file layout from `packaging/install-files.sh`). On Arch they also carry DT_RPATH and a bundled libxkbcommon; the RPM uses the system library. niri comes from Arch (`depends=niri`), and Shadow talks to it only over IPC and the config file, so a niri update cannot break Shadow's binaries. Mesa, glibc and PAM stay the system's. |
 | State directory, `shadow-sync push`, `bootstrap` | ✅ | Unchanged. The state also carries `niri.kdl` (generated), `macros.list`, `launcher.markov` and `apps.ram`. |
 
 ## 7. Applications (each its own Rust 2D app)

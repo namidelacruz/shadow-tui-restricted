@@ -4,7 +4,7 @@
 //!                   power decisions yet (firmware defaults + the AC/battery policy apply)
 //!   learned         predictions drive PL1/EPP/profile; learning continues slowly
 //!                   (dynamic self-learning), and apps it hasn't seen still learn fast
-//!   OS update       a full system upgrade (pacman) or a new kernel starts a fresh 7-day
+//!   OS update       a full system upgrade (pacman -Syu / dnf upgrade) or a new kernel starts a fresh 7-day
 //!                   relearn: the same apps can behave differently on a new kernel/Mesa/firmware
 //!   drift           if predictions keep missing (error EWMA > 0.25 over 40+ samples) while
 //!                   learned, a shorter relearn (2 days) starts
@@ -136,8 +136,45 @@ pub fn alpha(n: u32, learned: bool) -> f64 {
 
 pub fn os_fingerprint() -> String {
     let kernel = sys::read("proc/sys/kernel/osrelease").map(|s| s.trim().to_string()).unwrap_or_default();
-    let log = sys::read("var/log/pacman.log").unwrap_or_default();
-    format!("{kernel}@{}", last_full_upgrade(&log).unwrap_or_default())
+    let upgrade = if crate::distro::family() == crate::distro::Family::Rpm {
+        let (code, out, _) = sys::run(&["rpm", "-qa", "--queryformat", "%{INSTALLTIME}\n"]);
+        if code == 0 { last_bulk_install(&out) } else { None }
+    } else {
+        last_full_upgrade(&sys::read("var/log/pacman.log").unwrap_or_default())
+    };
+    format!("{kernel}@{}", upgrade.unwrap_or_default())
+}
+
+/// The file whose change means "packages changed": pacman's log, or the rpm database.
+pub fn package_db_marker() -> std::path::PathBuf {
+    for rel in ["var/log/pacman.log", "var/lib/rpm/rpmdb.sqlite", "usr/lib/sysimage/rpm/rpmdb.sqlite", "var/lib/rpm/Packages"] {
+        let p = sys::p(rel);
+        if p.exists() {
+            return p;
+        }
+    }
+    sys::p("var/log/pacman.log")
+}
+
+/// RPM systems (dnf upgrade, dnf5, RHEL): an OS update is a burst of 5+ packages installed
+/// within 15 minutes of each other; the time of the most recent such burst. A single
+/// `dnf install foo` doesn't count.
+pub fn last_bulk_install(install_times: &str) -> Option<String> {
+    let mut t: Vec<u64> = install_times.lines().filter_map(|l| l.trim().parse().ok()).collect();
+    t.sort_unstable();
+    let mut best = None;
+    let mut i = 0;
+    while i < t.len() {
+        let mut j = i;
+        while j + 1 < t.len() && t[j + 1] - t[j] <= 900 {
+            j += 1;
+        }
+        if j + 1 - i >= 5 {
+            best = Some(t[i].to_string());
+        }
+        i = j + 1;
+    }
+    best
 }
 
 /// Timestamp text of the last `pacman -Syu` that actually upgraded something.
@@ -218,6 +255,14 @@ mod tests {
         let l = Schedule::load(&s.save(), T0 + 9 * DAY, "k@A");
         assert_eq!(l, s);
         assert_eq!(Schedule::load("", T0, "k@A").progress(T0).unwrap().2, "first-week");
+    }
+
+    #[test]
+    fn rpm_bursts() {
+        // one dnf upgrade of 6 packages, then a single install later
+        let t = "1800000000\n1800000030\n1800000045\n1800000100\n1800000200\n1800000300\n1800090000\n";
+        assert_eq!(last_bulk_install(t).as_deref(), Some("1800000000"));
+        assert_eq!(last_bulk_install("1800000000\n1800090000\n"), None);
     }
 
     #[test]

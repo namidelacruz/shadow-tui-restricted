@@ -16,7 +16,8 @@ export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland SDL_VIDEODRIVER=wayland ELEC
 # ~/.config/shadow-state/session.env if you ever want it back.
 export GSK_RENDERER=ngl QSG_RHI_BACKEND=opengl
 [ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ] && export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-export PATH="/opt/shadow-tui/bin:$PATH"
+# /usr/local/bin: niri and greetd built from source on RHEL 9
+export PATH="/opt/shadow-tui/bin:/usr/local/bin:$PATH"
 STATE=${SHADOW_STATE:-${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state}
 [ -f "$STATE/session.env" ] && . "$STATE/session.env"
 LOG=${XDG_STATE_HOME:-$HOME/.local/state}/shadow-tui/session.log

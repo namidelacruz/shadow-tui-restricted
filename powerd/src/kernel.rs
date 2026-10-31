@@ -117,6 +117,11 @@ pub fn bad_for(h: &Hw, area: &str, pkg: &str, ver: &str) -> Option<String> {
 }
 
 pub fn installed() -> Vec<(String, String)> {
+    if crate::distro::family() == crate::distro::Family::Rpm {
+        // Fedora / RHEL: one package, several versions installed side by side (installonly)
+        let (code, out, _) = sys::run(&["rpm", "-q", "--queryformat", "%{VERSION}-%{RELEASE}\n", "kernel-core"]);
+        return if code == 0 { out.lines().filter(|l| !l.is_empty()).map(|v| ("kernel".to_string(), v.to_string())).collect() } else { vec![] };
+    }
     KERNELS
         .iter()
         .filter_map(|k| {
@@ -206,6 +211,14 @@ pub fn make_sdboot_entry(existing: &str) -> Option<String> {
 pub fn ensure_fallback(h: &Hw) -> Result<String, String> {
     if !sys::is_root() && std::env::var_os("SHADOW_OPT_ROOT").is_none() {
         return Err("run as root: sudo shadow-powerd kernel ensure-fallback".into());
+    }
+    if crate::distro::family() == crate::distro::Family::Rpm {
+        let n = installed().len();
+        return if n >= 2 {
+            Ok(format!("dnf keeps {n} kernels installed (installonly_limit): the previous one is the fallback in the boot menu"))
+        } else {
+            Err("only one kernel is installed; dnf keeps the previous one after the next kernel update (installonly_limit)".into())
+        };
     }
     let mut done = vec![];
     let lts = installed().into_iter().find(|(k, _)| k == "linux-lts");

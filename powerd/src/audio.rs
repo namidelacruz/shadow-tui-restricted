@@ -26,11 +26,15 @@ fn cards() -> Vec<String> {
 }
 
 fn pkg_installed(p: &str) -> bool {
-    sys::run(&["pacman", "-Q", p]).0 == 0
+    crate::distro::installed(p)
 }
 
 fn pkg_available(p: &str) -> bool {
-    sys::run(&["pacman", "-Si", p]).0 == 0
+    crate::distro::available(p)
+}
+
+fn has_pkg_manager() -> bool {
+    sys::which("pacman").is_some() || sys::which("dnf").is_some()
 }
 
 /// Output sinks known to PipeWire/WirePlumber (wpctl status, "Sinks:" under "Audio").
@@ -120,7 +124,7 @@ pub fn diagnose(h: &Hw) -> Report {
     // session side (only meaningful as the user)
     if !sys::is_root() {
         for pkg in ["pipewire", "wireplumber", "pipewire-pulse"] {
-            if sys::which("pacman").is_some() && !pkg_installed(pkg) {
+            if has_pkg_manager() && !pkg_installed(pkg) {
                 r.root_pkgs.push(pkg.into());
             }
         }
@@ -163,8 +167,12 @@ pub fn fix(h: &Hw) -> bool {
         return true;
     }
     if !r.root_pkgs.is_empty() {
-        let mut args = vec!["pacman", "-S", "--needed", "--noconfirm"];
-        args.extend(r.root_pkgs.iter().map(|s| s.as_str()));
+        let mut args: Vec<&str> = match crate::distro::family() {
+            crate::distro::Family::Rpm => vec!["dnf", "install", "-y"],
+            _ => vec!["pacman", "-S", "--needed", "--noconfirm"],
+        };
+        let mapped: Vec<String> = r.root_pkgs.iter().map(|p| if crate::distro::family() == crate::distro::Family::Rpm { crate::distro::pkg(p).unwrap_or(p).to_string() } else { p.clone() }).collect();
+        args.extend(mapped.iter().map(|s| s.as_str()));
         let cmd: Vec<&str> = if sys::is_root() { args.clone() } else {
             let mut c = vec![if sys::which("pkexec").is_some() { "pkexec" } else { "sudo" }];
             c.extend(args.iter());

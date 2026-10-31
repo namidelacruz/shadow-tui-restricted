@@ -7,6 +7,8 @@ mod json;
 #[allow(dead_code)]
 mod sys;
 mod ai;
+#[allow(dead_code)]
+mod distro;
 mod greeter_admin;
 mod healer;
 mod http;

@@ -135,42 +135,48 @@ fn fetch(repo: &str, branch: &str) -> bool {
 }
 
 pub fn installed() -> Option<(String, String)> {
-    for n in PKGNAMES {
-        let (code, out, _) = sys::run(&["pacman", "-Q", n]);
-        if code == 0 {
-            return out.split_whitespace().nth(1).map(|v| (n.to_string(), v.to_string()));
-        }
-    }
-    None
+    crate::distro::installed_version(&PKGNAMES)
+}
+
+fn rpm() -> bool {
+    crate::distro::family() == crate::distro::Family::Rpm
 }
 
 fn package_files() -> Vec<PathBuf> {
     let mut v: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(pkgs()).map(|rd| rd.flatten().filter(|e| {
         let n = e.file_name().to_string_lossy().into_owned();
-        PKGNAMES.iter().any(|p| n.starts_with(&format!("{p}-"))) && n.contains(".pkg.tar.")
+        PKGNAMES.iter().any(|p| n.starts_with(&format!("{p}-"))) && (n.contains(".pkg.tar.") || (n.ends_with(".rpm") && !n.ends_with(".src.rpm")))
+            && !n.starts_with("shadow-tui-restricted-debug")
     }).map(|e| (e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), e.path())).collect()).unwrap_or_default();
     v.sort();
     v.into_iter().map(|(_, p)| p).collect()
 }
 
 pub fn build_and_install(srcdir: &Path, yes: bool, label: &str) -> i32 {
-    let pkgb = std::fs::read_to_string(srcdir.join("PKGBUILD")).unwrap_or_default();
-    if !PKGNAMES.iter().any(|n| pkgb.contains(&format!("pkgname={n}"))) {
-        println!("update: {label} does not contain a Shadow TUI PKGBUILD — refusing to build it.");
+    let recipe = if rpm() { srcdir.join("packaging/shadow-tui-restricted.spec") } else { srcdir.join("PKGBUILD") };
+    let pkgb = std::fs::read_to_string(&recipe).unwrap_or_default();
+    if !PKGNAMES.iter().any(|n| pkgb.contains(&format!("pkgname={n}")) || pkgb.contains(&format!("Name:           {n}"))) {
+        println!("update: {label} does not contain a Shadow TUI build recipe ({}) — refusing to build it.", recipe.file_name().unwrap().to_string_lossy());
         return 3;
     }
     step("Building (the package's own tests run during the build; nothing is installed yet)");
     let _ = std::fs::create_dir_all(pkgs());
     let before = package_files();
-    let mut flags = vec!["makepkg", "-s", "-f", "-c"];
-    if yes {
-        flags.push("--noconfirm");
-    }
-    if sh(&flags, Some(srcdir), &[("PKGDEST", pkgs().to_string_lossy().into_owned())]) != 0 {
+    let out = pkgs().to_string_lossy().into_owned();
+    let built = if rpm() {
+        sh(&["packaging/build-rpm.sh", &out], Some(srcdir), &[])
+    } else {
+        let mut flags = vec!["makepkg", "-s", "-f", "-c"];
+        if yes {
+            flags.push("--noconfirm");
+        }
+        sh(&flags, Some(srcdir), &[("PKGDEST", out.clone())])
+    };
+    if built != 0 {
         println!("update: build or tests failed — your installed version is unchanged.");
         return 4;
     }
-    let after = package_files();
+    let after: Vec<PathBuf> = package_files().into_iter().filter(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("shadow-tui-restricted-"))).collect();
     let new: Vec<&PathBuf> = after.iter().filter(|p| !before.contains(p)).collect();
     let Some(newpkg) = new.last().copied().or(after.last()) else {
         println!("update: build produced no package file — nothing changed.");
@@ -183,9 +189,9 @@ pub fn build_and_install(srcdir: &Path, yes: bool, label: &str) -> i32 {
     }
     step(&format!("Installing {}", newpkg.file_name().unwrap().to_string_lossy()));
     let np = newpkg.to_string_lossy().to_string();
-    let mut cmd = vec!["sudo", "pacman", "-U"];
+    let mut cmd = if rpm() { vec!["sudo", "dnf", "install"] } else { vec!["sudo", "pacman", "-U"] };
     if yes {
-        cmd.push("--noconfirm");
+        cmd.push(if rpm() { "-y" } else { "--noconfirm" });
     }
     cmd.push(&np);
     if sh(&cmd, None, &[]) != 0 {
@@ -239,8 +245,8 @@ pub fn rollback(yes: bool) -> i32 {
         return 2;
     }
     step(&format!("Reinstalling {}", Path::new(prev.trim()).file_name().unwrap().to_string_lossy()));
-    let mut cmd = vec!["sudo", "pacman", "-U"];
-    if yes {
+    let mut cmd = if rpm() { vec!["sudo", "rpm", "-Uvh", "--oldpackage"] } else { vec!["sudo", "pacman", "-U"] };
+    if yes && !rpm() {
         cmd.push("--noconfirm");
     }
     cmd.push(prev.trim());

@@ -243,7 +243,7 @@ impl State {
 
     /// OS fingerprint when pacman.log changes (or hourly); phase completion every poll.
     fn check_schedule(&mut self) {
-        let mt = std::fs::metadata(sys::p("var/log/pacman.log")).and_then(|m| m.modified()).ok();
+        let mt = std::fs::metadata(crate::schedule::package_db_marker()).and_then(|m| m.modified()).ok();
         let due = match self.os_checked {
             None => true,
             Some((t, m)) => m != mt || t.elapsed() >= Duration::from_secs(3600),

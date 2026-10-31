@@ -223,7 +223,7 @@ pub fn remove(purge: bool) -> i32 {
         let _ = std::fs::remove_dir_all(st::local_state());
         info("removed ~/.local/state/shadow-tui (your ~/.config/shadow-state is kept: it is your synced state)");
     }
-    say("Done. To remove the programs: sudo pacman -R shadow-tui-restricted shadow-tui-sec");
+    say(&format!("Done. To remove the programs: {}", if crate::distro::family() == crate::distro::Family::Rpm { "sudo dnf remove shadow-tui-restricted shadow-tui-sec" } else { "sudo pacman -R shadow-tui-restricted shadow-tui-sec" }));
     0
 }
 

@@ -15,7 +15,7 @@
 # config file, so a niri update can't break Shadow's binaries.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
-pkgver=7.0.0
+pkgver=7.1.0
 pkgrel=1
 pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on niri — floating side bar, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')
@@ -48,6 +48,7 @@ check() {
     "$srcdir/target/release/shadow-niri-gen" > "$srcdir/niri-check.kdl" && niri validate -c "$srcdir/niri-check.kdl"
   fi
   for s in wifi-helper wifi-device-helper greeter-wrapper shadow-session shadow-tui.sleep; do sh -n "$_src/system/$s"; done
+  sh -n "$_src/packaging/install-files.sh" && sh -n "$_src/packaging/post-install.sh"
 }
 
 _bundle_libs() {
@@ -84,78 +85,11 @@ package_shadow-tui-restricted() {
   install=shadow-tui-restricted.install
   backup=(etc/shadow-tui/greeter.conf etc/shadow-tui/netd.toml etc/shadow-tui/healer.toml)
 
-  local o="$pkgdir/opt/shadow-tui" b
-  install -d "$o/bin" "$o/lib" "$o/share" "$pkgdir/usr/bin"
-  for b in shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-greet \
-           shadow-sessiond shadow-displayd shadow-term shadow-powerd shadow; do
-    install -Dm755 "$srcdir/target/release/$b" "$o/bin/$b"
-  done
-  install -Dm755 "$_src/system/shadow-session" "$o/bin/shadow-session"
-  ln -s shadow-powerd "$o/bin/shadow-audiod"
-  for b in shadow-sync shadow-healer shadow-netd shadownet; do ln -s shadow "$o/bin/$b"; done
-  for b in "$o"/bin/*; do ln -s "/opt/shadow-tui/bin/$(basename "$b")" "$pkgdir/usr/bin/$(basename "$b")"; done
-
-  install -Dm755 "$_src/system/greeter-wrapper"    "$o/lib/greeter-wrapper"
-  install -Dm755 "$_src/system/wifi-helper"        "$o/lib/wifi-helper"
-  install -Dm755 "$_src/system/wifi-device-helper" "$o/lib/wifi-device-helper"
+  # file layout shared with the RPM: packaging/install-files.sh
+  SHADOW_VERSION="$pkgver-$pkgrel" sh "$_src/packaging/install-files.sh" "$pkgdir" arch "$srcdir/target" "$_src" main
   [ "$_bundle" = 1 ] && _bundle_libs
-
-  cp -r "$_src/share/hw" "$_src/share/shell" "$o/share/"
-  install -d "$o/share/modules" && install -m644 "$_src"/modules/*.lua "$o/share/modules/"
-  install -Dm644 "$_src/README.md"          "$o/share/doc/README.md"
-  install -Dm644 "$_src/docs/SPEC-TRACE.md" "$o/share/doc/SPEC-TRACE.md"
-  install -Dm644 "$_src/LICENSE"            "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  find "$o/share" -type f -exec chmod 644 {} +
-
-  # services, slices, hooks
-  local s=usr/lib/systemd/system u=usr/lib/systemd/user
-  for f in shadow-powerd shadow-audiod shadow-netd shadow-healer shadow-wifi-device; do
-    install -Dm644 "$_src/system/$f.service" "$pkgdir/$s/$f.service"
-  done
-  install -Dm644 "$_src/system/shadow.slice"        "$pkgdir/$s/shadow.slice"
-  install -Dm644 "$_src/system/shadow.user.slice"   "$pkgdir/$u/shadow.slice"
-  install -Dm644 "$_src/system/shadow-sync.service" "$pkgdir/$u/shadow-sync.service"
-  install -Dm644 "$_src/system/shadow-sync.timer"   "$pkgdir/$u/shadow-sync.timer"
-  install -Dm755 "$_src/system/shadow-tui.sleep"    "$pkgdir/usr/lib/systemd/system-sleep/shadow-tui"
-  install -Dm644 "$_src/system/shadow-powerd-kernel.hook" "$pkgdir/usr/share/libalpm/hooks/shadow-powerd-kernel.hook"
-  install -Dm644 "$_src/system/org.shadownetwork.wifi.policy" "$pkgdir/usr/share/polkit-1/actions/org.shadownetwork.wifi.policy"
-  install -Dm644 "$_src/system/pam-shadow-lock"     "$pkgdir/etc/pam.d/shadow-lock"
-  install -Dm644 "$_src/system/shadow-tui.desktop"  "$pkgdir/usr/share/wayland-sessions/shadow-tui.desktop"
-  for d in shadow-term shadow-config shadow-files shadow-net shadow-launch; do
-    install -Dm644 "$_src/system/$d.desktop" "$pkgdir/usr/share/applications/$d.desktop"
-  done
-  install -Dm644 /dev/stdin "$pkgdir/etc/shadow-tui/netd.toml" <<'EOF'
-# shadow-netd (system-wide Wi-Fi self-repair policy)
-[wifi]
-self_correct = true
-allow_unvalidated = false
-EOF
-  install -Dm644 /dev/stdin "$pkgdir/etc/shadow-tui/healer.toml" <<'EOF'
-# shadow-healer: "approve" = proposals wait for `sudo shadow-healer approve N` (default)
-#                "auto"    = a patch that passes the AST policy + sandbox dry run is committed
-#                            (Mod+Shift+Backspace reverts it). Only Lua modules, never binaries.
-[healer]
-mode = "approve"
-EOF
-  install -Dm644 /dev/stdin "$pkgdir/etc/shadow-tui/greeter.conf" <<'EOF'
-# Shadow TUI Restricted login screen (shadow-greet) — managed by `shadow greeter …`
-session=shadow-tui
-console_font=auto
-# title=SHADOW TUI // RESTRICTED
-# warning=<text in the login box>   (empty = none; absent = AUTHORIZED ACCESS ONLY)
-EOF
-  install -dm755 "$pkgdir/var/lib/shadow-tui" "$pkgdir/var/lib/shadow-powerd"
-  install -dm755 "$pkgdir/var/cache/shadow-tui-greeter"
-
-  {
-    echo "version=$pkgver-$pkgrel"
-    echo "commit=$(git -C "$_src" rev-parse HEAD 2>/dev/null || echo unknown)"
-    echo "repo=$(git -C "$_src" remote get-url origin 2>/dev/null)"
-    echo "branch=$(git -C "$_src" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-    echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$o/share/BUILD_INFO"
-  # integrity manifest of the runtime (shadow-sec verity builds on it)
-  (cd "$o" && find bin lib -type f -exec sha512sum {} + | sort -k2) > "$o/share/MANIFEST.sha512"
+  # the manifest must include bundled libraries
+  (cd "$pkgdir/opt/shadow-tui" && find bin lib -type f -exec sha512sum {} + | sort -k2) > "$pkgdir/opt/shadow-tui/share/MANIFEST.sha512"
 }
 
 package_shadow-tui-sec() {
@@ -164,7 +98,5 @@ package_shadow-tui-sec() {
   optdepends=('nftables: shadow-sec enable zones' 'audit: shadow-sec enable audit'
               'fsverity-utils: shadow-sec enable verity' 'openssh: post-quantum hybrid key exchange (shadow-sec enable crypto)'
               'cryptsetup: shadow-sec zeroize')
-  install -Dm755 "$srcdir/target/release/shadow-sec" "$pkgdir/opt/shadow-tui/bin/shadow-sec"
-  install -d "$pkgdir/usr/bin" && ln -s /opt/shadow-tui/bin/shadow-sec "$pkgdir/usr/bin/shadow-sec"
-  install -Dm644 "$_src/system/shadow-sec.service" "$pkgdir/usr/lib/systemd/system/shadow-sec.service"
+  sh "$_src/packaging/install-files.sh" "$pkgdir" arch "$srcdir/target" "$_src" sec
 }

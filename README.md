@@ -1,8 +1,8 @@
 # Shadow TUI Restricted
 
-A keyboard-first tactical desktop for Arch Linux, built to the clean-room specification CR-SPEC-SHADOW-001 and tuned for the Dell 14 Plus (2560×1600 panel, Lunar Lake, Arc 140V, Intel NPU).
+A keyboard-first tactical desktop for Arch Linux, Fedora and RHEL-family systems, built to the clean-room specification CR-SPEC-SHADOW-001 and tuned for the Dell 14 Plus (2560×1600 panel, Lunar Lake, Arc 140V, Intel NPU).
 
-Version 7 runs on **niri** as the compositor. Shadow talks to niri only through its public interfaces (`niri msg --json` and its config file), so niri comes from Arch and updates on its own. On top sit:
+Version 7 runs on **niri** as the compositor. Shadow talks to niri only through its public interfaces (`niri msg --json` and its config file), so niri comes from your distribution and updates on its own. On top sit:
 
 - a floating information bar on the right edge;
 - every feature as its own Rust application with a 2D interface;
@@ -36,12 +36,39 @@ Every Shadow app renders on the CPU into shared memory and repaints only when so
 
 ## Install
 
+One installer covers Arch Linux, Fedora and the RHEL family (RHEL, CentOS Stream, Rocky, Alma, Oracle Linux, versions 9 and 10). It installs every dependency, builds a native package (pacman on Arch, RPM elsewhere) and installs it, so updates and removal go through the normal package manager.
+
 ```bash
 git clone <this repo> && cd shadow-tui-restricted
-./install.sh                    # installs niri if needed, builds the split package into /opt/shadow-tui, sets up your account
+./install.sh                    # dependencies, build, package, install, account setup
 ./install.sh --greeter --sec    # also the login screen and the optional security package
+./install.sh --dry-run          # print every command it would run, change nothing
 ./install.sh --bootstrap git@github.com:you/shadow-state.git   # new machine: restore your state too
+./install.sh --uninstall
 ```
+
+What it does on each system:
+
+| | Arch | Fedora 41+ | RHEL family 10 | RHEL family 9 |
+|---|---|---|---|---|
+| Extra repositories | — | — | CodeReady Builder + EPEL 10 | CodeReady Builder + EPEL 9 |
+| niri | `extra/niri` | Fedora's `niri` | `yalter/niri` COPR (falls back to a source build) | built from source (`--niri-ref`, default v25.08) into `/usr/local` |
+| Rust ≥ 1.89 | `rust` | `rust` / `cargo`, else rustup | `rust` / `cargo`, else rustup | `rust` / `cargo`, else rustup |
+| Package | `makepkg` → `pacman -U` | `rpmbuild` → `dnf install` | `rpmbuild` → `dnf install` | `rpmbuild` → `dnf install` |
+| Login screen (`--greeter`) | `greetd`, `terminus-font` | `greetd`, `greetd-selinux`, `terminus-fonts-console` | greetd built from source, run in the display-manager SELinux domain; or keep GDM | same as 10 |
+
+rustup is only used, after asking, when the distribution's Rust is older than 1.89. It installs into `~/.cargo`, and `rustup self uninstall` removes it.
+
+Optional extras the repositories don't carry are skipped with a note: `age`, `gh`, `alsa-sof-firmware`, CJK fonts, the Terminus console font and so on. RHEL-family systems have no Terminus console font, so the login screen keeps the default console font size there.
+
+On RHEL without `--greeter`, GDM stays. Pick **Shadow TUI Restricted** from the gear menu on its login screen.
+
+Other entry points:
+
+- `packaging/build-rpm.sh OUTDIR` builds the RPMs on their own.
+- `makepkg` builds the Arch package.
+- Both packages lay out their files through `packaging/install-files.sh` and share their install scripts (`packaging/post-install.sh`).
+- `shadow update run` later rebuilds whichever kind of package your system uses from your repository.
 
 After that, pick **Shadow TUI Restricted** at the login screen, or run `shadow-session` from a TTY.
 
@@ -215,6 +242,7 @@ lua/       shared LuaJIT sandbox, AST policy, input sanitiser
 sec/       shadow-sec (optional package)
 modules/   default Lua behaviour modules
 system/    units, slices, session, greeter wrapper, hooks, PAM, desktop entries
+packaging/ RPM spec, build-rpm.sh, install-files.sh (shared file layout), post-install.sh (shared scriptlets)
 share/     hardware tables, shell integration
 docs/      SPEC-TRACE.md
 ```

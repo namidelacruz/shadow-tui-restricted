@@ -1019,7 +1019,7 @@ pub fn ensure_device(cb: Cb, interactive: bool, allow_root: bool, force_radio: b
         log("no Wi-Fi interface: the driver or firmware is missing. Install linux-firmware (and e.g. broadcom-wl for Broadcom cards), then reboot. `shadow wifi device --diag` shows kernel errors.", cb);
     }
     if has(&probs, "no-supplicant") {
-        log("install the Wi-Fi supplicant once (needs a cable or phone USB tethering): sudo pacman -S wpa_supplicant", cb);
+        log(&format!("install the Wi-Fi supplicant once (needs a cable or phone USB tethering): {}", crate::distro::install_hint(&["wpa_supplicant"])), cb);
     }
     let ok = probs.is_empty();
     if ok && !used.is_empty() {

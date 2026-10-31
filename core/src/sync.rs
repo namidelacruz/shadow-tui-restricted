@@ -110,15 +110,15 @@ pub fn snapshot(dir: &Path) -> Result<Vec<String>, String> {
         Err(e) => eprintln!("sync: secrets not saved ({e})"),
     }
     std::fs::create_dir_all(dir.join("lists")).map_err(|e| e.to_string())?;
-    let (c1, native, _) = sys::run(&["pacman", "-Qqen"]);
-    let (c2, foreign, _) = sys::run(&["pacman", "-Qqem"]);
-    if c1 == 0 {
-        std::fs::write(dir.join("lists/packages.txt"), native + "\n").map_err(|e| e.to_string())?;
+    if let Some((native, foreign)) = crate::distro::user_packages() {
+        // the list is only valid on the same distribution family; record which
+        let fam = format!("{:?}", crate::distro::family()).to_lowercase();
+        std::fs::write(dir.join("lists/packages.txt"), format!("# family={fam}\n{native}\n")).map_err(|e| e.to_string())?;
         wrote.push("lists/packages.txt".into());
-    }
-    if c2 == 0 || !foreign.is_empty() {
-        std::fs::write(dir.join("lists/packages-aur.txt"), foreign + "\n").map_err(|e| e.to_string())?;
-        wrote.push("lists/packages-aur.txt".into());
+        if !foreign.trim().is_empty() {
+            std::fs::write(dir.join("lists/packages-aur.txt"), foreign + "\n").map_err(|e| e.to_string())?;
+            wrote.push("lists/packages-aur.txt".into());
+        }
     }
     let mut units = String::new();
     for u in UNITS_SYSTEM {
@@ -180,7 +180,7 @@ fn age_recipient() -> Option<String> {
 /// Wi-Fi credentials of the SN profiles → age-encrypted secrets.age (to the SSH key or recipient file)
 pub fn encrypt_secrets(dir: &Path) -> Result<Option<usize>, String> {
     if sys::which("age").is_none() {
-        return Err("age is not installed (pacman -S age)".into());
+        return Err(format!("age is not installed ({})", crate::distro::install_hint(&["age"])));
     }
     let Some(rcpt) = age_recipient() else { return Err("no recipient: set [sync] age_recipient or create ~/.ssh/id_ed25519".into()) };
     let (code, out, _) = sys::run(&["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"]);
@@ -274,7 +274,7 @@ pub fn init(args: &[&str]) -> Result<String, String> {
         msg.push_str(&format!("\nremote: {url}"));
     } else if let Some(name) = opt("--github") {
         if sys::which("gh").is_none() {
-            return Err("GitHub CLI (gh) not installed: pacman -S github-cli && gh auth login — or use --remote URL".into());
+            return Err(format!("GitHub CLI (gh) not installed: {} && gh auth login — or use --remote URL", crate::distro::install_hint(&["github-cli"])));
         }
         // private, always: the backup describes your machine
         let (c, out, e) = sys::run(&["gh", "repo", "create", &name, "--private", "--description", "Shadow TUI Restricted backup"]);
@@ -387,13 +387,16 @@ pub fn restore(src: &str, system: bool, yes: bool) -> Result<(), String> {
     }
     if system {
         let pk = std::fs::read_to_string(dir.join("lists/packages.txt")).unwrap_or_default();
-        let pkgs: Vec<&str> = pk.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        // lists recorded before 7.1 have no family line and came from Arch
+        let fam = pk.lines().find_map(|l| l.strip_prefix("# family=")).unwrap_or("arch").to_string();
+        let here = format!("{:?}", crate::distro::family()).to_lowercase();
+        let pkgs: Vec<&str> = if fam == here { pk.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect() } else { vec![] };
+        if fam != here {
+            println!("the saved package list is from {fam}, this system is {here} — skipping it (install what you need by hand)");
+        }
         if !pkgs.is_empty() {
             println!("installing {} packages (already installed ones are skipped)…", pkgs.len());
-            let mut cmd = vec!["sudo", "pacman", "-S", "--needed"];
-            if yes {
-                cmd.push("--noconfirm");
-            }
+            let mut cmd = crate::distro::install_argv(yes);
             cmd.extend(pkgs.iter());
             let st = std::process::Command::new(cmd[0]).args(&cmd[1..]).status();
             if !st.map(|s| s.success()).unwrap_or(false) {
@@ -402,7 +405,7 @@ pub fn restore(src: &str, system: bool, yes: bool) -> Result<(), String> {
         }
         let aur = std::fs::read_to_string(dir.join("lists/packages-aur.txt")).unwrap_or_default();
         let aur: Vec<&str> = aur.lines().map(str::trim).filter(|l| !l.is_empty() && *l != "shadow-network" && *l != "shadow-tui-restricted").collect();
-        if !aur.is_empty() {
+        if !aur.is_empty() && crate::distro::family() == crate::distro::Family::Arch {
             if let Some(helper) = ["paru", "yay"].iter().find(|h| sys::which(h).is_some()) {
                 let mut cmd = vec![*helper, "-S", "--needed"];
                 cmd.extend(aur.iter());
@@ -412,7 +415,7 @@ pub fn restore(src: &str, system: bool, yes: bool) -> Result<(), String> {
             }
         }
         // the isolated runtime itself: rebuild the package from the recorded source
-        if sys::run(&["pacman", "-Q", "shadow-tui-restricted"]).0 != 0 {
+        if crate::distro::installed_version(&["shadow-tui-restricted"]).is_none() {
             let src = std::fs::read_to_string(dir.join("MANIFEST")).unwrap_or_default().lines().find_map(|l| l.strip_prefix("source=").map(String::from)).unwrap_or_default();
             if src.is_empty() {
                 println!("the Shadow runtime is not installed and the source is unknown: clone the shadow-tui-restricted repo and run ./install.sh");
@@ -420,7 +423,12 @@ pub fn restore(src: &str, system: bool, yes: bool) -> Result<(), String> {
                 println!("deploying the Shadow runtime (/opt/shadow-tui) from {src}…");
                 let tmp = std::env::temp_dir().join(format!("shadow-src-{}", sys::now()));
                 if sys::run(&["git", "clone", "-q", "--depth", "1", &src, &tmp.to_string_lossy()]).0 == 0 {
-                    let _ = std::process::Command::new("makepkg").args(["-si", "--noconfirm"]).current_dir(&tmp).status();
+                    // install.sh handles Arch (makepkg) and Fedora / RHEL (rpmbuild + dnf) alike
+                    let mut a = vec!["--no-greeter"];
+                    if yes {
+                        a.push("--yes");
+                    }
+                    let _ = std::process::Command::new("./install.sh").args(&a).current_dir(&tmp).status();
                 }
             }
         }

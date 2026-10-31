@@ -10,6 +10,9 @@
 #[path = "../../powerd/src/sys.rs"]
 #[allow(dead_code)]
 mod sys;
+#[path = "../../core/src/distro.rs"]
+#[allow(dead_code)]
+mod distro;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -252,7 +255,7 @@ fn enable(m: &str) -> Result<String, String> {
         }
         "verity" => {
             if sys::which("fsverity").is_none() {
-                return Err("fsverity-utils not installed (pacman -S fsverity-utils)".into());
+                return Err(format!("fsverity-utils not installed ({})", distro::install_hint(&["fsverity-utils"])));
             }
             let mut digests = String::new();
             let mut n = 0;

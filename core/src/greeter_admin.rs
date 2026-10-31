@@ -78,7 +78,7 @@ fn enable(args: &[&str]) -> i32 {
         return c;
     }
     if sys::which("greetd").is_none() {
-        return fail("greetd is not installed: sudo pacman -S greetd");
+        return fail(&format!("greetd is not installed: {} (on RHEL: ./install.sh --greeter builds it)", crate::distro::install_hint(&["greetd"])));
     }
     if sys::which("shadow-greet").is_none() {
         return fail("shadow-greet missing — reinstall the shadow-tui-restricted package");
@@ -89,8 +89,12 @@ fn enable(args: &[&str]) -> i32 {
     if code != 0 {
         return fail("login screen self-test failed (no desktop session found); nothing changed");
     }
-    if font == "auto" && !std::path::Path::new("/usr/share/kbd/consolefonts/ter-v24n.psf.gz").exists() {
-        println!("note: terminus-font is not installed — the login screen keeps the default console font size");
+    if font == "auto" && !["/usr/share/kbd/consolefonts/ter-v24n.psf.gz", "/usr/lib/kbd/consolefonts/ter-v24n.psf.gz"].iter().any(|p| std::path::Path::new(p).exists()) {
+        println!("note: the Terminus console font is not installed ({}) — the login screen keeps the default console font size", crate::distro::install_hint(&["terminus-font"]));
+    }
+    let gu = greeter_user();
+    if gu.is_empty() {
+        return fail("could not find or create a user for the login screen (greeter)");
     }
     if sys::which("agreety").is_none() {
         println!("warning: agreety (greetd's fallback prompt) not found — fallback will be a short message only");
@@ -120,15 +124,13 @@ fn enable(args: &[&str]) -> i32 {
             println!("backed up {GREETD_CONF} -> {BACKUP}");
         }
     }
-    let g = format!("# Managed by `shadow greeter` — `shadow greeter disable` restores the previous file.\n[terminal]\nvt = {vt}\n\n[default_session]\ncommand = \"{WRAPPER}\"\nuser = \"greeter\"\n");
+    let g = format!("# Managed by `shadow greeter` — `shadow greeter disable` restores the previous file.\n[terminal]\nvt = {vt}\n\n[default_session]\ncommand = \"{WRAPPER}\"\nuser = \"{gu}\"\n");
     if let Err(e) = write(GREETD_CONF, &g) {
         return fail(&format!("{GREETD_CONF}: {e}"));
     }
     let cache = sys::p("/var/cache/shadow-tui-greeter");
     let _ = std::fs::create_dir_all(&cache);
-    if sys::run(&["id", "-u", "greeter"]).0 == 0 {
-        sys::run(&["chown", "greeter", &cache.to_string_lossy()]);
-    }
+    sys::run(&["chown", &gu, &cache.to_string_lossy()]);
     if let Some(prev) = read("/etc/shadow-network/previous-dm").or_else(|| read("/etc/netdive/previous-dm")) {
         if !sys::exists(PREV_DM) {
             let _ = write(PREV_DM, &prev);
@@ -147,6 +149,22 @@ fn enable(args: &[&str]) -> i32 {
     println!("Preview it now in any terminal:  shadow greeter preview");
     println!("Failsafe: if it can't start it falls back to greetd's plain prompt (agreety).");
     0
+}
+
+/// The account greetd runs the login screen as: Arch's greetd package creates "greeter", Fedora's
+/// "greetd"; a source-built greetd (RHEL) has none, so "greeter" is created (system user, video group).
+fn greeter_user() -> String {
+    for u in ["greeter", "greetd"] {
+        if sys::run(&["id", "-u", u]).0 == 0 {
+            return u.to_string();
+        }
+    }
+    let nologin = if std::path::Path::new("/usr/sbin/nologin").exists() { "/usr/sbin/nologin" } else { "/sbin/nologin" };
+    if sys::run(&["useradd", "--system", "--no-create-home", "--groups", "video", "--shell", nologin, "--comment", "greetd login screen", "greeter"]).0 == 0 {
+        println!("created the system user \"greeter\" for the login screen");
+        return "greeter".into();
+    }
+    String::new()
 }
 
 fn disable(args: &[&str]) -> i32 {
