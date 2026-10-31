@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Update
+GenericName=Software Update
+Comment=Shadow TUI Restricted: check for updates on demand and replace only the files that changed
+Exec=shadow-update
+Icon=system-software-update
+Terminal=false
+Categories=System;Settings;

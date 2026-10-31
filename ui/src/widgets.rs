@@ -156,7 +156,9 @@ impl ListNav {
 pub fn chrome(f: &mut Frame, title: &str, status: &str) -> (i32, i32) {
     let (w, h) = (f.cv.w as i32, f.cv.h as i32);
     let th = f.theme.clone();
-    f.cv.clear(th.bg, th.bg_alpha);
+    // app windows are always opaque: whatever is behind them must never show through
+    // ([look] opacity applies to the floating side bar only)
+    f.cv.clear(th.bg, 1.0);
     let t = f.hair();
     f.cv.border(0, 0, w, h, t, th.amber, if f.focused { 0.9 } else { 0.35 });
     f.cv.brackets(f.px(6.0), f.px(6.0), w - 2 * f.px(6.0), h - 2 * f.px(6.0), f.px(14.0), f.px(2.0), th.amber, 0.9);
@@ -189,4 +191,39 @@ pub fn footer(f: &mut Frame, hints: &str) {
     let y = f.cv.h as i32 - pad - lh;
     let s = f.fit(hints, pt, false, w - 2 * pad);
     f.text(pad, y, &s, pt, th.dim, false);
+}
+
+/// A clickable rectangle in device pixels (store it during `draw`, test it in `App::click`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Rect {
+    pub fn hit(&self, x: i32, y: i32) -> bool {
+        x >= self.x && y >= self.y && x < self.x + self.w && y < self.y + self.h
+    }
+}
+
+/// A push button: `[ label ]` with its key hint underlined in amber. `selected` = keyboard focus,
+/// `enabled` = false greys it out. Returns its rectangle.
+pub fn button(f: &mut Frame, x: i32, top: i32, label: &str, selected: bool, enabled: bool) -> Rect {
+    let th = f.theme.clone();
+    let pt = th.font_pt;
+    let (padx, pady) = (f.px(12.0), f.px(5.0));
+    let tw = f.text_w(label, pt, true);
+    let r = Rect { x, y: top, w: tw + 2 * padx, h: f.line_h(pt) + 2 * pady };
+    let t = f.hair();
+    if selected && enabled {
+        f.cv.fill(r.x, r.y, r.w, r.h, th.amber, 1.0);
+        f.text(x + padx, top + pady, label, pt, th.bg, true);
+    } else {
+        f.cv.fill(r.x, r.y, r.w, r.h, th.panel, 1.0);
+        f.cv.border(r.x, r.y, r.w, r.h, t, if enabled { th.amber } else { th.dim }, if enabled { 0.8 } else { 0.4 });
+        f.text_a(x + padx, top + pady, label, pt, if enabled { th.text } else { th.dim }, true, if enabled { 1.0 } else { 0.6 });
+    }
+    r
 }

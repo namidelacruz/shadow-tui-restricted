@@ -12,11 +12,13 @@ if [ "$part" = sec ]; then
   inst -m755 "$target/release/shadow-sec" "$o/bin/shadow-sec"
   install -d "$dest/usr/bin" && ln -sf /opt/shadow-tui/bin/shadow-sec "$dest/usr/bin/shadow-sec"
   inst -m644 "$src/system/shadow-sec.service" "$dest/usr/lib/systemd/system/shadow-sec.service"
+  install -d "$o/share"
+  printf '%s\n' /opt/shadow-tui/bin/shadow-sec /usr/bin/shadow-sec /usr/lib/systemd/system/shadow-sec.service > "$o/share/FILES.sec"
   exit 0
 fi
 
 install -d "$o/bin" "$o/lib" "$o/share" "$dest/usr/bin"
-for b in shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-greet \
+for b in shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-greet \
          shadow-sessiond shadow-displayd shadow-term shadow-powerd shadow; do
   inst -m755 "$target/release/$b" "$o/bin/$b"
 done
@@ -48,7 +50,7 @@ inst -m644 "$src/system/shadow-sync.timer"   "$dest/$u/shadow-sync.timer"
 inst -m755 "$src/system/shadow-tui.sleep"    "$dest/usr/lib/systemd/system-sleep/shadow-tui"
 inst -m644 "$src/system/org.shadownetwork.wifi.policy" "$dest/usr/share/polkit-1/actions/org.shadownetwork.wifi.policy"
 inst -m644 "$src/system/shadow-tui.desktop"  "$dest/usr/share/wayland-sessions/shadow-tui.desktop"
-for d in shadow-term shadow-config shadow-files shadow-net shadow-launch; do
+for d in shadow-term shadow-config shadow-files shadow-net shadow-launch shadow-update; do
   inst -m644 "$src/system/$d.desktop" "$dest/usr/share/applications/$d.desktop"
 done
 
@@ -97,5 +99,13 @@ install -dm755 "$dest/var/lib/shadow-tui" "$dest/var/lib/shadow-powerd" "$dest/v
   echo "branch=$(git -C "$src" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$o/share/BUILD_INFO"
+# pristine copy of the shipped /etc defaults: updates offer FILE.shadow-new only when the default
+# itself changed, never just because you edited yours
+(cd "$dest" && find ./etc -type f 2>/dev/null) | while read -r f; do
+  install -D -m644 "$dest/$f" "$o/share/etc-defaults/${f#./etc/}"
+done
 # integrity manifest of the runtime (shadow-sec verity builds on it)
 (cd "$o" && find bin lib -type f -exec sha512sum {} + | sort -k2) > "$o/share/MANIFEST.sha512"
+# every path this layout installs: `shadow update apply` compares against it to update only
+# changed files and to remove files that a newer version no longer ships
+(cd "$dest" && find . \( -type f -o -type l \) ! -path ./opt/shadow-tui/share/FILES | sed 's|^\.||' | sort) > "$o/share/FILES"

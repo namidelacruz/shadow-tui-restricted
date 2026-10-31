@@ -19,10 +19,11 @@ Version 6, with its own Smithay compositor and orbital ring, stays on the `v6` b
 | Component | What it is |
 |---|---|
 | `shadow-bar` | The floating side bar (layer-shell, right edge). It shows the monitor and scale, workspace, focused app, NPU state, sync, battery and watts, panel Hz, package °C and profile, audio DSP, Wi-Fi SSID/dBm/EAP, Lua widgets and the time. It sits on the laptop panel; when docked it follows the monitor that has focus. `Mod+Shift+B` hides it. |
-| `shadow-launch` | Launcher. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
+| `shadow-launch` | Launcher, opened as its own normal window (tiled, opaque), not an overlay over what's on screen. Click or press Enter to launch. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
 | `shadow-net` | Wi-Fi: networks, UC-Secure and eduroam setup, self-repair, with a live EAP/TLS log. |
 | `shadow-config` | Live settings matrix over `config.toml`. Changes apply immediately; if niri rejects one, it is rolled back. |
 | `shadow-files` | Three-column file manager (parent · current · preview). |
+| `shadow-update` | Updater (`Mod+U`, or "Update" in the launcher). It checks only when you click **Check for updates**, and installs only when you click **Update**. Only the files that changed are replaced. See [Updates](#updates). |
 | `shadow-lock` | Session lock (ext-session-lock): one static screen per monitor, PAM. |
 | `shadow-term` | The terminal (amber/cyan, HUD strip, command blocks). |
 | `shadow-greet` | Static console login for greetd, with no animation, power buttons or command hints. The console font is sized to the panel. |
@@ -92,7 +93,7 @@ Other entry points:
 - `packaging/build-rpm.sh OUTDIR` builds the RPMs on their own.
 - `makepkg` builds the Arch package.
 - Both packages lay out their files through `packaging/install-files.sh` and share their install scripts (`packaging/post-install.sh`).
-- `shadow update run` later rebuilds whichever kind of package your system uses from your repository.
+- Later updates: the `shadow-update` app replaces only the files that changed (see [Updates](#updates)); `shadow update run` still rebuilds and reinstalls the whole package.
 
 After that, pick **Shadow TUI Restricted** at the login screen, or run `shadow-session` from a TTY.
 
@@ -107,7 +108,7 @@ Shadow's niri config is generated into `~/.config/shadow-state/niri.kdl`, and th
 | `Mod+Tab` / `Mod+J` · `Mod+Shift+Tab` / `Mod+K` | focus the next / previous window; the focused window is always centered (120 ms) |
 | `Mod+[` / `Mod+]` | width preset 45 / 65 / 85 % |
 | `Mod+F` · `Mod+Shift+F` | full width (the bar stays visible) · true fullscreen |
-| `Mod+Return` `Mod+Space` `Mod+E` `Mod+N` `Mod+Comma` | terminal, launcher, files, network, settings |
+| `Mod+Return` `Mod+Space` `Mod+E` `Mod+N` `Mod+Comma` `Mod+U` | terminal, launcher, files, network, settings, updates |
 | `Mod+Ctrl+arrows` · `Mod+Shift+Ctrl+arrows` | focus another monitor · move the window there |
 | `Mod+1…9` · `Mod+Shift+1…9` | workspace · move the window to a workspace |
 | `Mod+O` | overview |
@@ -140,6 +141,31 @@ If the scale a monitor ends up with still differs from the ideal (a pinned value
 Every app renders at the exact fractional scale (`wp_fractional_scale_v1` + `wp_viewporter`), so text stays sharp at 1.25 or 1.5. `shadow-displayd status` shows what was decided for each monitor.
 
 **Dock mode.** Closing the lid with an external monitor on turns the panel off instead of locking, and opening it turns the panel back on. The side bar moves to whichever monitor has focus.
+
+## Updates
+
+Nothing checks for updates in the background. Open **Update** (`Mod+U`, or from the launcher) and:
+
+- **Check for updates** fetches your repository (Settings → Updates). It lists the new commits, the changed source files and which programs they affect.
+- **Update** does the following:
+  1. It rebuilds incrementally: cargo recompiles only the crates that changed, then runs their tests.
+  2. It lays the result out exactly as the package would.
+  3. It compares that, byte for byte, with what is installed.
+  4. It replaces only the files that differ. Files a newer version no longer ships are removed.
+  5. It asks for your password once, if sudo needs it.
+  6. Each file is swapped atomically, and a backup of everything touched goes to `/var/lib/shadow-tui/update-backup` (the last 3 are kept).
+  7. Only the services and session programs whose binaries changed are restarted.
+- **Undo last update** restores that backup.
+
+Safeguards:
+
+- **Config files in `/etc` are never overwritten.** When a shipped default changes, the new version is placed next to yours as `FILE.shadow-new`. If you've edited your copy and the default didn't change, nothing is offered.
+- **New dependencies need the package manager.** If an update adds or drops a package dependency, the updater refuses it and tells you to run `./install.sh`.
+- **Failures change nothing.** If the build or the tests fail, nothing is installed.
+
+The same from a terminal: `shadow update check-files`, `shadow update apply`, `sudo shadow update undo`.
+
+pacman/rpm keep listing the version you last installed with `./install.sh`. The installed build itself is recorded in `/opt/shadow-tui/share/BUILD_INFO` (`version+gitCOMMIT`). The next `./install.sh` brings the package database back in line.
 
 ## Configuration
 

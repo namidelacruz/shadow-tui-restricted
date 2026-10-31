@@ -61,6 +61,7 @@ pub const BINDS: &[(&str, &str)] = &[
     ("Mod+N", r#"spawn "shadow-net";"#),
     ("Mod+Comma", r#"spawn "shadow-config";"#),
     ("Mod+E", r#"spawn "shadow-files";"#),
+    ("Mod+U", r#"spawn "shadow-update";"#),
     ("Mod+Alt+L", r#"spawn "shadow-lock";"#),
     ("Mod+Shift+B", r#"spawn "pkill" "-USR1" "-x" "shadow-bar";"#),
     ("Mod+Shift+BackSpace", r#"spawn "shadow" "healer" "revert";"#),
@@ -195,8 +196,12 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, "    clip-to-geometry true");
     p(&mut o, "}");
     p(&mut o, "window-rule {");
-    p(&mut o, r#"    match app-id="^shadow-launch$""#);
-    p(&mut o, "    open-floating true");
+    // the launcher and the updater are ordinary windows (tiled, opaque) — never floating overlays
+    // on top of other content
+    p(&mut o, r#"    match app-id="^shadow-(launch|update)$""#);
+    p(&mut o, "    open-floating false");
+    p(&mut o, "    opacity 1.0");
+    p(&mut o, "    default-column-width { proportion 0.5; }");
     p(&mut o, &format!("    focus-ring {{ active-color {}; }}", q(&g.amber)));
     p(&mut o, "}");
     p(&mut o, "layer-rule {");

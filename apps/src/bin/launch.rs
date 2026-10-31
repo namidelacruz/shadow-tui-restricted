@@ -1,4 +1,5 @@
-//! shadow-launch — center-stage launcher.
+//! shadow-launch — the application launcher. It opens as its own normal window (tiled by niri,
+//! fully opaque), not as an overlay over what is on screen.
 //!
 //! Type to search apps and Shadow actions. With an empty query the list is ranked by intent:
 //! what usually follows the app you're in (Markov transitions), what you open at this hour, and
@@ -6,7 +7,7 @@
 //! ~W (from the CPU share shadow-powerd learned for it).
 //!
 //!   text   search       !cmd  run a command      >  Shadow actions only
-//!   ↑ ↓    select       Enter launch             Esc close
+//!   ↑ ↓    select       Enter launch             Esc close        click a row to launch it
 use shadow_apps::desktop::{self, Entry};
 use shadow_apps::{focused_app, spawn};
 use shadow_ui::widgets::{chrome, footer, Input, ListNav};
@@ -26,6 +27,8 @@ struct Launch {
     ram: HashMap<String, u32>,
     cpu: HashMap<u32, f64>,
     hour: usize,
+    /// geometry of the drawn list, for clicks: (top, row height)
+    rows: (i32, i32),
 }
 
 fn action(id: &str, name: &str, detail: &str, cmd: &str) -> Entry {
@@ -49,6 +52,7 @@ fn actions() -> Vec<Entry> {
         action("sync", "Sync state to GitHub", "shadow-sync push", &hold("shadow-sync push")),
         action("healer", "Healer status", "self-correction log and proposals", &hold("shadow healer status")),
         action("revert", "Revert last automated fix", "Mod+Shift+Backspace", "shadow healer revert"),
+        action("update", "Update", "shadow-update · check for and install updates (only changed files)", "shadow-update"),
         action("display", "Display status", "scale, text size, refresh per monitor", &hold("shadow-displayd status")),
         action("logout", "Log out", "leave the session", "niri msg action quit --skip-confirmation"),
         action("suspend", "Suspend", "", "systemctl suspend"),
@@ -156,6 +160,28 @@ impl App for Launch {
         }
     }
 
+    fn click(&mut self, _x: i32, y: i32, ctx: &mut Ctx) {
+        let (top, rh) = self.rows;
+        if rh <= 0 || y < top {
+            return;
+        }
+        let row = self.nav.top + ((y - top) / rh) as usize;
+        if row < self.shown.len() && row < self.nav.top + self.visible {
+            self.nav.sel = row;
+            self.launch(ctx);
+        }
+    }
+
+    fn scroll(&mut self, lines: i32, ctx: &mut Ctx) {
+        let n = self.shown.len();
+        if n == 0 {
+            return;
+        }
+        self.nav.sel = (self.nav.sel as i64 + lines as i64).clamp(0, n as i64 - 1) as usize;
+        self.nav.clamp(n, self.visible);
+        ctx.redraw();
+    }
+
     fn draw(&mut self, f: &mut Frame) {
         let th = f.theme.clone();
         let ctxline = if self.from.is_empty() { String::new() } else { format!("after {}", self.from) };
@@ -178,6 +204,7 @@ impl App for Launch {
         // list
         let row_h = lh + f.px(8.0);
         let list_top = qy + lh + f.px(22.0);
+        self.rows = (list_top, row_h);
         let foot = f.line_h(pt * 0.9) + pad + f.px(6.0);
         self.visible = ((h - list_top - foot) / row_h).max(1) as usize;
         self.nav.clamp(self.shown.len(), self.visible);
@@ -222,7 +249,7 @@ impl App for Launch {
                 f.text(w - pad - f.px(10.0) - est_w, dy, &est, pt * 0.9, th.cyan, false);
             }
         }
-        footer(f, "type to search · ↑↓ select · Enter launch · !cmd run · >actions · Esc close");
+        footer(f, "type to search · ↑↓ / wheel select · Enter or click launch · !cmd run · >actions · Esc close");
     }
 }
 
@@ -242,6 +269,7 @@ fn main() {
         ram: desktop::load_ram(),
         cpu: desktop::load_cpu(),
         hour: shadow_apps::local_hour(),
+        rows: (0, 0),
     };
     if l.from == "shadow-launch" {
         l.from.clear();

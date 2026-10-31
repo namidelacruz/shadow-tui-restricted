@@ -63,6 +63,7 @@ pub fn get_in(text: &str, section: &str, key: &str) -> Option<String> {
     None
 }
 
+#[allow(dead_code)]
 pub fn get_bool(section: &str, key: &str, default: bool) -> bool {
     match get(section, key).as_deref() {
         Some("true") => true,

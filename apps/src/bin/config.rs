@@ -47,7 +47,7 @@ const PAGES: [(&str, &str); 9] = [
     ("Input", "keyboard layout and repeat"),
     ("Session", "idle lock and monitor power-off"),
     ("Power + NPU", "learning schedule, predictive tuning, modes"),
-    ("Updates + sync", "update source and the GitHub state repository"),
+    ("Updates + sync", "update source (open shadow-update or Mod+U to check) and the GitHub state repository"),
     ("Security", "optional shadow-sec status (read-only)"),
 ];
 
@@ -90,7 +90,6 @@ fn rows(page: usize, outputs: &[String]) -> Vec<Row> {
         7 => vec![
             r("updates", "repo", "Update source (git URL)", Kind::Text, ""),
             r("updates", "branch", "Branch", Kind::Text, "main"),
-            r("updates", "check_on_login", "Check for updates at login", Kind::Bool, "true"),
             r("sync", "age_recipient", "secrets.age recipient (empty = ~/.ssh/id_ed25519.pub)", Kind::Text, ""),
         ],
         _ => vec![],

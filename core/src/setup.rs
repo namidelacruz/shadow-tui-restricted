@@ -62,7 +62,7 @@ pub const DEFAULT_CONFIG: &str = r##"# Shadow TUI Restricted — ~/.config/shado
 [updates]
 # repo = ""
 # branch = "main"
-# check_on_login = true
+# checks happen only when you press "Check for updates" in shadow-update
 
 [sync]
 # age_recipient = ""          # default: ~/.ssh/id_ed25519.pub

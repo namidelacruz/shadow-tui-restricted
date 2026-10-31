@@ -10,7 +10,7 @@ use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::{
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
     Connection, Dispatch, Proxy, QueueHandle,
 };
 use smithay_client_toolkit::{
@@ -21,6 +21,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
+        pointer::{cursor_shape::CursorShapeManager, PointerEvent, PointerEventKind, PointerHandler, BTN_LEFT},
         Capability, SeatHandler, SeatState,
     },
     session_lock::{SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface, SessionLockSurfaceConfigure},
@@ -199,6 +200,10 @@ pub trait App {
     }
     fn draw(&mut self, f: &mut Frame);
     fn key(&mut self, _k: &Key, _ctx: &mut Ctx) {}
+    /// Left click at (x, y) in device pixels of the drawn frame (same units as `Frame` drawing).
+    fn click(&mut self, _x: i32, _y: i32, _ctx: &mut Ctx) {}
+    /// Wheel: positive = down, in lines.
+    fn scroll(&mut self, _lines: i32, _ctx: &mut Ctx) {}
     /// Called every `tick_ms` milliseconds when non-zero.
     fn tick(&mut self, _ctx: &mut Ctx) {}
     fn tick_ms(&self) -> u64 {
@@ -259,6 +264,10 @@ struct Shell {
     frac_mgr: Option<WpFractionalScaleManagerV1>,
     viewporter: Option<WpViewporter>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
+    cursor: Option<CursorShapeManager>,
+    cursor_dev: Option<smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
+    wheel: f64,
     mods: Modifiers,
     surfs: Vec<Surf>,
     next_id: u32,
@@ -299,6 +308,10 @@ pub fn run(app: Box<dyn App>, messages: Option<Channel<String>>) -> Result<(), S
         frac_mgr: globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()).ok(),
         viewporter: globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok(),
         keyboard: None,
+        pointer: None,
+        cursor: CursorShapeManager::bind(&globals, &qh).ok(),
+        cursor_dev: None,
+        wheel: 0.0,
         mods: Modifiers::default(),
         surfs: vec![],
         next_id: 1,
@@ -709,11 +722,25 @@ impl SeatHandler for Shell {
                 self.keyboard = Some(k);
             }
         }
+        if cap == Capability::Pointer && self.pointer.is_none() {
+            if let Ok(p) = self.seat_state.get_pointer(qh, &seat) {
+                self.cursor_dev = self.cursor.as_ref().map(|m| m.get_shape_device(&p, qh));
+                self.pointer = Some(p);
+            }
+        }
     }
     fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, cap: Capability) {
         if cap == Capability::Keyboard {
             if let Some(k) = self.keyboard.take() {
                 k.release();
+            }
+        }
+        if cap == Capability::Pointer {
+            if let Some(d) = self.cursor_dev.take() {
+                d.destroy();
+            }
+            if let Some(p) = self.pointer.take() {
+                p.release();
             }
         }
     }
@@ -742,6 +769,39 @@ impl KeyboardHandler for Shell {
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
     fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, m: Modifiers, _: RawModifiers, _: u32) {
         self.mods = m;
+    }
+}
+
+impl PointerHandler for Shell {
+    fn pointer_frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
+        use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
+        for ev in events {
+            let scale = self.surfs.iter().find(|s| s.wl() == &ev.surface).map_or(1.0, |s| s.scale);
+            let mut ctx = Ctx::default();
+            match ev.kind {
+                // without this the compositor shows no cursor (or a stale one) over our windows
+                PointerEventKind::Enter { serial } => {
+                    if let Some(d) = &self.cursor_dev {
+                        d.set_shape(serial, Shape::Default);
+                    }
+                }
+                PointerEventKind::Press { button: BTN_LEFT, .. } => {
+                    let (x, y) = ((ev.position.0 * scale).round() as i32, (ev.position.1 * scale).round() as i32);
+                    self.app.click(x, y, &mut ctx);
+                }
+                PointerEventKind::Axis { vertical, .. } => {
+                    let d = if vertical.discrete != 0 { vertical.discrete as f64 } else { vertical.absolute / 15.0 };
+                    self.wheel += d;
+                    let n = self.wheel.trunc() as i32;
+                    if n != 0 {
+                        self.wheel -= n as f64;
+                        self.app.scroll(n, &mut ctx);
+                    }
+                }
+                _ => continue,
+            }
+            self.apply(ctx);
+        }
     }
 }
 
