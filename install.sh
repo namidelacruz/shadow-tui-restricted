@@ -69,6 +69,38 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/shadow-tui"; pkgcache="$cache/packages"
 ((DRY)) || mkdir -p "$pkgcache"
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Failsafe while the Shadow package itself is installed: the same marker the updater uses, so no
+# Shadow desktop session can start on half-written files, and shutdown/suspend are held off. If the
+# install is cut off, shadow-update-recover.service completes or reverses it at the next boot.
+UPDATE_MARK=/var/lib/shadow-tui/update-in-progress
+guarded_install() {   # guarded_install PKGFILE... -- COMMAND...
+  local pkgs=() inh=()
+  while [[ $1 != -- ]]; do pkgs+=("$1"); shift; done; shift
+  if ((DRY)); then run sudo "$@"; return; fi
+  if sudo test -e "$UPDATE_MARK"; then
+    warn "an earlier update did not finish — recovering it first"
+    if [[ -x /opt/shadow-tui/bin/shadow ]]; then sudo /opt/shadow-tui/bin/shadow update recover || die "recovery failed; see the message above"
+    else sudo rm -f "$UPDATE_MARK"; fi
+  fi
+  sudo install -d -m755 /var/lib/shadow-tui
+  printf 'kind=package\npid=%s\nboot=%s\nstarted=%s\nbackup=\npackage=%s\n' "$$" \
+    "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" "$(date +%s)" "${pkgs[0]}" | sudo tee "$UPDATE_MARK" >/dev/null
+  sync
+  have systemd-inhibit && inh=(systemd-inhibit --what=shutdown:sleep:handle-lid-switch --who="Shadow TUI install" --why="installing system files; wait for it to finish" --mode=block)
+  local rc=0
+  sudo "${inh[@]}" "$@" || rc=$?
+  sync
+  if ((rc == 0)); then
+    sudo rm -f "$UPDATE_MARK"
+  elif [[ -x /opt/shadow-tui/bin/shadow ]]; then
+    # nothing written / everything written: cleared; half written: stays locked, explains how to fix
+    sudo /opt/shadow-tui/bin/shadow update recover || warn "the desktop stays locked until this is fixed: re-run ./install.sh"
+  else
+    sudo rm -f "$UPDATE_MARK"
+  fi
+  return "$rc"
+}
 # The package file of NAME that this run built (newer than MARKER): never an older build left in
 # the cache, never a .sig, never a debug package.
 built_pkg() {
@@ -199,7 +231,7 @@ arch_install() {
     ((SEC)) && pkgs+=("$(built_pkg "$marker" shadow-tui-sec .pkg.tar.zst)")
   fi
   rm -f "$marker"
-  run sudo pacman -U --noconfirm "${pkgs[@]}"
+  guarded_install "${pkgs[@]}" -- pacman -U --noconfirm "${pkgs[@]}"
   prune_cache
 }
 
@@ -396,7 +428,8 @@ rpm_install() {
   fi
   rm -f "$marker"
   say "Installing"
-  dnf_install "${rpms[@]}"
+  # shellcheck disable=SC2086  # $DNF is "dnf" or "dnf5"
+  guarded_install "${rpms[@]}" -- $DNF install -y "${rpms[@]}"
   prune_cache
 }
 
@@ -452,8 +485,11 @@ verify() {
     [[ -z $stack || -f /etc/pam.d/$stack ]] && pass "lock screen PAM (stack: ${stack:-own})" || bad "/etc/pam.d/shadow-lock includes $stack, which does not exist — the lock screen could not unlock"
   else bad "/etc/pam.d/shadow-lock missing — the lock screen could not unlock"; fi
   local u off=()
-  for u in shadow-powerd shadow-netd shadow-healer; do systemctl is-enabled -q "$u.service" 2>/dev/null || off+=("$u"); done
+  for u in shadow-powerd shadow-netd shadow-healer shadow-update-recover; do systemctl is-enabled -q "$u.service" 2>/dev/null || off+=("$u"); done
   ((${#off[@]})) && wrn "services not enabled: ${off[*]} (sudo systemctl enable --now ${off[*]/%/.service})" || pass "system services enabled"
+  if [[ -e /var/lib/shadow-tui/update-in-progress ]]; then
+    bad "an update is in progress or was interrupted: the desktop is locked until it finishes (sudo shadow update recover)"
+  else pass "no unfinished update"; fi
   local font; font=$(fc-match -f '%{file}' monospace 2>/dev/null || true)
   [[ -n $font && -f $font ]] && pass "monospace font: $(basename "$font")" || bad "no monospace font found (Shadow's apps cannot draw text): install dejavu-sans-mono-fonts / ttf-dejavu"
   ls /usr/share/glvnd/egl_vendor.d/*mesa*.json >/dev/null 2>&1 && pass "Mesa EGL (OpenGL) present" || wrn "Mesa EGL vendor file not found — niri needs Mesa's EGL"

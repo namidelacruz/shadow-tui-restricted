@@ -40,7 +40,7 @@ inst -m644 "$src/LICENSE"            "$dest/usr/share/licenses/shadow-tui-restri
 find "$o/share" -type f -exec chmod 644 {} +
 
 s=usr/lib/systemd/system u=usr/lib/systemd/user
-for f in shadow-powerd shadow-audiod shadow-netd shadow-healer shadow-wifi-device; do
+for f in shadow-powerd shadow-audiod shadow-netd shadow-healer shadow-wifi-device shadow-update-recover; do
   inst -m644 "$src/system/$f.service" "$dest/$s/$f.service"
 done
 inst -m644 "$src/system/shadow.slice"        "$dest/$s/shadow.slice"

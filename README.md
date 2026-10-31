@@ -161,9 +161,16 @@ Safeguards:
 
 - **Config files in `/etc` are never overwritten.** When a shipped default changes, the new version is placed next to yours as `FILE.shadow-new`. If you've edited your copy and the default didn't change, nothing is offered.
 - **New dependencies need the package manager.** If an update adds or drops a package dependency, the updater refuses it and tells you to run `./install.sh`.
-- **Failures change nothing.** If the build or the tests fail, nothing is installed.
+- **Failures change nothing.** If the build or the tests fail, nothing is installed. If writing a file fails partway through, every file already changed is put back.
+- **The desktop can't start on a half-updated system.** While an update, undo or package install is writing files, `/var/lib/shadow-tui/update-in-progress` exists. It is removed only once everything is on disk.
+  - While it exists, the login screen refuses to start a session ("system update in progress — login paused"), and so does `shadow-session` from a TTY. A session that is already running keeps running.
+  - Shutdown, suspend and lid-suspend are held off for the duration (`systemd-inhibit`).
+  - The marker is also a lock, so two updates can't run at once.
+  - If an update is cut off (power loss, crash, forced reboot), `shadow-update-recover.service` repairs it at the next boot, before the login screen and before any login (TTY and ssh included). It reverses a file-level update from its backup journal. It finishes an interrupted package install from the package file, then checks the result against `MANIFEST.sha512`.
+  - If recovery can't succeed, the desktop stays locked. Log in on a text console and run `sudo shadow update recover` or `./install.sh`. The Update app offers **Recover interrupted update** too.
+  - `./install.sh`, `shadow update run` and `shadow update rollback` install their packages under the same guard.
 
-The same from a terminal: `shadow update check-files`, `shadow update apply`, `sudo shadow update undo`.
+The same from a terminal: `shadow update check-files`, `shadow update apply`, `sudo shadow update undo`, `sudo shadow update recover`, `shadow update in-progress`.
 
 pacman/rpm keep listing the version you last installed with `./install.sh`. The installed build itself is recorded in `/opt/shadow-tui/share/BUILD_INFO` (`version+gitCOMMIT`). The next `./install.sh` brings the package database back in line.
 

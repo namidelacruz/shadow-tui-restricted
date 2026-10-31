@@ -1,7 +1,7 @@
 #!/bin/sh
 # Package scriptlets shared by the Arch package (.install) and the RPM (%post/%preun/%postun):
 #   post-install.sh install | upgrade | pre-remove | post-remove
-units="shadow-powerd.service shadow-audiod.service shadow-netd.service shadow-healer.service shadow-wifi-device.service"
+units="shadow-powerd.service shadow-audiod.service shadow-netd.service shadow-healer.service shadow-wifi-device.service shadow-update-recover.service"
 
 seed_modules() {
   # behaviour modules live in a git repo the healer manages; seed it once, never overwrite
@@ -73,6 +73,7 @@ MSG
     ;;
   post-remove)
     systemctl daemon-reload >/dev/null 2>&1 || true
+    rm -f /var/lib/shadow-tui/update-in-progress
     echo "==> Your state (~/.config/shadow-state) and /var/lib/shadow-tui/modules are kept."
     ;;
 esac

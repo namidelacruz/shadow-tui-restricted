@@ -6,7 +6,10 @@
 //! files that differ (with a backup); "Undo last update" restores that backup. Your config files
 //! in /etc are never overwritten — a changed default lands next to yours as FILE.shadow-new.
 //!
-//!   c  check      u  update      z  undo last update      Esc  close      (or click the buttons)
+//! While an update writes files no new desktop session can start; if one is cut off, it's offered
+//! here as "Recover interrupted update" (and recovered on its own at the next boot).
+//!
+//!   c  check      u  update      z  undo / recover      Esc  close      (or click the buttons)
 use shadow_ui::calloop::channel::{self, Sender};
 use shadow_ui::widgets::{button, chrome, footer, Input, Rect};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
@@ -48,6 +51,8 @@ struct Upd {
     sel: usize,
     rects: Vec<(Btn, Rect)>,
     scroll: usize,
+    /// an update is running elsewhere / was interrupted (from `shadow update in-progress`)
+    pending: Option<String>,
 }
 
 fn shadow() -> String {
@@ -97,7 +102,13 @@ fn wipe(s: &mut String) {
 }
 
 impl Upd {
+    fn interrupted(&self) -> bool {
+        self.pending.as_deref().is_some_and(|p| p.contains("interrupted"))
+    }
+
     fn load_status(&mut self) {
+        let (rc, o) = shadow_apps::cmd_out(&[&shadow(), "update", "in-progress"]);
+        self.pending = (rc == 0).then(|| o.trim().to_string());
         let (_, o) = shadow_apps::cmd_out(&[&shadow(), "update", "status"]);
         for l in o.lines() {
             if let Some(v) = l.strip_prefix("installed :") {
@@ -111,8 +122,8 @@ impl Upd {
     fn enabled(&self, b: Btn) -> bool {
         match b {
             Btn::Check => self.busy.is_none(),
-            Btn::Update => self.busy.is_none() && self.status == "available" && self.reinstall.is_none(),
-            Btn::Undo => self.busy.is_none(),
+            Btn::Update => self.busy.is_none() && self.pending.is_none() && self.status == "available" && self.reinstall.is_none(),
+            Btn::Undo => self.busy.is_none() && (self.pending.is_none() || self.interrupted()),
             Btn::Close => true,
         }
     }
@@ -163,10 +174,12 @@ impl Upd {
             }
             Job::Undo => {
                 self.log.clear();
+                // undo on an interrupted update = recover it (finish or reverse)
+                let verb = if self.interrupted() { "recover" } else { "undo" };
                 if password.is_some() {
-                    vec!["sudo".into(), "-S".into(), "-p".into(), String::new(), sh, "update".into(), "undo".into()]
+                    vec!["sudo".into(), "-S".into(), "-p".into(), String::new(), sh, "update".into(), verb.into()]
                 } else {
-                    vec!["sudo".into(), "-n".into(), sh, "update".into(), "undo".into()]
+                    vec!["sudo".into(), "-n".into(), sh, "update".into(), verb.into()]
                 }
             }
         };
@@ -321,7 +334,7 @@ impl App for Upd {
             let label = match b {
                 Btn::Check => "Check for updates",
                 Btn::Update => "Update",
-                Btn::Undo => "Undo last update",
+                Btn::Undo => if self.interrupted() { "Recover interrupted update" } else { "Undo last update" },
                 Btn::Close => "Close",
             };
             let r = button(f, bx, y, label, i == self.sel && self.pw_for.is_none(), self.enabled(*b));
@@ -329,6 +342,18 @@ impl App for Upd {
             bx += r.w + f.px(10.0);
         }
         y += self.rects.first().map_or(lh, |r| r.1.h) + f.px(14.0);
+
+        // an update in flight elsewhere, or one cut off: the desktop can't be started meanwhile
+        if let Some(p) = &self.pending {
+            let msg = if self.interrupted() {
+                format!("! Interrupted update ({p}). New logins are locked until it is recovered: press Recover (or reboot)")
+            } else {
+                format!("! An update is running ({p}). New logins wait until it finishes.")
+            };
+            let m = f.fit(&msg, small, true, w - 2 * pad - f.px(16.0));
+            f.text(x0, y, &m, small, th.crimson, true);
+            y += slh + f.px(8.0);
+        }
 
         // password prompt
         if let Some(job) = self.pw_for {
@@ -416,6 +441,7 @@ fn main() {
         sel: 0,
         rects: vec![],
         scroll: 0,
+        pending: None,
     };
     u.load_status();
     if let Err(e) = run(Box::new(u), Some(rx)) {

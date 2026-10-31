@@ -245,6 +245,36 @@ fn package_files() -> Vec<PathBuf> {
     v.into_iter().map(|(_, p)| p).collect()
 }
 
+/// sudo [inhibit] shadow update pkg-install PKG: the package manager runs with the desktop locked
+/// out until the package is completely on disk (plain sudo pacman/dnf before the first install).
+fn guarded_pkg<'a>(pkg: &'a str, yes: bool, downgrade: bool) -> Vec<&'a str> {
+    let me = "/opt/shadow-tui/bin/shadow";
+    let mut v = vec!["sudo"];
+    v.extend(inhibit());
+    if Path::new(me).exists() {
+        v.extend([me, "update", "pkg-install", pkg]);
+        if yes {
+            v.push("--yes");
+        }
+        if downgrade {
+            v.push("--downgrade");
+        }
+    } else if rpm() {
+        v.extend(if downgrade { vec!["rpm", "-Uvh", "--oldpackage"] } else { vec!["dnf", "install"] });
+        if yes && !downgrade {
+            v.push("-y");
+        }
+        v.push(pkg);
+    } else {
+        v.extend(["pacman", "-U"]);
+        if yes {
+            v.push("--noconfirm");
+        }
+        v.push(pkg);
+    }
+    v
+}
+
 pub fn build_and_install(srcdir: &Path, yes: bool, label: &str) -> i32 {
     let recipe = if rpm() {
         srcdir.join("packaging/shadow-tui-restricted.spec")
@@ -306,16 +336,7 @@ pub fn build_and_install(srcdir: &Path, yes: bool, label: &str) -> i32 {
         newpkg.file_name().unwrap().to_string_lossy()
     ));
     let np = newpkg.to_string_lossy().to_string();
-    let mut cmd = if rpm() {
-        vec!["sudo", "dnf", "install"]
-    } else {
-        vec!["sudo", "pacman", "-U"]
-    };
-    if yes {
-        cmd.push(if rpm() { "-y" } else { "--noconfirm" });
-    }
-    cmd.push(&np);
-    if sh(&cmd, None, &[]) != 0 {
+    if sh(&guarded_pkg(&np, yes, false), None, &[]) != 0 {
         println!("update: install cancelled or failed — previous version still installed.");
         return 5;
     }
@@ -379,16 +400,7 @@ pub fn rollback(yes: bool) -> i32 {
             .unwrap()
             .to_string_lossy()
     ));
-    let mut cmd = if rpm() {
-        vec!["sudo", "rpm", "-Uvh", "--oldpackage"]
-    } else {
-        vec!["sudo", "pacman", "-U"]
-    };
-    if yes && !rpm() {
-        cmd.push("--noconfirm");
-    }
-    cmd.push(prev.trim());
-    if sh(&cmd, None, &[]) != 0 {
+    if sh(&guarded_pkg(prev.trim(), yes, true), None, &[]) != 0 {
         return 5;
     }
     sh(&["shadow", "setup", "niri"], None, &[]);
@@ -429,6 +441,15 @@ pub fn main(p: &Paths, args: &[&str]) -> i32 {
             install_staged(Path::new(stage), Path::new(plan), &sysroot())
         }
         ["undo"] => undo(&sysroot()),
+        ["recover", rest @ ..] => recover(&sysroot(), rest.contains(&"--boot")),
+        ["pkg-install", pkg, rest @ ..] => pkg_install(&sysroot(), pkg, rest.contains(&"--yes"), rest.contains(&"--downgrade")),
+        ["in-progress"] => match marker(&sysroot()) {
+            Some(m) => {
+                println!("{} update {} (started {}, process {})", m.kind, if m.running() { "running" } else { "interrupted — needs recovery" }, m.started, m.pid);
+                0
+            }
+            None => 1,
+        },
         ["install-local", dir, ..] => {
             build_and_install(Path::new(dir), yes, &format!("local tree {dir}"))
         }
@@ -904,6 +925,9 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
     if let Some(e) = validate(&repo, &branch) {
         return fail(&e);
     }
+    if let Some(m) = marker(&sysroot()) {
+        return fail(if m.running() { "another update is running — wait for it to finish" } else { "an earlier update was interrupted — press Undo / Recover first (or reboot: it recovers on its own)" });
+    }
     let Some(cargo) = cargo() else {
         return fail("cargo (Rust) is not installed — run ./install.sh once");
     };
@@ -1057,6 +1081,7 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
         } else if sys::run(&["sudo", "-n", "true"]).0 != 0 && !stdin_is_tty() {
             return fail("administrator password needed");
         }
+        cmd.extend(inhibit());
         cmd.extend([me.as_str(), "update", "install-staged", &sp, &pf]);
         let mut password = password;
         let rc = run_input_stream(&cmd, password.as_deref().map(|p| format!("{p}\n")), |l| {
@@ -1194,9 +1219,119 @@ fn copy_entry(from: &Path, to: &Path) -> std::io::Result<()> {
         std::os::unix::fs::symlink(std::fs::read_link(from)?, &tmp)?;
     } else {
         std::fs::copy(from, &tmp)?;
+        // contents on disk before the rename, so a power cut never leaves a renamed empty file
+        std::fs::File::open(&tmp)?.sync_all()?;
     }
     // rename is atomic: a running program keeps its old file until it restarts
     std::fs::rename(&tmp, to)
+}
+
+// ── update-in-progress marker ──────────────────────────────────────────────────────────────────
+// Exists from the first byte an update changes until the last one is safely on disk. While it
+// exists, no graphical Shadow session can start (shadow-session and shadow-greet refuse), so the
+// desktop is never started on a half-replaced system. It is also the lock that stops two updates
+// running at once. If an update is cut off (power loss, crash, kill), shadow-update-recover.service
+// finishes or reverses it at the next boot, before the login screen and before any login.
+pub const MARK: &str = "/var/lib/shadow-tui/update-in-progress";
+
+pub struct Marker {
+    pub kind: String,
+    pub pid: u32,
+    pub boot: String,
+    pub backup: String,
+    pub package: String,
+    pub started: u64,
+}
+
+fn boot_id() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap_or_default().trim().to_string()
+}
+
+fn mark_path(root: &Path) -> PathBuf {
+    root.join(MARK.trim_start_matches('/'))
+}
+
+pub fn marker(root: &Path) -> Option<Marker> {
+    let t = std::fs::read_to_string(mark_path(root)).ok()?;
+    let g = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or("").trim().to_string();
+    Some(Marker { kind: g("kind"), pid: g("pid").parse().unwrap_or(0), boot: g("boot"), backup: g("backup"), package: g("package"), started: g("started").parse().unwrap_or(0) })
+}
+
+impl Marker {
+    /// The update that wrote the marker is still running (same boot, process alive).
+    pub fn running(&self) -> bool {
+        self.boot == boot_id() && self.pid != 0 && Path::new(&format!("/proc/{}", self.pid)).exists()
+    }
+}
+
+fn fsync_dir(d: &Path) {
+    if let Ok(f) = std::fs::File::open(d) {
+        let _ = f.sync_all();
+    }
+}
+
+fn write_durable(p: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(p)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    if let Some(d) = p.parent() {
+        fsync_dir(d);
+    }
+    Ok(())
+}
+
+fn mark_begin(root: &Path, kind: &str, backup: &Path, package: &str) -> Result<(), String> {
+    use std::io::Write;
+    let p = mark_path(root);
+    if let Some(m) = marker(root) {
+        return Err(if m.running() {
+            format!("another update is running (process {})", m.pid)
+        } else {
+            "an earlier update did not finish — recover first: sudo shadow update recover (or reboot: it recovers on its own)".into()
+        });
+    }
+    let _ = std::fs::create_dir_all(p.parent().unwrap());
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&p).map_err(|e| format!("cannot create {}: {e}", p.display()))?;
+    let text = format!("kind={kind}\npid={}\nboot={}\nstarted={}\nbackup={}\npackage={package}\n", std::process::id(), boot_id(), sys::now(), backup.display());
+    f.write_all(text.as_bytes()).and_then(|_| f.sync_all()).map_err(|e| e.to_string())?;
+    fsync_dir(p.parent().unwrap());
+    Ok(())
+}
+
+fn sync_all_disks() {
+    extern "C" {
+        fn sync();
+    }
+    // SAFETY: sync(2) takes no arguments and cannot fail
+    unsafe { sync() };
+}
+
+fn mark_end(root: &Path) {
+    sync_all_disks();
+    let p = mark_path(root);
+    let _ = std::fs::remove_file(&p);
+    if let Some(d) = p.parent() {
+        fsync_dir(d);
+    }
+}
+
+/// Check the installed binaries against MANIFEST.sha512 (written by every build).
+pub fn manifest_ok(root: &Path) -> bool {
+    let o = root.join("opt/shadow-tui");
+    if !o.join("share/MANIFEST.sha512").is_file() || sys::which("sha512sum").is_none() {
+        return true; // nothing to check against
+    }
+    std::process::Command::new("sha512sum").args(["-c", "--quiet", "--status", "share/MANIFEST.sha512"]).current_dir(&o).status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Prefix for administrator steps: hold off shutdown, suspend and lid-suspend until they finish.
+fn inhibit() -> Vec<&'static str> {
+    if sys::which("systemd-inhibit").is_some() {
+        vec!["systemd-inhibit", "--what=shutdown:sleep:handle-lid-switch", "--who=Shadow TUI update", "--why=replacing system files; wait for it to finish", "--mode=block"]
+    } else {
+        vec![]
+    }
 }
 
 /// Root half of `apply`: back up, then replace / add / remove exactly the planned files.
@@ -1206,38 +1341,38 @@ pub fn install_staged(stage: &Path, planf: &Path, root: &Path) -> i32 {
         return 1;
     }
     let ss = stage.to_string_lossy();
-    if !stage.is_absolute()
-        || !ss.ends_with("shadow-tui/stage")
-        || !stage.join("opt/shadow-tui/share/FILES").is_file()
-    {
+    if !stage.is_absolute() || !ss.ends_with("shadow-tui/stage") || !stage.join("opt/shadow-tui/share/FILES").is_file() {
         eprintln!("not a Shadow staging tree: {ss}");
         return 1;
     }
     let pl: Vec<(String, String)> = std::fs::read_to_string(planf)
         .unwrap_or_default()
         .lines()
-        .filter_map(|l| {
-            l.split_once(' ')
-                .map(|(k, f)| (k.to_string(), f.to_string()))
-        })
+        .filter_map(|l| l.split_once(' ').map(|(k, f)| (k.to_string(), f.to_string())))
         .filter(|(_, f)| f.starts_with('/') && !f.contains("/../"))
         .collect();
     let backups = root.join(BACKUPS.trim_start_matches('/'));
     let bdir = backups.join(sys::now().to_string());
+    // 0. from here until the end the graphical session cannot start
+    if let Err(e) = mark_begin(root, "files", &bdir, "") {
+        eprintln!("{e}");
+        return 1;
+    }
     if std::fs::create_dir_all(bdir.join("root")).is_err() {
         eprintln!("cannot create {}", bdir.display());
+        mark_end(root);
         return 1;
     }
     let live = |f: &str| root.join(f.trim_start_matches('/'));
     let staged = |f: &str| stage.join(f.trim_start_matches('/'));
-    // 1. back up everything that will change (plan entries + version records)
+    // 1. back up everything that will change (plan entries + version records); the journal is on
+    //    disk before the first file is touched, so an interrupted update can always be reversed
     let mut journal = String::new();
     for (k, f) in &pl {
-        if (k == "replace" || k == "remove")
-            && copy_entry(&live(f), &bdir.join("root").join(f.trim_start_matches('/'))).is_err()
-        {
+        if (k == "replace" || k == "remove") && copy_entry(&live(f), &bdir.join("root").join(f.trim_start_matches('/'))).is_err() {
             eprintln!("backup of {f} failed — nothing was changed");
             let _ = std::fs::remove_dir_all(&bdir);
+            mark_end(root);
             return 1;
         }
         journal.push_str(&format!("{k} {f}\n"));
@@ -1250,8 +1385,14 @@ pub fn install_staged(stage: &Path, planf: &Path, root: &Path) -> i32 {
             journal.push_str(&format!("metanew {m}\n"));
         }
     }
-    let _ = std::fs::write(bdir.join("journal"), &journal);
-    // 2. apply
+    sync_all_disks();
+    if write_durable(&bdir.join("journal"), &journal).is_err() {
+        eprintln!("cannot write the update journal — nothing was changed");
+        let _ = std::fs::remove_dir_all(&bdir);
+        mark_end(root);
+        return 1;
+    }
+    // 2. apply; the first failure reverses everything done so far
     let mut units = false;
     let mut done = 0;
     for (k, f) in &pl {
@@ -1267,7 +1408,21 @@ pub fn install_staged(stage: &Path, planf: &Path, root: &Path) -> i32 {
                 println!("{k} {f}");
                 units |= f.starts_with("/usr/lib/systemd/");
             }
-            Err(e) => println!("! {k} {f}: {e}"),
+            Err(e) => {
+                println!("! {k} {f}: {e} — reversing the update");
+                return match restore(root, &bdir) {
+                    Ok(n) => {
+                        let _ = std::fs::remove_dir_all(&bdir);
+                        mark_end(root);
+                        println!("reversed: {n} file(s) restored, the system is as before");
+                        1
+                    }
+                    Err(e) => {
+                        println!("!! could not reverse ({e}); the desktop stays locked until `sudo shadow update recover` succeeds");
+                        1
+                    }
+                };
+            }
         }
     }
     for m in META {
@@ -1279,11 +1434,27 @@ pub fn install_staged(stage: &Path, planf: &Path, root: &Path) -> i32 {
     if root == Path::new("/") {
         if units {
             sh_quiet(&["systemctl", "daemon-reload"]);
+            // a unit new in this version is enabled like the package would (shadow-sec stays opt-in)
+            for (k, f) in &pl {
+                if k == "new" && f.starts_with("/usr/lib/systemd/system/shadow-") && f.ends_with(".service") && !f.ends_with("/shadow-sec.service") {
+                    let unit = f.rsplit('/').next().unwrap_or("");
+                    sh_quiet(&["systemctl", "enable", unit]);
+                    println!("enabled {unit}");
+                }
+            }
         }
-        let touched = |b: &str| {
-            pl.iter()
-                .any(|(k, f)| k == "replace" && f == &format!("/opt/shadow-tui/bin/{b}"))
-        };
+        if sys::which("restorecon").is_some() {
+            for (_, f) in &pl {
+                if live(f).exists() {
+                    sh_quiet(&["restorecon", &live(f).to_string_lossy()]);
+                }
+            }
+        }
+    }
+    // 4. everything on disk: the session may start again
+    mark_end(root);
+    if root == Path::new("/") {
+        let touched = |b: &str| pl.iter().any(|(k, f)| k == "replace" && f == &format!("/opt/shadow-tui/bin/{b}"));
         let mut restart: Vec<&str> = vec![];
         if touched("shadow-powerd") {
             restart.push("shadow-powerd.service");
@@ -1298,18 +1469,9 @@ pub fn install_staged(stage: &Path, planf: &Path, root: &Path) -> i32 {
             sh_quiet(&["systemctl", "try-restart", u]);
             println!("restarted {u}");
         }
-        if sys::which("restorecon").is_some() {
-            for (_, f) in &pl {
-                if live(f).exists() {
-                    sh_quiet(&["restorecon", &live(f).to_string_lossy()]);
-                }
-            }
-        }
     }
     // keep the three most recent backups
-    let mut all: Vec<PathBuf> = std::fs::read_dir(&backups)
-        .map(|r| r.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
+    let mut all: Vec<PathBuf> = std::fs::read_dir(&backups).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
     all.sort();
     while all.len() > 3 {
         let _ = std::fs::remove_dir_all(all.remove(0));
@@ -1318,54 +1480,204 @@ pub fn install_staged(stage: &Path, planf: &Path, root: &Path) -> i32 {
     0
 }
 
+/// Replay a backup's journal backwards onto the live system. Err = something could not be restored.
+fn restore(root: &Path, bdir: &Path) -> Result<usize, String> {
+    let live = |f: &str| root.join(f.trim_start_matches('/'));
+    let saved = |f: &str| bdir.join("root").join(f.trim_start_matches('/'));
+    let journal = std::fs::read_to_string(bdir.join("journal")).map_err(|e| format!("no journal in {}: {e}", bdir.display()))?;
+    let mut n = 0;
+    let mut bad = vec![];
+    for l in journal.lines() {
+        let Some((k, f)) = l.split_once(' ') else { continue };
+        let gone = |p: PathBuf| match std::fs::remove_file(&p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+        let r = match k {
+            "replace" | "remove" | "meta" => copy_entry(&saved(f), &live(f)),
+            "new" | "metanew" => gone(live(f)),
+            "config" => gone(live(&format!("{f}.shadow-new"))),
+            _ => Ok(()),
+        };
+        match r {
+            Ok(()) if !k.starts_with("meta") => n += 1,
+            Ok(()) => {}
+            Err(e) => bad.push(format!("{f}: {e}")),
+        }
+    }
+    sync_all_disks();
+    if bad.is_empty() { Ok(n) } else { Err(bad.join("; ")) }
+}
+
 /// Root: restore the most recent file-level update's backup.
 pub fn undo(root: &Path) -> i32 {
     if !sys::is_root() && std::env::var_os("SHADOW_UPDATE_TEST_ROOT").is_none() {
         eprintln!("undo needs administrator rights: sudo shadow update undo");
         return 1;
     }
+    if let Some(m) = marker(root) {
+        if m.running() {
+            eprintln!("an update is running (process {}) — wait for it to finish", m.pid);
+            return 1;
+        }
+        return recover(root, false);
+    }
     let backups = root.join(BACKUPS.trim_start_matches('/'));
-    let mut all: Vec<PathBuf> = std::fs::read_dir(&backups)
-        .map(|r| r.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
+    let mut all: Vec<PathBuf> = std::fs::read_dir(&backups).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
     all.sort();
     let Some(bdir) = all.pop() else {
         println!("no file-level update to undo");
         return 1;
     };
-    let live = |f: &str| root.join(f.trim_start_matches('/'));
-    let saved = |f: &str| bdir.join("root").join(f.trim_start_matches('/'));
-    let mut n = 0;
-    for l in std::fs::read_to_string(bdir.join("journal"))
-        .unwrap_or_default()
-        .lines()
-    {
-        let Some((k, f)) = l.split_once(' ') else {
-            continue;
-        };
-        let r = match k {
-            "replace" | "remove" | "meta" => copy_entry(&saved(f), &live(f)),
-            "new" | "metanew" => std::fs::remove_file(live(f)).or(Ok(())),
-            "config" => std::fs::remove_file(live(&format!("{f}.shadow-new"))).or(Ok(())),
-            _ => Ok(()),
-        };
-        if r.is_ok() && !k.starts_with("meta") {
-            n += 1;
+    // undoing is itself an update: lock the session out while files change
+    if let Err(e) = mark_begin(root, "files", &bdir, "") {
+        eprintln!("{e}");
+        return 1;
+    }
+    match restore(root, &bdir) {
+        Ok(n) => {
+            mark_end(root);
+            if root == Path::new("/") {
+                sh_quiet(&["systemctl", "daemon-reload"]);
+                for u in ["shadow-powerd.service", "shadow-netd.service", "shadow-healer.service"] {
+                    sh_quiet(&["systemctl", "try-restart", u]);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&bdir);
+            println!("undone: {n} file(s) restored to the version before the last update");
+            0
+        }
+        Err(e) => {
+            println!("undo incomplete ({e}); the desktop stays locked — retry: sudo shadow update recover");
+            1
         }
     }
-    if root == Path::new("/") {
-        sh_quiet(&["systemctl", "daemon-reload"]);
-        for u in [
-            "shadow-powerd.service",
-            "shadow-netd.service",
-            "shadow-healer.service",
-        ] {
-            sh_quiet(&["systemctl", "try-restart", u]);
+}
+
+fn pkg_cmd(pkg: &str, yes: bool, boot: bool, downgrade: bool) -> Vec<String> {
+    let rpmfam = pkg.ends_with(".rpm");
+    let mut v: Vec<String> = if rpmfam {
+        if downgrade && !boot {
+            vec!["rpm".into(), "-Uvh".into(), "--oldpackage".into()]
+        } else if boot {
+            // no network at early boot: the package file itself, as rpm would have finished it
+            vec!["rpm".into(), "-Uvh".into(), "--replacepkgs".into(), "--replacefiles".into(), "--oldpackage".into()]
+        } else {
+            vec!["dnf".into(), "install".into()]
+        }
+    } else {
+        vec!["pacman".into(), "-U".into()]
+    };
+    if yes || boot {
+        if !(rpmfam && (boot || downgrade)) {
+            v.push(if rpmfam { "-y" } else { "--noconfirm" }.into());
         }
     }
-    let _ = std::fs::remove_dir_all(&bdir);
-    println!("undone: {n} file(s) restored to the version before the last update");
-    0
+    v.push(pkg.into());
+    v
+}
+
+fn valid_pkg(pkg: &str) -> bool {
+    let name = Path::new(pkg).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Path::new(pkg).is_absolute() && Path::new(pkg).is_file() && (name.starts_with("shadow-tui-restricted-") || name.starts_with("shadow-tui-sec-") || name.starts_with("shadow-network-")) && (name.ends_with(".rpm") || name.contains(".pkg.tar"))
+}
+
+/// Root: install a built package with the session locked out until it's complete.
+pub fn pkg_install(root: &Path, pkg: &str, yes: bool, downgrade: bool) -> i32 {
+    if !sys::is_root() {
+        eprintln!("pkg-install must run as root");
+        return 1;
+    }
+    if !valid_pkg(pkg) {
+        eprintln!("not a Shadow package file: {pkg}");
+        return 1;
+    }
+    if let Err(e) = mark_begin(root, "package", Path::new(""), pkg) {
+        eprintln!("{e}");
+        return 1;
+    }
+    let cmd = pkg_cmd(pkg, yes, false, downgrade);
+    let a: Vec<&str> = cmd.iter().map(String::as_str).collect();
+    let rc = sh(&a, None, &[]);
+    if manifest_ok(root) {
+        mark_end(root);
+    } else {
+        println!("update: the installed files do not match their manifest — the desktop stays locked until it is repaired: sudo shadow update recover");
+        return if rc == 0 { 6 } else { rc };
+    }
+    rc
+}
+
+/// Root: finish or reverse an interrupted update. `boot`: run by shadow-update-recover.service
+/// before any login (nothing else is using the package manager then).
+pub fn recover(root: &Path, boot: bool) -> i32 {
+    if !sys::is_root() && std::env::var_os("SHADOW_UPDATE_TEST_ROOT").is_none() {
+        eprintln!("recover needs administrator rights: sudo shadow update recover");
+        return 1;
+    }
+    let Some(m) = marker(root) else {
+        println!("no interrupted update{}", if manifest_ok(root) { "" } else { " (but the installed files do not match their manifest: run ./install.sh)" });
+        return 0;
+    };
+    if m.running() && !boot {
+        println!("an update is still running (process {}) — wait for it to finish", m.pid);
+        return 2;
+    }
+    match m.kind.as_str() {
+        "files" => {
+            let bdir = PathBuf::from(&m.backup);
+            if !bdir.join("journal").is_file() {
+                // interrupted before its journal existed: no file had been touched yet
+                let _ = std::fs::remove_dir_all(&bdir);
+                mark_end(root);
+                println!("recovered: the update had not changed anything yet");
+                return 0;
+            }
+            match restore(root, &bdir) {
+                Ok(n) => {
+                    let _ = std::fs::remove_dir_all(&bdir);
+                    mark_end(root);
+                    if root == Path::new("/") && !boot {
+                        sh_quiet(&["systemctl", "daemon-reload"]);
+                    }
+                    println!("recovered: the interrupted update was reversed ({n} file(s) restored); run it again from shadow-update");
+                    0
+                }
+                Err(e) => {
+                    println!("recovery incomplete ({e}); the desktop stays locked. Log in on a text console and run ./install.sh");
+                    1
+                }
+            }
+        }
+        "package" => {
+            if manifest_ok(root) {
+                mark_end(root);
+                println!("recovered: the package install had finished writing its files");
+                return 0;
+            }
+            if valid_pkg(&m.package) {
+                if boot && root == Path::new("/") {
+                    // the package manager was cut off: its lock is stale (nothing else runs yet)
+                    let _ = std::fs::remove_file("/var/lib/pacman/db.lck");
+                }
+                println!("recovering: re-running the interrupted install of {}", m.package);
+                let cmd = pkg_cmd(&m.package, true, boot, true);
+                let a: Vec<&str> = cmd.iter().map(String::as_str).collect();
+                sh(&a, None, &[]);
+                if manifest_ok(root) {
+                    mark_end(root);
+                    println!("recovered: the package install was completed");
+                    return 0;
+                }
+            }
+            println!("recovery incomplete: the package install was interrupted and could not be completed. The desktop stays locked. Log in on a text console and run ./install.sh");
+            1
+        }
+        other => {
+            println!("unknown update kind '{other}' in {MARK}; remove it only after checking the system with ./install.sh --check");
+            1
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1449,7 +1761,6 @@ mod file_update_tests {
         assert_eq!(rd("opt/shadow-tui/bin/old-tool"), "gone in v2");
         assert_eq!(rd("etc/shadow-tui/netd.toml.shadow-new"), "<none>");
         assert_eq!(rd("opt/shadow-tui/share/BUILD_INFO"), "commit=aaa\n");
-        std::env::remove_var("SHADOW_UPDATE_TEST_ROOT");
         let _ = std::fs::remove_dir_all(&t);
     }
 
@@ -1480,6 +1791,70 @@ mod file_update_tests {
         assert!(a.contains(&"pam".to_string()) && a.contains(&"BuildRequires: cargo >= 1.89".to_string()));
         assert_ne!(a, b);
         assert_eq!(a, deps_of("depends=(pam niri mesa)\nmakedepends=(cargo)", "BuildRequires:   cargo >= 1.89\nRequires: niri"));
+    }
+
+    fn tree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let t = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let (stage, root) = (t.join("cache/shadow-tui/stage"), t.join("root"));
+        w(&root.join("opt/shadow-tui/bin/shadow-bar"), "bar v1");
+        w(&root.join("opt/shadow-tui/bin/shadow-net"), "net v1");
+        w(&root.join("opt/shadow-tui/share/BUILD_INFO"), "commit=aaa\n");
+        w(&stage.join("opt/shadow-tui/bin/shadow-bar"), "bar v2");
+        w(&stage.join("opt/shadow-tui/bin/shadow-net"), "net v2");
+        w(&stage.join("opt/shadow-tui/share/BUILD_INFO"), "commit=bbb\n");
+        w(&stage.join("opt/shadow-tui/share/FILES"), "/opt/shadow-tui/bin/shadow-bar\n/opt/shadow-tui/bin/shadow-net\n");
+        (t, stage, root)
+    }
+
+    #[test]
+    fn a_failure_midway_reverses_everything_and_unlocks() {
+        let (t, stage, root) = tree("updfail");
+        // bar is replaced first, then a file whose new copy is missing makes the update fail
+        let planf = t.join("plan");
+        std::fs::write(&planf, "replace /opt/shadow-tui/bin/shadow-bar\nnew /opt/shadow-tui/bin/missing-in-stage\nreplace /opt/shadow-tui/bin/shadow-net\n").unwrap();
+        std::env::set_var("SHADOW_UPDATE_TEST_ROOT", "1");
+        assert_eq!(install_staged(&stage, &planf, &root), 1);
+        let rd = |f: &str| std::fs::read_to_string(root.join(f)).unwrap_or_else(|_| "<none>".into());
+        assert_eq!(rd("opt/shadow-tui/bin/shadow-bar"), "bar v1", "the replaced file is put back");
+        assert_eq!(rd("opt/shadow-tui/bin/shadow-net"), "net v1");
+        assert_eq!(rd("opt/shadow-tui/share/BUILD_INFO"), "commit=aaa\n");
+        assert!(marker(&root).is_none(), "consistent again: the session may start");
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn an_interrupted_update_locks_until_recovered() {
+        let (t, stage, root) = tree("updcut");
+        let planf = t.join("plan");
+        std::fs::write(&planf, "replace /opt/shadow-tui/bin/shadow-bar\nreplace /opt/shadow-tui/bin/shadow-net\n").unwrap();
+        std::env::set_var("SHADOW_UPDATE_TEST_ROOT", "1");
+        assert_eq!(install_staged(&stage, &planf, &root), 0);
+        // simulate the power cut: the files are half new and the marker is still there, written by
+        // a process of an earlier boot
+        let bdir = std::fs::read_dir(root.join(BACKUPS.trim_start_matches('/'))).unwrap().flatten().next().unwrap().path();
+        w(&root.join("opt/shadow-tui/bin/shadow-net"), "net v1"); // second file never got written
+        w(&mark_path(&root), &format!("kind=files\npid=1\nboot=an-earlier-boot\nstarted=0\nbackup={}\npackage=\n", bdir.display()));
+        let m = marker(&root).unwrap();
+        assert!(!m.running());
+        // a second update refuses to start on top of it
+        assert_eq!(install_staged(&stage, &planf, &root), 1);
+        assert_eq!(recover(&root, true), 0);
+        let rd = |f: &str| std::fs::read_to_string(root.join(f)).unwrap();
+        assert_eq!(rd("opt/shadow-tui/bin/shadow-bar"), "bar v1");
+        assert_eq!(rd("opt/shadow-tui/bin/shadow-net"), "net v1");
+        assert_eq!(rd("opt/shadow-tui/share/BUILD_INFO"), "commit=aaa\n");
+        assert!(marker(&root).is_none());
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn a_running_update_is_a_lock() {
+        let (t, _stage, root) = tree("updlock");
+        w(&mark_path(&root), &format!("kind=files\npid={}\nboot={}\nstarted=0\nbackup=\npackage=\n", std::process::id(), boot_id()));
+        assert!(marker(&root).unwrap().running());
+        assert!(mark_begin(&root, "files", Path::new("/x"), "").unwrap_err().contains("another update is running"));
+        let _ = std::fs::remove_dir_all(&t);
     }
 
     #[test]

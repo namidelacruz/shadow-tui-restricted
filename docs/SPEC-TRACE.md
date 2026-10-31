@@ -139,12 +139,16 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (72);
+- unit tests in every crate (76);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- the update failsafe (7.2.1):
+  - unit tests cover a write failure partway through (fully reversed, unlocked), a power cut simulated with a stale marker (blocked until recovered, then restored) and the lock against concurrent updates;
+  - `shadow-session` refused to start while the marker existed;
+  - the greeter refuses a login while the marker exists (unit test);
 - file-level updates (7.2) end to end, against a scratch git remote and system root: only the changed files were replaced, `/etc` went to `.shadow-new`, undo worked and a dependency change was refused;
 - the learning schedule run against a fake system tree: first week, then an OS-update relearn;
 - the healer and Wi-Fi tests carried over from 6.x.

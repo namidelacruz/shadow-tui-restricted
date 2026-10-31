@@ -23,6 +23,24 @@ STATE=${SHADOW_STATE:-${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state}
 LOG=${XDG_STATE_HOME:-$HOME/.local/state}/shadow-tui/session.log
 mkdir -p "$(dirname "$LOG")" "$STATE"
 
+# failsafe: never start the desktop on a half-updated system. The marker exists from the first
+# file an update changes until the last one is on disk (or an interrupted update is recovered).
+MARK=/var/lib/shadow-tui/update-in-progress
+update_gate() {
+    [ -e "$MARK" ] || return 0
+    echo "$(date -Is) refused to start: $MARK exists ($(tr '\n' ' ' <"$MARK" 2>/dev/null))" >>"$LOG"
+    cat >&2 <<'MSG'
+Shadow TUI: a system update is in progress, or one was interrupted.
+The desktop will not start until it has finished, so it never runs on half-replaced files.
+  - wait for the update to finish, then log in again;
+  - or reboot: an interrupted update is finished or reversed automatically before the login screen;
+  - or, on a text console:  sudo shadow update recover
+MSG
+    [ -t 2 ] && sleep 3
+    exit 75
+}
+update_gate
+
 # first login: per-user setup; every login: niri config in step with config.toml
 [ -f "$STATE/config.toml" ] || /opt/shadow-tui/bin/shadow setup --yes >>"$LOG" 2>&1
 /opt/shadow-tui/bin/shadow setup niri >>"$LOG" 2>&1
@@ -35,6 +53,7 @@ run() {
         "$@"
     fi
 }
+update_gate
 run niri --session -c "$STATE/niri.kdl" 2>>"$LOG"
 rc=$?
 # failsafe: a config niri refuses can't keep you out — niri falls back to its built-in defaults

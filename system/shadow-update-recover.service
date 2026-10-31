@@ -1,0 +1,22 @@
+[Unit]
+Description=Shadow TUI: finish or reverse an interrupted update before anyone can log in
+Documentation=file:///opt/shadow-tui/share/doc/README.md
+# only when an update was cut off (power loss, crash, forced reboot)
+ConditionPathExists=/var/lib/shadow-tui/update-in-progress
+DefaultDependencies=no
+RequiresMountsFor=/opt/shadow-tui /var/lib/shadow-tui /usr
+After=local-fs.target systemd-remount-fs.service
+Wants=local-fs.target
+# logins of any kind (greeter, TTY, ssh) wait until the system is consistent again
+Before=systemd-user-sessions.service greetd.service display-manager.service shadow-powerd.service shadow-netd.service shadow-healer.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/shadow-tui/bin/shadow update recover --boot
+StandardOutput=journal+console
+TimeoutStartSec=15min
+# if recovery fails the marker stays: the desktop stays locked, text-console login still works
+
+[Install]
+WantedBy=multi-user.target

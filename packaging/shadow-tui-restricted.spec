@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        7.2.0
+Version:        7.2.1
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: side bar, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -100,6 +100,7 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-netd.service
 /usr/lib/systemd/system/shadow-healer.service
 /usr/lib/systemd/system/shadow-wifi-device.service
+/usr/lib/systemd/system/shadow-update-recover.service
 /usr/lib/systemd/system/shadow.slice
 /usr/lib/systemd/user/shadow.slice
 /usr/lib/systemd/user/shadow-sync.service
@@ -123,6 +124,9 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Sat Oct 31 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.2.1-1
+- update failsafe: no desktop session starts while an update writes files; interrupted updates
+  are finished or reversed at boot (shadow-update-recover.service) before any login
 * Sat Oct 31 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.2.0-1
 - shadow-update: on-demand updates that replace only changed files, with backup and undo
 - launcher opens as a normal opaque window; mouse support in all apps

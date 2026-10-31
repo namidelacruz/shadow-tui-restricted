@@ -193,6 +193,15 @@ fn s(x: &str) -> Value {
     Value::Str(x.to_string())
 }
 
+/// While a system update runs (or an interrupted one awaits recovery) no desktop session starts.
+const UPDATE_MARK: &str = "/var/lib/shadow-tui/update-in-progress";
+
+fn update_busy() -> bool {
+    std::path::Path::new(&std::env::var("SHADOW_UPDATE_MARK").unwrap_or_else(|_| UPDATE_MARK.into())).exists()
+}
+
+const UPDATE_MSG: &str = "system update in progress — login paused until it finishes";
+
 #[derive(PartialEq, Clone, Copy)]
 enum Field {
     User,
@@ -240,6 +249,17 @@ impl Greeter {
                         let _ = fs::create_dir_all(STATE_DIR);
                         let _ = fs::write(format!("{STATE_DIR}/last"), format!("user={}\n", self.user.buf.trim()));
                         return Some(0);
+                    }
+                    if update_busy() {
+                        // authenticated, but the system is mid-update: don't start anything
+                        if let Some(c) = self.conn.as_mut() {
+                            let _ = send(c, &obj(vec![("type", s("cancel_session"))]));
+                            let _ = recv(c);
+                        }
+                        self.awaiting = false;
+                        self.pass.set("");
+                        self.msg = (UPDATE_MSG.into(), true);
+                        return None;
                     }
                     let Some(se) = self.session.clone() else {
                         self.msg = ("no desktop session installed".into(), true);
@@ -293,6 +313,11 @@ impl Greeter {
     }
 
     fn submit(&mut self) -> Option<i32> {
+        if update_busy() && !self.awaiting {
+            self.pass.set("");
+            self.msg = (UPDATE_MSG.into(), true);
+            return None;
+        }
         if self.user.buf.trim().is_empty() {
             self.field = Field::User;
             self.msg = ("enter a login".into(), true);
@@ -391,6 +416,8 @@ impl Greeter {
         if !self.msg.0.is_empty() {
             let st = Style::new(if self.msg.1 { CRIMSON } else { CYAN }, PANEL).bold();
             t.text(lx, y + 9, &self.msg.0, st, w - 6);
+        } else if update_busy() {
+            t.text(lx, y + 9, UPDATE_MSG, Style::new(AMBER, PANEL).bold(), w - 6);
         }
     }
 }
@@ -476,6 +503,22 @@ mod tests {
         assert_eq!(font_for(1.5), "ter-v24n"); // Dell 14 Plus 2560x1600
         assert_eq!(font_for(2.0), "ter-v32n");
         assert_eq!(font_for(1.25), "ter-v20n");
+    }
+
+    #[test]
+    fn update_blocks_login() {
+        let m = std::env::temp_dir().join(format!("greet-mark-{}", std::process::id()));
+        std::env::set_var("SHADOW_UPDATE_MARK", &m);
+        let mut g = Greeter { title: String::new(), warning: String::new(), host: String::new(), session: None, user: Input::with("nami"), pass: Input::default(), field: Field::Pass, prompt: String::new(), msg: (String::new(), false), conn: None, awaiting: false, failures: 0, demo: true };
+        g.pass.set("shadow");
+        assert_eq!(g.submit(), None);
+        assert!(g.msg.0.starts_with("demo: would start"));
+        fs::write(&m, "kind=files\n").unwrap();
+        g.pass.set("shadow");
+        assert_eq!(g.submit(), None);
+        assert_eq!(g.msg.0, UPDATE_MSG);
+        assert!(g.pass.buf.is_empty(), "password is not kept");
+        let _ = fs::remove_file(&m);
     }
 
     #[test]
