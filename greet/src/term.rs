@@ -33,7 +33,7 @@ extern "C" {
     fn ioctl(fd: i32, req: std::ffi::c_ulong, ...) -> i32;
     fn isatty(fd: i32) -> i32;
     fn signal(sig: i32, handler: usize) -> usize;
-    fn write(fd: i32, buf: *const u8, n: usize) -> isize;
+    fn write(fd: i32, buf: *const std::ffi::c_void, n: usize) -> isize;
     fn _exit(code: i32) -> !;
 }
 
@@ -68,9 +68,9 @@ fn restore_raw() {
     }
     unsafe {
         if VT_PALETTE.load(Ordering::SeqCst) {
-            write(1, b"\x1b]R".as_ptr(), 3);
+            write(1, b"\x1b]R".as_ptr().cast(), 3);
         }
-        write(1, LEAVE_SEQ.as_ptr(), LEAVE_SEQ.len());
+        write(1, LEAVE_SEQ.as_ptr().cast(), LEAVE_SEQ.len());
         if let Some(t) = ORIG.get() {
             tcsetattr(0, 0, t);
         }

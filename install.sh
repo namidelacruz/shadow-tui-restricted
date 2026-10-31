@@ -35,7 +35,8 @@ ask()  { ((YES || DRY)) && return 0; read -r -p "  $1 [Y/n] " ans; [[ -z "$ans" 
 run()  { if ((DRY)); then printf '%s  + %s%s\n' "$c" "$*" "$z"; else "$@"; fi; }
 # run a command inside a directory
 run_in() { local d=$1; shift; if ((DRY)); then printf '%s  + (in %s) %s%s\n' "$c" "$d" "$*" "$z"; else (cd "$d" && "$@"); fi; }
-trap 'printf "%s  ! stopped at line %s — nothing after this step was changed; safe to re-run.%s\n" "$r" "$LINENO" "$z" >&2' ERR
+on_err() { printf '%s  ! failed (line %s): %s\n  ! nothing after this step was changed; safe to re-run.%s\n' "$r" "$1" "$2" "$z" >&2; }
+trap 'on_err "$LINENO" "$BASH_COMMAND"' ERR
 while (($#)); do
   case "$1" in
     -y|--yes) YES=1 ;; --greeter) GREETER=yes ;; --no-greeter) GREETER=no ;; --sec) SEC=1 ;;
@@ -68,6 +69,14 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/shadow-tui"; pkgcache="$cache/packages"
 ((DRY)) || mkdir -p "$pkgcache"
 
 have() { command -v "$1" >/dev/null 2>&1; }
+# The package file of NAME that this run built (newer than MARKER): never an older build left in
+# the cache, never a .sig, never a debug package.
+built_pkg() {
+  local marker=$1 name=$2 ext=$3 f
+  f=$(find "$pkgcache" -maxdepth 1 -type f -newer "$marker" -name "$name-[0-9]*$ext" ! -name '*.sig' ! -name '*-debug*' ! -name '*.src.rpm' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)
+  [[ -n $f ]] || die "the build finished but produced no $name package in $pkgcache"
+  printf '%s\n' "$f"
+}
 ver_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]; }
 export PATH="/opt/shadow-tui/bin:/usr/local/bin:$PATH"
 
@@ -141,6 +150,16 @@ niri_ok() {
   ver_ge "$v" "$NIRI_MIN"
 }
 
+# keep the 3 newest builds of each package in the cache (shadow update rollback uses the previous)
+prune_cache() {
+  ((DRY)) && return 0
+  local n
+  for n in shadow-tui-restricted shadow-tui-sec; do
+    find "$pkgcache" -maxdepth 1 -type f -name "$n-[0-9]*" ! -name '*.sig' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +4 | cut -d' ' -f2- |
+      while IFS= read -r f; do rm -f "$f" "$f.sig"; done
+  done
+}
+
 # ── uninstall ───────────────────────────────────────────────────────────
 if ((UNINSTALL)); then
   purge=(); ((PURGE)) && purge=(--purge)
@@ -171,10 +190,17 @@ arch_install() {
   pacman -Qq niri &>/dev/null || { info "niri is the compositor (extra/niri)"; ask "Install niri?" && run sudo pacman -S --needed --noconfirm niri; }
   say "Building (side bar, apps, terminal, daemons — first build ~5-10 min)"
   pacman -Qq shadow-network &>/dev/null && info "the old shadow-network package is replaced"
+  local marker; marker=$(mktemp "${TMPDIR:-/tmp}/shadow-build.XXXXXX")
   run_in "$SRC" env PKGDEST="$pkgcache" makepkg -s -f --noconfirm
-  local pkgs=("$pkgcache"/shadow-tui-restricted-[0-9]*.pkg.tar.*)
-  ((SEC)) && pkgs+=("$pkgcache"/shadow-tui-sec-[0-9]*.pkg.tar.*)
+  local pkgs=()
+  if ((DRY)); then pkgs=("$pkgcache/shadow-tui-restricted-<version>.pkg.tar.zst"); ((SEC)) && pkgs+=("$pkgcache/shadow-tui-sec-<version>.pkg.tar.zst")
+  else
+    pkgs=("$(built_pkg "$marker" shadow-tui-restricted .pkg.tar.zst)")
+    ((SEC)) && pkgs+=("$(built_pkg "$marker" shadow-tui-sec .pkg.tar.zst)")
+  fi
+  rm -f "$marker"
   run sudo pacman -U --noconfirm "${pkgs[@]}"
+  prune_cache
 }
 
 arch_greeter() {
@@ -360,15 +386,18 @@ rpm_install() {
     terminus-fonts-console pipewire-pulseaudio
   say "Building the RPMs (side bar, apps, terminal, daemons — first build ~5-10 min, tests included)"
   rpm -q shadow-network &>/dev/null && info "the old shadow-network package is replaced"
+  local marker; marker=$(mktemp "${TMPDIR:-/tmp}/shadow-build.XXXXXX")
   run "$SRC/packaging/build-rpm.sh" "$pkgcache"
   local rpms=()
   if ((DRY)); then rpms=("$pkgcache/shadow-tui-restricted-<version>.rpm"); ((SEC)) && rpms+=("$pkgcache/shadow-tui-sec-<version>.rpm")
   else
-    rpms=("$(ls -t "$pkgcache"/shadow-tui-restricted-[0-9]*.rpm | head -n1)")
-    ((SEC)) && rpms+=("$(ls -t "$pkgcache"/shadow-tui-sec-[0-9]*.rpm | head -n1)")
+    rpms=("$(built_pkg "$marker" shadow-tui-restricted .rpm)")
+    ((SEC)) && rpms+=("$(built_pkg "$marker" shadow-tui-sec .rpm)")
   fi
+  rm -f "$marker"
   say "Installing"
   dnf_install "${rpms[@]}"
+  prune_cache
 }
 
 rpm_greeter() {
