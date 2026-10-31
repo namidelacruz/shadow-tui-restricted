@@ -17,7 +17,9 @@ pub struct Glyph {
 pub struct Fonts {
     regular: Font,
     bold: Option<Font>,
-    fallbacks: Vec<Font>,
+    /// Fallback fonts are parsed on first use: fontdue parses every glyph outline up
+    /// front, so eagerly loading e.g. Noto Sans CJK cost ~600 MB per terminal.
+    fallbacks: Vec<Fallback>,
     pub px: f32,
     pub cell_w: usize,
     pub cell_h: usize,
@@ -51,6 +53,64 @@ fn font_files() -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+struct Fallback {
+    path: PathBuf,
+    /// Opened on first need. ab_glyph over a read-only mmap parses only the tables and
+    /// the outlines of glyphs actually drawn; the pages are file-backed and reclaimable.
+    font: Option<Option<ab_glyph::FontRef<'static>>>,
+}
+
+impl Fallback {
+    fn get(&mut self) -> Option<&ab_glyph::FontRef<'static>> {
+        let path = &self.path;
+        self.font.get_or_insert_with(|| map_font(path)).as_ref()
+    }
+    fn has(&mut self, c: char) -> bool {
+        use ab_glyph::Font as _;
+        self.get().is_some_and(|f| f.glyph_id(c).0 != 0)
+    }
+    fn rasterize(&mut self, c: char, px: f32) -> Option<(Metrics, Vec<u8>)> {
+        use ab_glyph::{Font as _, ScaleFont as _};
+        let f = self.get()?;
+        let scale = f.pt_to_px_scale(px)?; // px per em, like fontdue
+        let sf = f.as_scaled(scale);
+        let id = f.glyph_id(c);
+        let advance = sf.h_advance(id);
+        let glyph = id.with_scale_and_position(scale, ab_glyph::point(0.0, 0.0));
+        let Some(og) = f.outline_glyph(glyph) else {
+            return Some((Metrics { advance_width: advance, ..Metrics::default() }, vec![]));
+        };
+        let bb = og.px_bounds();
+        let (w, h) = (bb.width().ceil() as usize, bb.height().ceil() as usize);
+        let mut bmp = vec![0u8; w * h];
+        og.draw(|x, y, cov| {
+            if let Some(p) = bmp.get_mut(y as usize * w + x as usize) {
+                *p = (cov.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        });
+        // fontdue convention: ymin = offset of the bitmap's bottom edge above the baseline
+        let m = Metrics { xmin: bb.min.x.floor() as i32, ymin: (-bb.max.y).ceil() as i32, width: w, height: h, advance_width: advance, ..Metrics::default() };
+        Some((m, bmp))
+    }
+}
+
+fn map_font(p: &Path) -> Option<ab_glyph::FontRef<'static>> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::File::open(p).ok()?;
+    let len = file.metadata().ok()?.len() as usize;
+    if len == 0 {
+        return None;
+    }
+    // SAFETY: read-only private mapping of a font file, never unmapped (fonts live for the
+    // whole process). The fd can be closed once mapped.
+    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, file.as_raw_fd(), 0) };
+    if ptr == libc::MAP_FAILED {
+        return None;
+    }
+    let data: &'static [u8] = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+    ab_glyph::FontRef::try_from_slice_and_index(data, 0).ok()
 }
 
 fn load_font(p: &Path) -> Option<Font> {
@@ -92,10 +152,8 @@ impl Fonts {
             ("DejaVu Sans", ""),
         ] {
             if let Some(p) = find_style(&files, fam, style) {
-                if p != reg_path {
-                    if let Some(f) = load_font(&p) {
-                        fallbacks.push(f);
-                    }
+                if p != reg_path && !fallbacks.iter().any(|f: &Fallback| f.path == p) {
+                    fallbacks.push(Fallback { path: p, font: None });
                 }
             }
         }
@@ -117,13 +175,21 @@ impl Fonts {
 
     pub fn glyph(&mut self, c: char, bold: bool) -> &Glyph {
         if !self.cache.contains_key(&(c, bold)) {
+            let in_primary = if bold { self.bold.as_ref().unwrap_or(&self.regular) } else { &self.regular }.lookup_glyph_index(c) != 0;
+            let mut fb = None;
+            if !in_primary {
+                for (i, f) in self.fallbacks.iter_mut().enumerate() {
+                    if f.has(c) {
+                        fb = Some(i);
+                        break;
+                    }
+                }
+            }
             let primary = if bold { self.bold.as_ref().unwrap_or(&self.regular) } else { &self.regular };
-            let font = if primary.lookup_glyph_index(c) != 0 {
-                primary
-            } else {
-                self.fallbacks.iter().find(|f| f.lookup_glyph_index(c) != 0).unwrap_or(primary)
+            let (m, bmp) = match fb.and_then(|i| self.fallbacks[i].rasterize(c, self.px)) {
+                Some(r) => r,
+                None => primary.rasterize(c, self.px),
             };
-            let (m, bmp) = font.rasterize(c, self.px);
             self.cache.insert((c, bold), Glyph { m, bmp });
             if self.cache.len() > 6000 {
                 self.cache.clear();

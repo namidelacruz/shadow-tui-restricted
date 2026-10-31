@@ -1,6 +1,6 @@
 [package]
 name = "shadow"
-version = "6.0.0"
+version = "6.1.0"
 edition = "2021"
 description = "Shadow TUI Restricted system tools: setup, greeter admin, Wi-Fi self-repair (shadow-netd), state sync (shadow-sync), Lua self-correction (shadow-healer), local AI, updates"
 license = "MIT"

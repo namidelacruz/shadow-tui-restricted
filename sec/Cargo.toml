@@ -1,6 +1,6 @@
 [package]
 name = "shadow-sec"
-version = "6.0.0"
+version = "6.1.0"
 edition = "2021"
 description = "Shadow TUI Restricted optional security subsystem"
 license = "MIT"

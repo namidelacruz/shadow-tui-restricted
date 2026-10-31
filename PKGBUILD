@@ -12,7 +12,7 @@
 # PAM and libudev stay the system's: they must match the running kernel and system.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
-pkgver=6.0.0
+pkgver=6.1.0
 pkgrel=1
 pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) — own Smithay compositor with an orbital ring, bezel HUD, greeter that blends into the session, power/NPU daemon, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')

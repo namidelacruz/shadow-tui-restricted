@@ -174,6 +174,10 @@ struct App {
     title_override: Option<String>,
     zoom: f32,
     blink_on: bool,
+    /// timer-driven repaint (clock / blink / pulse) that only touches the HUD strip,
+    /// the cursor cell and the gutter: damage just those so the compositor recomposites little
+    cheap_draw: bool,
+    last_clock: u64,
     last_input: Instant,
 }
 
@@ -471,7 +475,18 @@ impl App {
             Some((vp, _)) => vp.set_destination(self.width.max(1) as i32, self.height.max(1) as i32),
             None => surface.set_buffer_scale(self.scale as i32),
         }
-        surface.damage_buffer(0, 0, w, h);
+        if self.cheap_draw && !self.needs_draw && !self.term.dirty && !self.animating() {
+            let (cw, ch, s) = (self.fonts.cell_w as i32, self.fonts.cell_h as i32, view.scale);
+            surface.damage_buffer(0, 0, w, view.y0); // HUD strip (clock)
+            let (cx, cy) = (view.x0 + self.term.cx as i32 * cw, view.y0 + self.term.cy as i32 * ch);
+            surface.damage_buffer(cx - 2 * s, cy - 2 * s, 2 * cw + 4 * s, ch + 4 * s); // cursor + glow
+            if self.cfg.gutter {
+                surface.damage_buffer(0, view.y0, view.x0, h - view.y0); // command pulse
+            }
+        } else {
+            surface.damage_buffer(0, 0, w, h);
+        }
+        self.cheap_draw = false;
         surface.frame(qh, FrameCallbackData(surface.clone()));
         let _ = buffer.attach_to(surface);
         self.window.commit();
@@ -484,7 +499,13 @@ impl App {
         let age = self.started.elapsed().as_secs_f32();
         (self.cfg.boot && age < 1.3)
             || self.bell_at.map(|t| t.elapsed().as_secs_f32() < 0.4).unwrap_or(false)
-            || self.term.blocks.last().map(|b| b.cmd_line.is_some() && b.end_line.is_none()).unwrap_or(false)
+    }
+
+    /// A command is running (OSC 133 block open). Its gutter pulse is driven by the
+    /// 250 ms tick (4 fps) rather than every vblank, so a long build, ssh or vim
+    /// session doesn't keep the terminal and compositor redrawing at 60-120 Hz.
+    fn command_running(&self) -> bool {
+        self.term.blocks.last().map(|b| b.cmd_line.is_some() && b.end_line.is_none()).unwrap_or(false)
     }
 }
 
@@ -631,6 +652,8 @@ fn main() {
         title_override: args.title.clone(),
         zoom: 1.0,
         blink_on: true,
+        cheap_draw: false,
+        last_clock: 0,
         last_input: Instant::now(),
     };
     let (lw, lh_) = app.logical_size_for(cols, rows);
@@ -648,10 +671,20 @@ fn main() {
     // 250 ms tick: clock, cursor blink, cwd/foreground polling, child reaping
     lh.insert_source(Timer::from_duration(Duration::from_millis(250)), |_, _, app: &mut App| {
         let idle = app.last_input.elapsed().as_millis();
-        let blink = idle < 600 || (idle / 530) % 2 == 0;
+        // blink for 10 s after the last keypress, then hold solid: an idle terminal stops
+        // committing frames entirely, so the panel can drop into self-refresh
+        let blink = idle < 600 || idle > 10_000 || (idle / 530) % 2 == 0;
         if blink != app.blink_on {
             app.blink_on = blink;
-            app.needs_draw = true;
+            app.cheap_draw = true;
+        }
+        if app.focused && app.command_running() && app.cfg.gutter {
+            app.cheap_draw = true;
+        }
+        let secs = app.started.elapsed().as_secs();
+        if app.cfg.hud && app.focused && secs != app.last_clock {
+            app.last_clock = secs;
+            app.cheap_draw = true;
         }
         let cwd = app.term.cwd.clone().or_else(|| app.pty.cwd()).map(|c| short_home(&c)).unwrap_or_default();
         if !cwd.is_empty() && cwd != app.cwd {
@@ -671,7 +704,6 @@ fn main() {
                 }
             }
         }
-        app.needs_draw = true; // HUD clock ticks every second; cheap enough at 4 Hz
         TimeoutAction::ToDuration(Duration::from_millis(250))
     })
     .expect("timer");
@@ -681,7 +713,7 @@ fn main() {
         if event_loop.dispatch(timeout, &mut app).is_err() {
             break;
         }
-        if (app.needs_draw || app.term.dirty || app.animating()) && !app.frame_pending {
+        if (app.needs_draw || app.term.dirty || app.animating() || app.cheap_draw) && !app.frame_pending {
             app.draw(&qh);
         }
         let _ = conn.flush();

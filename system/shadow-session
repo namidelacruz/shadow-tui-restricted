@@ -5,6 +5,13 @@
 # together ≤ 20 % (spec §3.4). User programs go to app.slice and keep the other 80 %.
 export XDG_CURRENT_DESKTOP=ShadowTUI XDG_SESSION_DESKTOP=shadow-tui XDG_SESSION_TYPE=wayland
 export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland SDL_VIDEODRIVER=wayland
+# OpenGL only, no Vulkan, for the whole session. The Arc 140V (Lunar Lake / Xe2) runs on the
+# xe kernel driver with Mesa iris for OpenGL; the compositor itself only uses OpenGL ES via EGL.
+# GTK >= 4.16 and Qt 6 would otherwise pick Vulkan on their own. Override in
+# ~/.config/shadow-state/session.env if you ever want it back.
+export GSK_RENDERER=ngl QSG_RHI_BACKEND=opengl
+[ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ] && export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state/session.env" ] && . "${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state/session.env"
 C=/opt/shadow-tui/bin/shadow-compositor
 LOG=${XDG_STATE_HOME:-$HOME/.local/state}/shadow-tui/session.log
 mkdir -p "$(dirname "$LOG")"
