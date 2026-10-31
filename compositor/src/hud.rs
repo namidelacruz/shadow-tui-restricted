@@ -83,7 +83,10 @@ fn wifi() -> String {
     if ssid.is_empty() {
         return "WIFI —".into();
     }
-    format!("{ssid} {}dBm {eap}", dbm.unwrap_or_else(|| "?".into()))
+    match dbm.filter(|d| !d.is_empty()) {
+        Some(d) => format!("{ssid} {d}dBm {eap}"),
+        None => format!("{ssid} {eap}"),
+    }
 }
 
 /// IDLE / LEARNING / PATCHING / SEC-ALERT, most urgent first
