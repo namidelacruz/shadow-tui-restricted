@@ -8,7 +8,7 @@
 //!   d disconnect · f forget · r rescan · w Wi-Fi on/off · Esc/q close
 use shadow_apps::cmd_out;
 use shadow_ui::calloop::channel::{self, Sender};
-use shadow_ui::widgets::{chrome, footer, Input};
+use shadow_ui::widgets::{chrome, footer, selection, Input};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -326,8 +326,7 @@ impl App for Net {
             let y = top + (i - self.top) as i32 * row_h;
             let sel = i == self.sel;
             if sel {
-                f.cv.fill(pad, y, split - pad - f.px(10.0), row_h, th.amber, 0.14);
-                f.cv.fill(pad, y, f.px(3.0), row_h, th.amber, 1.0);
+                selection(f, pad, y, split - pad - f.px(10.0), row_h);
             }
             let x = pad + f.px(10.0);
             let maxw = split - x - f.px(16.0);

@@ -151,7 +151,9 @@ impl ListNav {
     }
 }
 
-/// Standard app chrome: obsidian background, amber border + corner brackets, title strip.
+/// Standard app chrome — "fluid HUD": a deep gradient backdrop with faint scan lines, a rounded
+/// glass frame with a soft accent glow, an angled amber→violet title tag and a fading light beam
+/// under the header. The window itself stays fully opaque.
 /// Returns the content top (device px) and the inner padding.
 pub fn chrome(f: &mut Frame, title: &str, status: &str) -> (i32, i32) {
     let (w, h) = (f.cv.w as i32, f.cv.h as i32);
@@ -159,38 +161,120 @@ pub fn chrome(f: &mut Frame, title: &str, status: &str) -> (i32, i32) {
     // app windows are always opaque: whatever is behind them must never show through
     // ([look] opacity applies to the floating side bar only)
     f.cv.clear(th.bg, 1.0);
-    let t = f.hair();
-    f.cv.border(0, 0, w, h, t, th.amber, if f.focused { 0.9 } else { 0.35 });
-    f.cv.brackets(f.px(6.0), f.px(6.0), w - 2 * f.px(6.0), h - 2 * f.px(6.0), f.px(14.0), f.px(2.0), th.amber, 0.9);
+    f.cv.rrect_v(0, 0, w, h, 0.0, th.glass_lo, th.bg, 1.0);
+    f.cv.scanlines(0, 0, w, h, f.px(4.0).max(3), th.cyan, 0.018);
+    let r = f.px(th.radius) as f32;
+    let inset = f.px(6.0);
+    let accent = if f.focused { th.amber } else { th.dim };
+    f.cv.glow(inset, inset, w - 2 * inset, h - 2 * inset, r, f.px(5.0), accent, if f.focused { 0.10 } else { 0.04 });
+    f.cv.rrect_v(inset, inset, w - 2 * inset, h - 2 * inset, r, th.glass, th.glass_lo, 0.55);
+    f.cv.rstroke(inset, inset, w - 2 * inset, h - 2 * inset, r, f.hair(), accent, if f.focused { 0.55 } else { 0.25 });
     let pad = f.px(18.0);
     let pt = th.font_pt;
     let lh = f.line_h(pt);
-    let bar_h = lh + f.px(8.0);
-    f.cv.fill(pad, pad, w - 2 * pad, bar_h, th.panel, 1.0);
-    let tag = format!(" ◢ {title} ");
-    let tw = f.text_w(&tag, pt, true);
-    f.cv.fill(pad, pad, tw, bar_h, th.amber, 1.0);
-    f.text(pad, pad + f.px(4.0), &tag, pt, th.bg, true);
+    let bar_h = lh + f.px(10.0);
+    let tag = format!("  {title}  ");
+    let tw = f.text_w(&tag, pt, true) + f.px(14.0);
+    f.cv.glow(pad, pad, tw - f.px(8.0), bar_h, f.px(3.0) as f32, f.px(6.0), th.amber, 0.18);
+    f.cv.tag(pad, pad, tw, bar_h, th.amber, th.violet, 1.0);
+    f.text(pad, pad + f.px(5.0), &tag, pt, th.bg, true);
     if !status.is_empty() {
-        let max = w - 2 * pad - tw - f.px(16.0);
-        let s = f.fit(status, pt, false, max);
-        let sw = f.text_w(&s, pt, false);
-        f.text(w - pad - sw - f.px(8.0), pad + f.px(4.0), &s, pt, th.cyan, false);
+        let max = w - 2 * pad - tw - f.px(24.0);
+        let s = f.fit(status, pt * 0.92, false, max);
+        let sw = f.text_w(&s, pt * 0.92, false);
+        let (sx, sh) = (w - pad - sw - f.px(14.0), f.line_h(pt * 0.92) + f.px(6.0));
+        let sy = pad + (bar_h - sh) / 2;
+        f.cv.rrect(sx - f.px(4.0), sy, sw + f.px(18.0), sh, sh as f32 / 2.0, th.glass, 0.9);
+        f.cv.rstroke(sx - f.px(4.0), sy, sw + f.px(18.0), sh, sh as f32 / 2.0, f.hair(), th.cyan, 0.45);
+        f.text(sx + f.px(5.0), sy + f.px(3.0), &s, pt * 0.92, th.cyan, false);
     }
-    f.cv.fill(pad, pad + bar_h, w - 2 * pad, t, th.amber, 0.8);
-    (pad + bar_h + f.px(10.0), pad)
+    f.cv.beam(pad, pad + bar_h + f.px(4.0), w - 2 * pad, f.hair().max(1), th.amber, th.cyan, 0.8);
+    (pad + bar_h + f.px(14.0), pad)
 }
 
-/// Footer key hints in dim text along the bottom edge.
+/// Footer key hints: dim text on a faint glass strip along the bottom edge.
 pub fn footer(f: &mut Frame, hints: &str) {
     let th = f.theme.clone();
     let pad = f.px(18.0);
-    let pt = th.font_pt * 0.9;
+    let pt = th.font_pt * 0.88;
     let lh = f.line_h(pt);
     let w = f.cv.w as i32;
     let y = f.cv.h as i32 - pad - lh;
-    let s = f.fit(hints, pt, false, w - 2 * pad);
-    f.text(pad, y, &s, pt, th.dim, false);
+    let s = f.fit(hints, pt, false, w - 2 * pad - f.px(16.0));
+    f.cv.beam(pad, y - f.px(6.0), w - 2 * pad, 1, th.cyan, th.violet, 0.35);
+    f.text(pad + f.px(8.0), y, &s, pt, th.dim, false);
+}
+
+/// Highlight for the selected row of a list: a soft rounded gradient with a glowing marker.
+pub fn selection(f: &mut Frame, x: i32, y: i32, w: i32, h: i32) {
+    let th = f.theme.clone();
+    let r = (h as f32 / 2.0).min(f.px(th.radius * 0.75) as f32);
+    f.cv.rrect_v(x, y, w, h, r, crate::canvas::lerp(th.glass, th.amber, 0.22), crate::canvas::lerp(th.glass_lo, th.amber, 0.10), 0.95);
+    f.cv.rstroke(x, y, w, h, r, f.hair(), th.amber, 0.35);
+    let mh = (h - f.px(10.0)).max(f.px(4.0));
+    f.cv.glow(x + f.px(5.0), y + (h - mh) / 2, f.px(3.0), mh, f.px(1.5) as f32, f.px(4.0), th.amber, 0.5);
+    f.cv.rrect(x + f.px(5.0), y + (h - mh) / 2, f.px(3.0), mh, f.px(1.5) as f32, th.amber, 1.0);
+}
+
+/// A text field background: rounded glass, cyan edge (brighter when focused).
+pub fn field(f: &mut Frame, x: i32, y: i32, w: i32, h: i32, focused: bool) {
+    let th = f.theme.clone();
+    let r = (h as f32 / 2.0).min(f.px(th.radius) as f32);
+    if focused {
+        f.cv.glow(x, y, w, h, r, f.px(5.0), th.cyan, 0.12);
+    }
+    f.cv.rrect_v(x, y, w, h, r, th.glass, th.glass_lo, 1.0);
+    f.cv.rstroke(x, y, w, h, r, f.hair(), th.cyan, if focused { 0.7 } else { 0.25 });
+}
+
+/// A rounded panel (cards, dialogs).
+pub fn panel(f: &mut Frame, x: i32, y: i32, w: i32, h: i32, accent: crate::Rgb) {
+    let th = f.theme.clone();
+    let r = f.px(th.radius) as f32;
+    f.cv.glow(x, y, w, h, r, f.px(6.0), accent, 0.10);
+    f.cv.rrect_v(x, y, w, h, r, th.glass, th.glass_lo, 1.0);
+    f.cv.rstroke(x, y, w, h, r, f.hair(), accent, 0.5);
+}
+
+/// A horizontal meter (0..=1): rounded track with a gradient fill (cyan → amber → crimson as it
+/// fills when `hot`, cyan → violet otherwise).
+pub fn meter(f: &mut Frame, x: i32, y: i32, w: i32, h: i32, v: f32, hot: bool) {
+    let th = f.theme.clone();
+    let v = v.clamp(0.0, 1.0);
+    let r = h as f32 / 2.0;
+    f.cv.rrect(x, y, w, h, r, th.glass, 1.0);
+    f.cv.rstroke(x, y, w, h, r, 1, th.dim, 0.25);
+    let fw = ((w as f32) * v).round() as i32;
+    if fw > 0 {
+        let end = if !hot {
+            th.violet
+        } else if v < 0.6 {
+            crate::canvas::lerp(th.cyan, th.amber, v / 0.6)
+        } else {
+            crate::canvas::lerp(th.amber, th.crimson, (v - 0.6) / 0.4)
+        };
+        let fw = fw.max(h.min(w));
+        f.cv.glow(x, y, fw, h, r, f.px(3.0), end, 0.22);
+        f.cv.rrect_h(x, y, fw, h, r, th.cyan, end, 0.95);
+    }
+}
+
+/// A sparkline of values in 0..=1 (oldest first) inside (x, y, w, h).
+pub fn sparkline(f: &mut Frame, x: i32, y: i32, w: i32, h: i32, vals: &[f32], c: crate::Rgb) {
+    if vals.len() < 2 || w <= 0 || h <= 0 {
+        return;
+    }
+    let n = vals.len();
+    for col in 0..w {
+        let i = col as usize * (n - 1) / (w.max(2) - 1) as usize;
+        let v = vals[i.min(n - 1)].clamp(0.0, 1.0);
+        let bh = ((h as f32) * v).round() as i32;
+        if bh > 0 {
+            // filled area with a brighter top edge
+            f.cv.blend(x + col, y + h - bh, 1, bh, c, 0.18);
+            f.cv.blend(x + col, y + h - bh, 1, f.px(1.5).max(1), c, 0.95);
+        }
+    }
 }
 
 /// A clickable rectangle in device pixels (store it during `draw`, test it in `App::click`).
@@ -208,21 +292,23 @@ impl Rect {
     }
 }
 
-/// A push button: `[ label ]` with its key hint underlined in amber. `selected` = keyboard focus,
-/// `enabled` = false greys it out. Returns its rectangle.
+/// A push button: a pill with a gradient when selected (amber → violet, glowing), glass with an
+/// accent edge otherwise; `enabled` = false greys it out. Returns its rectangle.
 pub fn button(f: &mut Frame, x: i32, top: i32, label: &str, selected: bool, enabled: bool) -> Rect {
     let th = f.theme.clone();
     let pt = th.font_pt;
-    let (padx, pady) = (f.px(12.0), f.px(5.0));
+    let (padx, pady) = (f.px(14.0), f.px(6.0));
     let tw = f.text_w(label, pt, true);
     let r = Rect { x, y: top, w: tw + 2 * padx, h: f.line_h(pt) + 2 * pady };
+    let rad = r.h as f32 / 2.0;
     let t = f.hair();
     if selected && enabled {
-        f.cv.fill(r.x, r.y, r.w, r.h, th.amber, 1.0);
+        f.cv.glow(r.x, r.y, r.w, r.h, rad, f.px(6.0), th.amber, 0.30);
+        f.cv.rrect_v(r.x, r.y, r.w, r.h, rad, th.amber, crate::canvas::lerp(th.amber, th.violet, 0.55), 1.0);
         f.text(x + padx, top + pady, label, pt, th.bg, true);
     } else {
-        f.cv.fill(r.x, r.y, r.w, r.h, th.panel, 1.0);
-        f.cv.border(r.x, r.y, r.w, r.h, t, if enabled { th.amber } else { th.dim }, if enabled { 0.8 } else { 0.4 });
+        f.cv.rrect_v(r.x, r.y, r.w, r.h, rad, th.glass, th.glass_lo, 1.0);
+        f.cv.rstroke(r.x, r.y, r.w, r.h, rad, t, if enabled { th.amber } else { th.dim }, if enabled { 0.65 } else { 0.3 });
         f.text_a(x + padx, top + pady, label, pt, if enabled { th.text } else { th.dim }, true, if enabled { 1.0 } else { 0.6 });
     }
     r

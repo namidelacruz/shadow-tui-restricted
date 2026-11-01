@@ -7,7 +7,7 @@
 //!   ↑↓ select · ←→ adjust · Enter edit / toggle · a scale back to auto · Tab / 1-9 page · Esc close
 use shadow_apps::cfg::{get_in, remove_in, set_in};
 use shadow_apps::{atomic_write, cmd_out, config_path, spawn};
-use shadow_ui::widgets::{chrome, footer, Input};
+use shadow_ui::widgets::{chrome, footer, selection, Input};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -48,7 +48,7 @@ const PAGES: [(&str, &str); 9] = [
     ("Session", "idle lock and monitor power-off"),
     ("Power + NPU", "learning schedule, predictive tuning, modes"),
     ("Updates + sync", "update source + its policy (set up: shadow update setup) and the GitHub state repository"),
-    ("Security", "optional shadow-sec status (read-only)"),
+    ("Security", "optional shadow-sec: what this OS supports · S opens the security console to enable modules"),
 ];
 
 fn rows(page: usize, outputs: &[String]) -> Vec<Row> {
@@ -75,7 +75,7 @@ fn rows(page: usize, outputs: &[String]) -> Vec<Row> {
             v.push(r("display", "refresh_battery", "Refresh on battery (Hz)", num(30.0, 120.0, 12.0, false), "60"));
             v
         }
-        3 => vec![r("bar", "width", "Bar width (px)", num(160.0, 480.0, 10.0, false), "230")],
+        3 => vec![r("bar", "width", "Bar width (px)", num(180.0, 480.0, 10.0, false), "250")],
         4 => vec![
             r("input", "xkb_layout", "Keyboard layout (e.g. us,ca)", Kind::Text, ""),
             r("input", "xkb_options", "XKB options (e.g. ctrl:nocaps)", Kind::Text, ""),
@@ -148,8 +148,26 @@ impl Config {
                 v
             }
             8 => {
-                let (c, o) = cmd_out(&["shadow-sec", "status"]);
-                if c == 127 { vec!["shadow-sec is not installed (optional package shadow-tui-sec)".into()] } else { o.lines().take(20).map(String::from).collect() }
+                let (c, o) = cmd_out(&["shadow-sec", "precheck", "--porcelain"]);
+                if c == 127 {
+                    vec!["shadow-sec is not installed (optional package shadow-tui-sec: ./install.sh --sec)".into()]
+                } else {
+                    // one line per module: state and whether this OS supports it
+                    let mut v: Vec<String> = o
+                        .lines()
+                        .filter_map(|l| {
+                            let f: Vec<&str> = l.split_whitespace().collect();
+                            match f.as_slice() {
+                                [m, "supported", st] => Some(format!("{m:<8} {:<9} can be enabled here", st)),
+                                [m, "unsupported", st] => Some(format!("{m:<8} {:<9} not supported on this system — {}", st, o.lines().find(|x| x.starts_with(&format!("{m} fail "))).map(|x| x.splitn(3, ' ').nth(2).unwrap_or("").split(" | ").next().unwrap_or("")).unwrap_or(""))),
+                                _ => None,
+                            }
+                        })
+                        .collect();
+                    v.push(String::new());
+                    v.push("S  open the security console: details, enable / disable (asks for your password each time)".into());
+                    v
+                }
             }
             _ => vec![],
         };
@@ -293,6 +311,10 @@ impl App for Config {
                     self.write(&r, None);
                 }
             }
+            (_, "S") | (_, "s") if self.page == 8 => {
+                shadow_apps::spawn("shadow-term --hold -e shadow-sec console");
+                self.status = ("security console opened in a terminal".into(), false);
+            }
             (_, "R") if self.page == 6 => {
                 let (_, o) = cmd_out(&["shadow-powerd", "learn", "--relearn"]);
                 self.status = (o.lines().last().unwrap_or("").to_string(), false);
@@ -344,8 +366,7 @@ impl App for Config {
         for (i, r) in rs.iter().enumerate() {
             let sel = i == self.sel;
             if sel {
-                f.cv.fill(x - f.px(6.0), y, rw + f.px(6.0), row_h, th.amber, 0.14);
-                f.cv.fill(x - f.px(6.0), y, f.px(3.0), row_h, th.amber, 1.0);
+                selection(f, x - f.px(6.0), y, rw + f.px(6.0), row_h);
             }
             f.text(x + f.px(4.0), y + f.px(4.0), &r.label, pt, th.text, false);
             let val = if sel && self.edit.is_some() { String::new() } else { self.shown(r) };

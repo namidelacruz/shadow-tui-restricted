@@ -19,7 +19,7 @@ pub mod widgets;
 
 pub use canvas::{Canvas, Rgb};
 pub use font::Fonts;
-pub use shell::{run, App, Ctx, Frame, Key, OutputDesc, SurfaceKind};
+pub use shell::{run, App, Ctx, Frame, Key, LayerKeyboard, OutputDesc, SurfaceKind};
 pub use smithay_client_toolkit::reexports::calloop;
 pub use smithay_client_toolkit::seat::keyboard::Keysym;
 pub use smithay_client_toolkit::shell::wlr_layer::{Anchor, Layer};

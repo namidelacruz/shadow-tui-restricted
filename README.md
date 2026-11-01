@@ -18,7 +18,9 @@ Version 6, with its own Smithay compositor and orbital ring, stays on the `v6` b
 
 | Component | What it is |
 |---|---|
-| `shadow-bar` | The floating side bar (layer-shell, right edge). It shows the monitor and scale, workspace, focused app, NPU state, sync, battery and watts, panel Hz, package °C and profile, audio DSP, Wi-Fi SSID/dBm/EAP, Lua widgets and the time. It sits on the laptop panel; when docked it follows the monitor that has focus. `Mod+Shift+B` hides it. |
+| `shadow-bar` | The floating side bar (layer-shell, right edge), with **APPS · SETTINGS · SYSTEM** buttons at the top. It shows battery % with time left or time to full (smoothed), and the monitor and scale, workspace, focused app, NPU state, sync, battery and watts, panel Hz, package °C and profile, audio DSP, Wi-Fi SSID/dBm/EAP, Lua widgets and the time. It sits on the laptop panel; when docked it follows the monitor that has focus. `Mod+Shift+B` hides it. |
+| `shadow-flyout` | The panels behind the side bar's **APPS**, **SETTINGS** and **SYSTEM** buttons. Each opens beside its button; the same button closes it again.<br>• **Apps:** search and launch.<br>• **Settings:** brightness, volume, power mode, Wi-Fi, displays, all settings.<br>• **System:** task manager, update, security console, lock, log out, suspend, reboot, shut down; log out, reboot and shut down need a second press.<br>`Mod+A` opens Apps. Tab switches page; Esc, or moving focus away, closes it. |
+| `shadow-tasks` | Task manager (`Ctrl+Shift+Esc`).<br>• **Cards:** CPU (total, per core, frequency), memory (RAM, swap, memory pressure), NPU (busy % from the Intel NPU driver, frequency, learning state), GPU (busy % from xe/i915 idle residency, frequency), power (battery draw, package power, time left, temperature), I/O (network, disk, pressure).<br>• **Processes:** sort with c/m/p, filter with /, end with k (SIGTERM) or K (SIGKILL), each confirmed first. |
 | `shadow-launch` | Launcher, opened as its own normal window (tiled, opaque), not an overlay over what's on screen. Click or press Enter to launch. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
 | `shadow-net` | Wi-Fi: networks, UC-Secure and eduroam setup, self-repair, with a live EAP/TLS log. |
 | `shadow-config` | Live settings matrix over `config.toml`. Changes apply immediately; if niri rejects one, it is rolled back. |
@@ -109,6 +111,7 @@ Shadow's niri config is generated into `~/.config/shadow-state/niri.kdl`, and th
 | `Mod+[` / `Mod+]` | width preset 45 / 65 / 85 % |
 | `Mod+F` · `Mod+Shift+F` | full width (the bar stays visible) · true fullscreen |
 | `Mod+Return` `Mod+Space` `Mod+E` `Mod+N` `Mod+Comma` `Mod+U` | terminal, launcher, files, network, settings, updates |
+| `Mod+A` · `Ctrl+Shift+Esc` | apps flyout beside the bar · task manager |
 | `Mod+Ctrl+arrows` · `Mod+Shift+Ctrl+arrows` | focus another monitor · move the window there |
 | `Mod+1…9` · `Mod+Shift+1…9` | workspace · move the window to a workspace |
 | `Mod+O` | overview |
@@ -307,15 +310,61 @@ The repository holds:
 
 Plaintext secrets are refused by a scanner. The side bar shows the sync state.
 
+## Look
+
+The 2D apps share a "fluid HUD" style:
+- deep gradient backdrops with faint scan lines;
+- rounded glass panels with soft glows;
+- angled amber→violet title tags and light-beam dividers;
+- pill buttons, gradient meters and sparklines.
+
+Everything is drawn on the CPU with anti-aliased shapes, and app windows stay fully opaque.
+
+`[look]` options: `radius` (corner radius, 0–24), `violet`, `amber`, `cyan`, `obsidian`, `opacity` (side bar only), `font`, `font_pt`.
+
+The login console uses rounded box-drawing and a gradient beam.
+
+`SHADOW_SNAPSHOT=out.ppm <app>` renders one frame of any app without a compositor, for screenshots.
+
 ## Optional security subsystem
 
 ```bash
-sudo pacman -U shadow-tui-sec-*.pkg.tar.zst      # or ./install.sh --sec
-sudo shadow-sec status
-sudo shadow-sec enable usb        # also: zones sandbox audit fss ids verity crypto
+./install.sh --sec                # installs shadow-tui-sec, shows what this OS supports, offers the console
+shadow-sec precheck               # per module: can it be enabled on this system, and why not
+shadow-sec console                # the security console (also: side bar → SYSTEM, or the launcher)
 shadow-sec report                 # ITSG-33 control mapping (self-assessment, NOT a certification)
 shadow-sec zeroize --plan
 ```
+
+**Precheck.** A module can only be enabled after its precheck passes on this OS. Examples:
+
+| Module | Checked |
+|---|---|
+| usb | kernel USB authorisation, Thunderbolt security level |
+| zones | nftables tools, kernel nf_tables; notes when firewalld or ufw is also active |
+| sandbox | systemd 247 or newer |
+| audit | audit tools; kernel booted without `audit=0`; auditd running |
+| fss | systemd built with Forward Secure Sealing |
+| verity | fsverity-utils; `/opt/shadow-tui` on ext4 with the verity feature, btrfs or f2fs. XFS (the RHEL default) has no fs-verity. |
+| crypto | OpenSSH with ML-KEM or sntrup hybrid key exchange |
+
+The precheck also shows the platform's state:
+- SELinux / AppArmor;
+- kernel lockdown;
+- Secure Boot;
+- TPM 2.0;
+- LUKS disk encryption.
+
+`shadow-sec enable` itself refuses a module whose precheck fails, so nothing is ever half-configured.
+
+**Enabling** is done from the security console, or by `./install.sh --sec`, which opens the console. Never automatically, not even with `--yes`. In the console:
+- the module's precheck is shown first;
+- you type the module's name to confirm;
+- the change runs through sudo with the cached credential cleared (`sudo -k`), so your password is asked every time.
+
+Every enable and disable is logged with the user who made it, in `/var/lib/shadow-sec/events.log`.
+
+Enabling `usb`, `ids` or `zones` also enables the `shadow-sec` service. That service restores the nftables zones at every boot; before this, they were lost on reboot.
 
 Each module states what it actually enforces. The spec items it cannot honestly deliver are listed in `report` and in `docs/SPEC-TRACE.md`, for example eBPF/XDP programs, keystroke biometrics, FIPS-validated modules and TPM attestation.
 

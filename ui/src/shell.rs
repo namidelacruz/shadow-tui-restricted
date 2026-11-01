@@ -43,11 +43,20 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 use wayland_protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 
 // ====================================================================== public API
+/// Keyboard focus for a layer surface: none (the bar), on demand, or exclusive (a flyout you
+/// type into straight away).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LayerKeyboard {
+    None,
+    OnDemand,
+    Exclusive,
+}
+
 pub enum SurfaceKind {
     /// A normal application window; `size` is the initial logical size.
     Window { app_id: String, title: String, size: (u32, u32) },
     /// A layer-shell panel (side bar). `size` 0 on an axis = stretch between anchors.
-    Layer { namespace: String, layer: Layer, anchor: Anchor, size: (u32, u32), margin: (i32, i32, i32, i32), exclusive: i32, keyboard: bool },
+    Layer { namespace: String, layer: Layer, anchor: Anchor, size: (u32, u32), margin: (i32, i32, i32, i32), exclusive: i32, keyboard: LayerKeyboard },
     /// ext-session-lock: one full-screen surface per monitor until `Ctx::unlock`.
     Lock,
 }
@@ -214,6 +223,8 @@ pub trait App {
     fn outputs_changed(&mut self, _outs: &[OutputDesc], _ctx: &mut Ctx) {}
     /// Lock apps: the compositor confirmed the lock (true) or refused it (false).
     fn lock_state(&mut self, _locked: bool, _ctx: &mut Ctx) {}
+    /// Keyboard focus arrived (true) or left (false).
+    fn focus(&mut self, _focused: bool, _ctx: &mut Ctx) {}
 }
 
 // ====================================================================== internals
@@ -284,6 +295,11 @@ struct Shell {
 
 /// Run `app` until it quits. `messages`: optional channel whose lines reach `App::message`.
 pub fn run(app: Box<dyn App>, messages: Option<Channel<String>>) -> Result<(), String> {
+    // headless preview: SHADOW_SNAPSHOT=out.ppm [SHADOW_SNAPSHOT_SCALE=1.5] renders one frame of
+    // the app at its initial size and exits (screenshots and visual checks; no compositor)
+    if let Ok(path) = std::env::var("SHADOW_SNAPSHOT") {
+        return snapshot(app, messages, &path);
+    }
     let conn = Connection::connect_to_env().map_err(|e| format!("cannot connect to the Wayland compositor: {e}"))?;
     let (globals, mut queue) = registry_queue_init::<Shell>(&conn).map_err(|e| format!("wayland registry: {e}"))?;
     let qh = queue.handle();
@@ -448,7 +464,11 @@ impl Shell {
         l.set_size(size.0, size.1);
         l.set_margin(margin.0, margin.1, margin.2, margin.3);
         l.set_exclusive_zone(exclusive);
-        l.set_keyboard_interactivity(if keyboard { KeyboardInteractivity::OnDemand } else { KeyboardInteractivity::None });
+        l.set_keyboard_interactivity(match keyboard {
+            LayerKeyboard::None => KeyboardInteractivity::None,
+            LayerKeyboard::OnDemand => KeyboardInteractivity::OnDemand,
+            LayerKeyboard::Exclusive => KeyboardInteractivity::Exclusive,
+        });
         l.commit();
         self.add_surf(Role::Layer(l), out, size, qh);
         Ok(())
@@ -757,12 +777,18 @@ impl KeyboardHandler for Shell {
         for s in &mut self.surfs {
             s.dirty = true;
         }
+        let mut ctx = Ctx::default();
+        self.app.focus(true, &mut ctx);
+        self.apply(ctx);
     }
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32) {
         self.focused = None;
         for s in &mut self.surfs {
             s.dirty = true;
         }
+        let mut ctx = Ctx::default();
+        self.app.focus(false, &mut ctx);
+        self.apply(ctx);
     }
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
         self.on_key(event);
@@ -841,4 +867,71 @@ impl Dispatch<WpFractionalScaleV1, SurfTag> for Shell {
             }
         }
     }
+}
+
+/// Render one frame without a compositor (see `run`). Writes a binary PPM.
+fn snapshot(mut app: Box<dyn App>, messages: Option<Channel<String>>, path: &str) -> Result<(), String> {
+    let theme = Theme::load();
+    let mut fonts = Fonts::load(&theme.font)?;
+    let scale: f64 = std::env::var("SHADOW_SNAPSHOT_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    let (lw, lh) = match app.kind() {
+        SurfaceKind::Window { size, .. } => size,
+        SurfaceKind::Layer { size, .. } => (size.0.max(1), if size.1 == 0 { 600 } else { size.1 }),
+        SurfaceKind::Lock => (1280, 800),
+    };
+    let lh = std::env::var("SHADOW_SNAPSHOT_H").ok().and_then(|v| v.parse().ok()).unwrap_or(lh);
+    if matches!(app.kind(), SurfaceKind::Layer { .. }) {
+        let _ = app.pick_output(&[]);
+    }
+    // let the app take in messages it would get at start-up (worker threads) for a moment
+    if let Some(ch) = messages {
+        let wait: u64 = std::env::var("SHADOW_SNAPSHOT_WAIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        if wait > 0 {
+            let mut el: EventLoop<'static, (Box<dyn App>, Ctx)> = EventLoop::try_new().map_err(|e| e.to_string())?;
+            el.handle()
+                .insert_source(ch, |ev, _, st| {
+                    if let channel::Event::Msg(m) = ev {
+                        st.0.message(m, &mut st.1)
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+            let mut st = (app, Ctx::default());
+            let end = std::time::Instant::now() + Duration::from_millis(wait);
+            while std::time::Instant::now() < end {
+                let _ = el.dispatch(Some(Duration::from_millis(20)), &mut st);
+            }
+            app = st.0;
+        }
+    }
+    let ticks: u32 = std::env::var("SHADOW_SNAPSHOT_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    for _ in 0..ticks {
+        std::thread::sleep(Duration::from_millis(app.tick_ms().clamp(1, 1000)));
+        app.tick(&mut Ctx::default());
+    }
+    let mut size = (lw, lh);
+    for _pass in 0..4 {
+        let (w, h) = ((size.0 as f64 * scale).round() as usize, (size.1 as f64 * scale).round() as usize);
+        let mut buf = vec![0u8; w * h * 4];
+        let want;
+        {
+            let mut f = Frame { cv: Canvas { buf: &mut buf, w, h }, scale: scale as f32, text: scale as f32, fonts: &mut fonts, theme: &theme, output: None, index: 0, focused: true, want_size: None, logical: size };
+            app.draw(&mut f);
+            want = f.want_size;
+        }
+        if let Some(ws) = want.filter(|ws| *ws != size) {
+            size = ws;
+            continue;
+        }
+        // composite onto a dark desktop so translucent panels look as they would
+        let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+        for p in buf.chunks_exact(4) {
+            let a = p[3] as f32 / 255.0;
+            let bgd = [0x20u8, 0x22, 0x28];
+            for (k, ch) in [2usize, 1, 0].iter().enumerate() {
+                out.push((p[*ch] as f32 + bgd[k] as f32 * (1.0 - a)).round().min(255.0) as u8);
+            }
+        }
+        return std::fs::write(path, out).map_err(|e| e.to_string());
+    }
+    Err("the app kept changing its size".into())
 }

@@ -391,10 +391,18 @@ impl Greeter {
         let y = t.h.saturating_sub(h) / 2;
         let panel = Style::new(TEXT, PANEL);
         t.fill(x, y, w, h, panel);
-        t.frame(x, y, w, h, ['┌', '┐', '└', '┘', '─', '│'], Style::new(AMBER, PANEL));
+        t.frame(x, y, w, h, ['╭', '╮', '╰', '╯', '─', '│'], Style::new(AMBER, PANEL));
         // title strip
         let title = format!(" ◢ {} ", self.title);
         t.text(x + 2, y + 1, &title, Style::new(OBSIDIAN, AMBER).bold(), w - 4);
+        // a light beam under the title: amber fading through violet to cyan (truecolor consoles)
+        let span = w.saturating_sub(4).max(1);
+        for i in 0..span {
+            let f = i as f32 / span as f32;
+            let mix = |a: u8, b: u8, t: f32| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+            let (r, g, b) = if f < 0.5 { (mix(0xFF, 0x9B, f * 2.0), mix(0xB0, 0x6B, f * 2.0), mix(0x00, 0xFF, f * 2.0)) } else { (mix(0x9B, 0x00, f * 2.0 - 1.0), mix(0x6B, 0xE5, f * 2.0 - 1.0), 0xFF) };
+            t.text(x + 2 + i, y + 2, "─", Style::new(Color::Rgb(r, g, b), PANEL), 1);
+        }
         let host_w = self.host.chars().count();
         if title.chars().count() + host_w + 6 < w {
             t.text(x + w - 2 - host_w, y + 1, &self.host, Style::new(CYAN, PANEL), host_w);

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Task Manager
+GenericName=System Monitor
+Comment=Shadow TUI Restricted: CPU, memory, NPU, GPU, power, I/O and processes
+Exec=shadow-tasks
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=cpu;memory;ram;npu;gpu;process;kill;

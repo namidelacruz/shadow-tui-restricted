@@ -1,6 +1,6 @@
 [package]
 name = "shadow-apps"
-version = "7.3.0"
+version = "7.4.0"
 edition = "2021"
 description = "Shadow TUI Restricted applications, each its own 2D Wayland app: launcher, network, config, files, lock, updater"
 license = "MIT"
@@ -28,6 +28,14 @@ path = "src/bin/lock.rs"
 [[bin]]
 name = "shadow-update"
 path = "src/bin/update.rs"
+
+[[bin]]
+name = "shadow-flyout"
+path = "src/bin/flyout.rs"
+
+[[bin]]
+name = "shadow-tasks"
+path = "src/bin/tasks.rs"
 
 [dependencies]
 shadow-ui = { path = "../ui" }

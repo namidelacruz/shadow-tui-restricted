@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        7.3.0
+Version:        7.4.0
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: side bar, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -124,6 +124,11 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Sun Nov 01 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.4.0-1
+- side bar: APPS / SETTINGS / SYSTEM buttons with flyout panels, battery time left
+- shadow-tasks task manager (CPU, memory, NPU, GPU, power, I/O, processes)
+- fluid HUD restyle of every 2D app and the login console
+- shadow-sec: per-module OS precheck; security console with password + confirmation
 * Sat Oct 31 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.3.0-1
 - required update source with a private-repository policy: read-only deploy key or credential
   helper (no stored tokens), pinned host keys, private check, no history rewrites, optional

@@ -1,7 +1,11 @@
 //! shadow-sec — the optional security subsystem (CR-SPEC-SHADOW-001 §8–9), shipped as its own
-//! package (shadow-tui-sec). Nothing here runs or changes the system until you enable a module.
+//! package (shadow-tui-sec). Nothing here runs or changes the system until you enable a module, and
+//! a module can only be enabled after its precheck passes on this OS.
 //!
 //!   shadow-sec status                    what is enabled and what each control actually enforces
+//!   shadow-sec precheck [MODULE…]        what this OS supports: can each module be enabled here?
+//!   shadow-sec console                   the security console: precheck, enable / disable with your
+//!                                        password (sudo is asked again every time) and a typed confirm
 //!   shadow-sec enable|disable MODULE     usb zones sandbox audit fss ids verity crypto
 //!   shadow-sec verify                    journal seals, fs-verity digests, crypto posture
 //!   shadow-sec report                    ITSG-33 control mapping (self-assessment, not a certification)
@@ -212,9 +216,322 @@ fn posture() -> Vec<(String, String)> {
     v
 }
 
+// ---------------------------------------------------------------- precheck: what this OS supports
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Lvl {
+    Ok,
+    Warn,
+    Fail,
+}
+
+/// One requirement of a module on this system: (level, what was found, how to fix it)
+pub type Req = (Lvl, String, String);
+
+fn kernel_has(module: &str, sysfs: &str) -> bool {
+    sys::exists(sysfs) || sys::exists(&format!("sys/module/{module}")) || sys::run(&["modprobe", "-n", "-q", module]).0 == 0
+}
+
+fn systemd_version() -> u32 {
+    sys::run(&["systemctl", "--version"]).1.split_whitespace().nth(1).and_then(|v| v.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()).unwrap_or(0)
+}
+
+fn unit_exists(u: &str) -> bool {
+    ["usr/lib/systemd/system", "lib/systemd/system", "etc/systemd/system"].iter().any(|d| sys::exists(&format!("{d}/{u}")))
+}
+
+fn active(u: &str) -> bool {
+    sys::run(&["systemctl", "is-active", "-q", u]).0 == 0
+}
+
+/// Filesystem type and source of the filesystem holding `path`
+fn fs_of(path: &str) -> (String, String) {
+    // the nearest existing directory (before the first install /opt/shadow-tui may not exist)
+    let mut p = std::path::PathBuf::from(path);
+    while !p.exists() && p.pop() {}
+    let o = sys::run(&["findmnt", "-n", "-o", "FSTYPE,SOURCE", "-T", &p.to_string_lossy()]).1;
+    let mut it = o.split_whitespace();
+    (it.next().unwrap_or("?").to_string(), it.next().unwrap_or("").to_string())
+}
+
+pub fn precheck(m: &str) -> Vec<Req> {
+    let ok = |w: &str| (Lvl::Ok, w.to_string(), String::new());
+    let warn = |w: &str, f: &str| (Lvl::Warn, w.to_string(), f.to_string());
+    let fail = |w: &str, f: &str| (Lvl::Fail, w.to_string(), f.to_string());
+    let hint = |p: &[&str]| distro::install_hint(p);
+    let mut v: Vec<Req> = vec![];
+    let service = || {
+        if unit_exists("shadow-sec.service") {
+            if active("shadow-sec.service") { ok("shadow-sec.service running") } else { warn("shadow-sec.service is not running", "enabling this module starts it (systemctl enable --now shadow-sec)") }
+        } else {
+            fail("shadow-sec.service is missing", "reinstall the shadow-tui-sec package")
+        }
+    };
+    match m {
+        "usb" => {
+            v.push(if sys::exists("sys/bus/usb/devices") && !usb_buses().is_empty() { ok(&format!("{} USB bus(es) with authorized_default", usb_buses().len())) } else { fail("no USB buses in /sys/bus/usb", "this kernel has no USB authorisation interface") });
+            v.push(service());
+            let tb = thunderbolt_level();
+            v.push(match tb.as_str() {
+                "no controller" => ok("no Thunderbolt controller"),
+                "none" | "dponly" => warn(&format!("Thunderbolt security level '{tb}': PCIe tunnels are not gated"), "set 'user' or 'secure' in the firmware setup"),
+                _ => ok(&format!("Thunderbolt security level '{tb}'")),
+            });
+        }
+        "zones" => {
+            v.push(if sys::which("nft").is_some() { ok("nft (nftables) installed") } else { fail("nft is not installed", &hint(&["nftables"])) });
+            v.push(if kernel_has("nf_tables", "proc/net/netfilter") { ok("kernel nf_tables available") } else { fail("the kernel has no nf_tables", "a kernel built with CONFIG_NF_TABLES is required") });
+            if active("firewalld.service") {
+                v.push(warn("firewalld is active: its rules and these zones both apply (the stricter wins)", "fine as is; or stop firewalld if you want these zones alone"));
+            }
+            if active("ufw.service") {
+                v.push(warn("ufw is active: its rules and these zones both apply", "fine as is"));
+            }
+            v.push(service());
+        }
+        "sandbox" => {
+            let sv = systemd_version();
+            v.push(if sv >= 247 { ok(&format!("systemd {sv} (sandbox options supported)")) } else { fail(&format!("systemd {sv} is too old (need 247+)"), "update the system") });
+            let missing: Vec<&str> = DAEMONS.iter().copied().filter(|u| !unit_exists(u)).collect();
+            v.push(if missing.is_empty() { ok("all Shadow daemon units present") } else { warn(&format!("units not found: {}", missing.join(", ")), "only the present ones are sandboxed") });
+        }
+        "audit" => {
+            v.push(if sys::which("augenrules").is_some() || sys::which("auditctl").is_some() { ok("audit userspace installed") } else { fail("audit (auditd/augenrules) is not installed", &hint(&["audit"])) });
+            let cmdline = sys::read("proc/cmdline").unwrap_or_default();
+            v.push(if cmdline.split_whitespace().any(|a| a == "audit=0") { fail("the kernel was booted with audit=0", "remove audit=0 from the kernel command line and reboot") } else if sys::exists("proc/self/loginuid") { ok("kernel audit enabled") } else { fail("the kernel has no audit support", "a kernel built with CONFIG_AUDIT is required") });
+            v.push(if active("auditd.service") { ok("auditd running") } else { warn("auditd is not running", "sudo systemctl enable --now auditd") });
+        }
+        "fss" => {
+            let help = sys::run(&["journalctl", "--help"]).1;
+            v.push(if help.contains("--setup-keys") { ok("journald supports Forward Secure Sealing") } else { fail("this systemd was built without FSS (no --setup-keys)", "not available on this distribution's systemd") });
+            v.push(if sys::exists("var/log/journal") { ok("persistent journal") } else { warn("the journal is volatile (no /var/log/journal)", "enabling FSS makes it persistent") });
+            v.push(warn("the verification key must be written down and kept OFF this machine", "it is shown once when you enable"));
+        }
+        "ids" => {
+            v.push(ok("/proc is readable (process heuristics)"));
+            v.push(service());
+            v.push(if enabled("audit") { ok("audit rules enabled (better evidence)") } else { warn("audit is not enabled: detection uses /proc heuristics only", "enable 'audit' too") });
+        }
+        "verity" => {
+            v.push(if sys::which("fsverity").is_some() { ok("fsverity-utils installed") } else { fail("fsverity-utils is not installed", &hint(&["fsverity-utils"])) });
+            let (fs, src) = fs_of(&sys::p("opt/shadow-tui").to_string_lossy());
+            match fs.as_str() {
+                "ext4" => {
+                    let kernel = sys::exists("sys/fs/ext4/features/verity");
+                    let feat = sys::run(&["tune2fs", "-l", &src]).1.lines().any(|l| l.starts_with("Filesystem features") && l.contains("verity"));
+                    v.push(if !kernel {
+                        fail("the kernel's ext4 has no fs-verity", "a kernel with CONFIG_FS_VERITY is required")
+                    } else if feat {
+                        ok(&format!("ext4 on {src} has the verity feature"))
+                    } else if !sys::is_root() {
+                        // tune2fs needs root to read the superblock: enable re-checks as root
+                        warn(&format!("ext4 on {src}: the verity feature can only be read as root"), "checked again when you enable (with your password)")
+                    } else {
+                        fail(&format!("ext4 on {src} lacks the verity feature"), &format!("tune2fs -O verity {src} (from a rescue system, unmounted)"))
+                    });
+                }
+                "btrfs" | "f2fs" => v.push(if sys::exists(&format!("sys/fs/{fs}/features/verity")) { ok(&format!("{fs} with fs-verity support")) } else { fail(&format!("the kernel's {fs} has no fs-verity"), "a kernel with CONFIG_FS_VERITY is required") }),
+                "xfs" => v.push(fail("/opt/shadow-tui is on XFS, which has no fs-verity (RHEL/Fedora server default)", "not supported on this filesystem; use 'sandbox' + 'audit' for integrity instead")),
+                other => v.push(fail(&format!("/opt/shadow-tui is on {other}, which has no fs-verity"), "ext4 (with the verity feature), btrfs or f2fs is required")),
+            }
+        }
+        "crypto" => {
+            let kex = sys::run(&["ssh", "-Q", "kex"]).1;
+            v.push(if sys::which("ssh").is_none() { fail("the OpenSSH client is not installed", &hint(&["openssh"])) } else if kex.contains("mlkem768x25519") { ok("OpenSSH with ML-KEM-768 hybrid key exchange") } else if kex.contains("sntrup761") { warn("OpenSSH offers sntrup761 hybrid only", "update OpenSSH (9.9+) for ML-KEM") } else { fail("OpenSSH has no post-quantum hybrid key exchange", "update OpenSSH to 9.0+") });
+            v.push(if sys::which("git").is_some() { ok("git installed (TLS 1.3 setting)") } else { warn("git is not installed", "the git part is skipped") });
+        }
+        _ => v.push(fail(&format!("unknown module '{m}'"), "usb zones sandbox audit fss ids verity crypto")),
+    }
+    v
+}
+
+pub fn supported(m: &str) -> bool {
+    !precheck(m).iter().any(|r| r.0 == Lvl::Fail)
+}
+
+/// The security features of the OS itself (for the console header and `precheck`)
+fn platform() -> Vec<(String, String)> {
+    let mut v = vec![];
+    let os = sys::read("etc/os-release").unwrap_or_default();
+    let name = os.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=")).unwrap_or("?").trim_matches('"').to_string();
+    v.push(("system".into(), format!("{name} · kernel {}", sys::read("proc/sys/kernel/osrelease").unwrap_or_default())));
+    let lsm = sys::read("sys/kernel/security/lsm").unwrap_or_default();
+    let selinux = sys::read("sys/fs/selinux/enforce").map(|e| if e == "1" { "SELinux enforcing" } else { "SELinux permissive" });
+    let aa = sys::exists("sys/module/apparmor/parameters/enabled").then_some("AppArmor");
+    let named = [selinux, aa].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    v.push(("LSM".into(), match (named.is_empty(), lsm.is_empty()) {
+        (true, true) => "none detected".into(),
+        (true, false) => lsm,
+        (false, true) => named,
+        (false, false) => format!("{named}  ({lsm})"),
+    }));
+    v.extend(posture().into_iter().filter(|(k, _)| ["kernel lockdown", "Secure Boot", "TPM 2.0", "disk encryption"].contains(&k.as_str())));
+    v
+}
+
+fn print_precheck(mods: &[&str], porcelain: bool) -> bool {
+    let mut all_ok = true;
+    if !porcelain {
+        for (k, val) in platform() {
+            println!("  {k:<16} {val}");
+        }
+        println!();
+    }
+    for m in mods {
+        let r = precheck(m);
+        let sup = !r.iter().any(|x| x.0 == Lvl::Fail);
+        all_ok &= sup;
+        if porcelain {
+            for (l, w, f) in &r {
+                println!("{m} {} {w}{}", match l { Lvl::Ok => "ok", Lvl::Warn => "warn", Lvl::Fail => "fail" }, if f.is_empty() { String::new() } else { format!(" | {f}") });
+            }
+            println!("{m} {} {}", if sup { "supported" } else { "unsupported" }, if enabled(m) { "enabled" } else { "off" });
+            continue;
+        }
+        println!("  \x1b[1m{m:<8}\x1b[0m {}  {}", if sup { "\x1b[32mcan be enabled\x1b[0m" } else { "\x1b[31mnot supported here\x1b[0m" }, if enabled(m) { "(enabled)" } else { "" });
+        for (l, w, f) in r {
+            let mark = match l { Lvl::Ok => "\x1b[32m✓\x1b[0m", Lvl::Warn => "\x1b[33m!\x1b[0m", Lvl::Fail => "\x1b[31m✗\x1b[0m" };
+            println!("      {mark} {w}{}", if f.is_empty() { String::new() } else { format!("\n          → {f}") });
+        }
+    }
+    all_ok
+}
+
+// ---------------------------------------------------------------- the security console
+const R: &str = "\x1b[0m";
+const AMB: &str = "\x1b[38;2;255;176;0m";
+const CYN: &str = "\x1b[38;2;0;229;255m";
+const VIO: &str = "\x1b[38;2;155;107;255m";
+const DIM: &str = "\x1b[38;2;138;132;116m";
+const RED: &str = "\x1b[38;2;255;42;0m";
+const GRN: &str = "\x1b[38;2;124;217;90m";
+
+fn line(prompt: &str) -> Option<String> {
+    use std::io::Write;
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut l = String::new();
+    match std::io::stdin().read_line(&mut l) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(l.trim().to_string()),
+    }
+}
+
+fn beam(w: usize) -> String {
+    (0..w).map(|i| {
+        let f = i as f32 / w as f32;
+        let mix = |a: f32, b: f32, t: f32| (a + (b - a) * t) as u8;
+        let (r, g, b) = if f < 0.5 { (mix(255.0, 155.0, f * 2.0), mix(176.0, 107.0, f * 2.0), mix(0.0, 255.0, f * 2.0)) } else { (mix(155.0, 0.0, f * 2.0 - 1.0), mix(107.0, 229.0, f * 2.0 - 1.0), 255) };
+        format!("\x1b[38;2;{r};{g};{b}m─")
+    }).collect::<String>() + R
+}
+
+/// Run `shadow-sec ARGS` with administrator rights, always asking for the password again.
+fn privileged(args: &[&str]) -> i32 {
+    let me = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "/opt/shadow-tui/bin/shadow-sec".into());
+    if sys::is_root() {
+        return std::process::Command::new(&me).args(args).status().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+    }
+    // forget any cached sudo credential: every change is authorised with the password, now
+    let _ = std::process::Command::new("sudo").arg("-k").status();
+    let mut c = std::process::Command::new("sudo");
+    c.args(["-p", &format!("{AMB}[shadow-sec]{R} password for %u: "), "--", &me]).args(args);
+    c.status().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
+}
+
+fn console() -> i32 {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!("shadow-sec console needs a terminal (open it from the launcher or: shadow-term -e shadow-sec console)");
+        return 2;
+    }
+    let mods: Vec<&str> = MODULES.iter().map(|m| m.0).collect();
+    loop {
+        print!("\x1b[2J\x1b[H");
+        println!("{AMB}╭─ ◢ SHADOW-SEC // SECURITY CONSOLE ─╮{R}  {DIM}nothing changes without your password{R}");
+        println!("{}", beam(78));
+        for (k, val) in platform() {
+            println!("  {DIM}{k:<16}{R} {val}");
+        }
+        println!("{}", beam(78));
+        println!("  {DIM}#  MODULE    STATE      ON THIS SYSTEM{R}");
+        for (i, (m, d)) in MODULES.iter().enumerate() {
+            let r = precheck(m);
+            let sup = !r.iter().any(|x| x.0 == Lvl::Fail);
+            let warns = r.iter().filter(|x| x.0 == Lvl::Warn).count();
+            let st = if enabled(m) { format!("{GRN}enabled{R}  ") } else { format!("{DIM}off{R}      ") };
+            let s = if !sup { format!("{RED}✗ not supported{R}") } else if warns > 0 { format!("{AMB}! ready ({warns} note{}){R}", if warns > 1 { "s" } else { "" }) } else { format!("{GRN}✓ ready{R}") };
+            println!("  {CYN}{}{R}  {m:<8}  {st} {s}", i + 1);
+            println!("     {DIM}{}{R}", d.chars().take(72).collect::<String>());
+        }
+        println!("{}", beam(78));
+        println!("  {VIO}n{R} details · {VIO}e n{R} enable · {VIO}d n{R} disable · {VIO}v{R} verify · {VIO}r{R} report · {VIO}q{R} quit");
+        let Some(cmd) = line(&format!("\n  {AMB}sec ›{R} ")) else { return 0 };
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        let pick = |s: &str| s.parse::<usize>().ok().and_then(|n| mods.get(n.wrapping_sub(1)).copied()).or_else(|| mods.iter().copied().find(|m| *m == s));
+        match parts.as_slice() {
+            ["q"] | ["quit"] | ["exit"] => return 0,
+            ["v"] => {
+                privileged(&["verify"]);
+                line(&format!("\n  {DIM}Enter to go back{R} "));
+            }
+            ["r"] => {
+                report();
+                line(&format!("\n  {DIM}Enter to go back{R} "));
+            }
+            [n] if pick(n).is_some() => {
+                let m = pick(n).unwrap();
+                println!();
+                print_precheck(&[m], false);
+                line(&format!("\n  {DIM}Enter to go back{R} "));
+            }
+            ["e", n] if pick(n).is_some() => {
+                let m = pick(n).unwrap();
+                println!();
+                let sup = print_precheck(&[m], false);
+                if enabled(m) {
+                    println!("\n  {m} is already enabled.");
+                } else if !sup {
+                    println!("\n  {RED}{m} cannot be enabled on this system{R} — fix the ✗ items above first.");
+                } else {
+                    println!("\n  {AMB}This changes system configuration.{R} It is logged in /var/lib/shadow-sec/events.log.");
+                    let c = line(&format!("  Type {CYN}{m}{R} to confirm: ")).unwrap_or_default();
+                    if c == m {
+                        let rc = privileged(&["enable", m]);
+                        println!("\n  {}", if rc == 0 { format!("{GRN}✓ {m} enabled{R}") } else { format!("{RED}✗ {m} was not enabled (wrong password, or see above){R}") });
+                    } else {
+                        println!("  cancelled");
+                    }
+                }
+                line(&format!("\n  {DIM}Enter to go back{R} "));
+            }
+            ["d", n] if pick(n).is_some() => {
+                let m = pick(n).unwrap();
+                let c = line(&format!("\n  Type {CYN}{m}{R} to confirm disabling it: ")).unwrap_or_default();
+                if c == m {
+                    let rc = privileged(&["disable", m]);
+                    println!("\n  {}", if rc == 0 { format!("{GRN}✓ {m} disabled{R}") } else { format!("{RED}✗ not changed{R}") });
+                } else {
+                    println!("  cancelled");
+                }
+                line(&format!("\n  {DIM}Enter to go back{R} "));
+            }
+            _ => {}
+        }
+    }
+}
+
 // ---------------------------------------------------------------- enable / disable
 fn enable(m: &str) -> Result<String, String> {
     need_root()?;
+    // the OS must support it: nothing half-configured
+    let fails: Vec<String> = precheck(m).into_iter().filter(|r| r.0 == Lvl::Fail).map(|r| format!("{}{}", r.1, if r.2.is_empty() { String::new() } else { format!(" → {}", r.2) })).collect();
+    if !fails.is_empty() {
+        return Err(format!("{m} cannot be enabled on this system:\n  {}", fails.join("\n  ")));
+    }
+    let who = std::env::var("SUDO_USER").unwrap_or_else(|_| "root".into());
+    sys::log_line(&state().join("events.log"), &format!("enable {m} by {who}"));
+    if ["usb", "zones", "ids"].contains(&m) && unit_exists("shadow-sec.service") && std::env::var_os("SHADOW_OPT_ROOT").is_none() {
+        sys::run(&["systemctl", "enable", "--now", "shadow-sec.service"]);
+    }
     let r = match m {
         "usb" => {
             mark("usb", true);
@@ -287,6 +604,7 @@ fn enable(m: &str) -> Result<String, String> {
 
 fn disable(m: &str) -> Result<String, String> {
     need_root()?;
+    sys::log_line(&state().join("events.log"), &format!("disable {m} by {}", std::env::var("SUDO_USER").unwrap_or_else(|_| "root".into())));
     match m {
         "usb" => usb_lock(false),
         "zones" => {
@@ -443,6 +761,11 @@ fn zeroize(args: &[&str]) -> i32 {
 }
 
 fn daemon() -> i32 {
+    // nftables rules don't survive a reboot on their own: restore the zones at start
+    if enabled("zones") && sys::exists("etc/nftables.d/shadow-zones.nft") {
+        let (c, _, e) = sys::run(&["nft", "-f", &etc("nftables.d/shadow-zones.nft").to_string_lossy()]);
+        sys::log_line(&state().join("events.log"), &if c == 0 { "zones: restored at start".to_string() } else { format!("zones: restore failed: {e}") });
+    }
     let mut was_locked = false;
     let freeze = std::fs::read_to_string(etc("shadow-tui/sec.conf")).unwrap_or_default().lines().any(|l| l.replace(' ', "") == "freeze=true");
     let mut seen: Vec<String> = vec![];
@@ -496,6 +819,13 @@ fn main() {
     let code = match a.as_slice() {
         [] | ["status"] => { status(); 0 }
         ["enable", m] => pr(enable(m)),
+        ["precheck", rest @ ..] => {
+            let porcelain = rest.contains(&"--porcelain");
+            let picked: Vec<&str> = rest.iter().copied().filter(|a| !a.starts_with("--")).collect();
+            let mods: Vec<&str> = if picked.is_empty() { MODULES.iter().map(|m| m.0).collect() } else { picked };
+            if print_precheck(&mods, porcelain) { 0 } else { 3 }
+        }
+        ["console"] => console(),
         ["disable", m] => pr(disable(m)),
         ["verify"] => verify(),
         ["report"] => { report(); 0 }
@@ -503,15 +833,36 @@ fn main() {
         ["daemon"] => daemon(),
         ["scan"] => { let h = ids_scan(); for x in &h { println!("{x}"); } if h.is_empty() { println!("nothing suspicious"); } 0 }
         ["ack"] => pr(need_root().map(|_| { let _ = std::fs::remove_file(sys::p("run/shadow/sec.alert")); "alert cleared".to_string() })),
-        _ => { eprintln!("usage: shadow-sec status | enable|disable MODULE | verify | report | scan | ack | zeroize --plan|--execute | daemon"); 2 }
+        _ => { eprintln!("usage: shadow-sec status | precheck [MODULE…] [--porcelain] | console | enable|disable MODULE | verify | report | scan | ack | zeroize --plan|--execute | daemon"); 2 }
     };
     std::process::exit(code);
 }
 
 #[cfg(test)]
 mod t {
+    /// tests that point SHADOW_OPT_ROOT somewhere run one at a time
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn unsupported_modules_cannot_be_enabled() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let r = std::env::temp_dir().join(format!("secpre-{}", std::process::id()));
+        std::fs::create_dir_all(r.join("proc")).unwrap();
+        std::fs::write(r.join("proc/cmdline"), "quiet audit=0\n").unwrap();
+        std::env::set_var("SHADOW_OPT_ROOT", &r);
+        // no USB buses in this root, and the kernel was booted with audit=0
+        assert!(!super::supported("usb"));
+        let e = super::enable("audit").unwrap_err();
+        assert!(e.contains("cannot be enabled") && e.contains("audit=0"), "{e}");
+        assert!(!r.join("etc/audit/rules.d/50-shadow-tui.rules").exists(), "nothing was written");
+        assert!(super::precheck("nonsense").iter().any(|x| x.0 == super::Lvl::Fail));
+        std::env::remove_var("SHADOW_OPT_ROOT");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
     #[test]
     fn usb_lockdown_follows_the_lock_screen() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let r = std::env::temp_dir().join(format!("sec-{}", std::process::id()));
         for d in ["usb1", "usb2", "1-1"] {
             std::fs::create_dir_all(r.join(format!("sys/bus/usb/devices/{d}"))).unwrap();

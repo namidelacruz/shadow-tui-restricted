@@ -14,7 +14,7 @@
 //!
 //!   s  source     c  check      u  update      z  undo / recover      Esc  close      (or click)
 use shadow_ui::calloop::channel::{self, Sender};
-use shadow_ui::widgets::{button, chrome, footer, Input, Rect};
+use shadow_ui::widgets::{button, chrome, footer, panel, Input, Rect};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -426,8 +426,7 @@ impl App for Upd {
 
         // password prompt
         if let Some(job) = self.pw_for {
-            f.cv.fill(pad, y, w - 2 * pad, lh * 2 + f.px(22.0), th.panel, 1.0);
-            f.cv.border(pad, y, w - 2 * pad, lh * 2 + f.px(22.0), f.hair(), th.amber, 0.9);
+            panel(f, pad, y, w - 2 * pad, lh * 2 + f.px(22.0), th.amber);
             let what = if job == Job::Apply { "install the changed files" } else { "restore the backup" };
             f.text(x0, y + f.px(6.0), &format!("Administrator password to {what}:"), pt, th.amber, true);
             let px = x0 + f.text(x0, y + lh + f.px(12.0), "▸ ", pt, th.amber, true);

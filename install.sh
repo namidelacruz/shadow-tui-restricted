@@ -5,7 +5,8 @@
 #
 #  ./install.sh                         install everything needed, build the package, install it
 #  ./install.sh --greeter               also the login screen (greetd + shadow-greet)
-#  ./install.sh --sec                   also the optional security package
+#  ./install.sh --sec                   also the optional security package (then: what this OS
+#                                       supports, and the security console to enable modules)
 #  ./install.sh --bootstrap URL         new machine: install, then restore your state repo
 #  ./install.sh --dry-run               show every command it would run, change nothing
 #  ./install.sh --check                 only verify an existing installation (pass / warn / fail)
@@ -468,7 +469,7 @@ verify() {
   else v=$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' shadow-tui-restricted 2>/dev/null || true); fi
   [[ -n $v && $v != *"not installed"* ]] && pass "package shadow-tui-restricted $v" || bad "package shadow-tui-restricted is not installed"
   local b missing=()
-  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-greet \
+  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-greet \
            shadow-sessiond shadow-displayd shadow-term shadow-powerd; do
     f=/opt/shadow-tui/bin/$b
     if [[ ! -x $f ]]; then missing+=("$b"); elif ldd "$f" 2>/dev/null | grep -q "not found"; then missing+=("$b(libraries)"); fi
@@ -558,6 +559,20 @@ if [[ "$GREETER" != no ]] && { [[ "$GREETER" == yes ]] || ask "Use the Shadow lo
     run sudo shadow greeter enable || warn "shadow greeter enable failed — the login screen is unchanged (shadow greeter status explains)"
   else
     info "login screen unchanged"
+  fi
+fi
+if ((SEC)); then
+  # optional security modules: what this OS supports first; enabling is always an explicit,
+  # password-confirmed step in the security console — never automatic, not even with --yes
+  say "Security subsystem: what this system supports"
+  if ((DRY)); then run shadow-sec precheck
+  else
+    shadow-sec precheck || true
+    if ((!YES)) && [[ -t 0 ]] && ask "Open the security console to enable modules now (each asks for your password)?"; then
+      shadow-sec console || true
+    else
+      info "enable modules later: shadow-sec console   (or side bar → SYSTEM → Security console)"
+    fi
   fi
 fi
 verified=0

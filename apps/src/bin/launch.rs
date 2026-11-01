@@ -10,7 +10,7 @@
 //!   ↑ ↓    select       Enter launch             Esc close        click a row to launch it
 use shadow_apps::desktop::{self, Entry};
 use shadow_apps::{focused_app, spawn};
-use shadow_ui::widgets::{chrome, footer, Input, ListNav};
+use shadow_ui::widgets::{chrome, field, footer, selection, Input, ListNav};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 use std::collections::HashMap;
 
@@ -52,6 +52,7 @@ fn actions() -> Vec<Entry> {
         action("sync", "Sync state to GitHub", "shadow-sync push", &hold("shadow-sync push")),
         action("healer", "Healer status", "self-correction log and proposals", &hold("shadow healer status")),
         action("revert", "Revert last automated fix", "Mod+Shift+Backspace", "shadow healer revert"),
+        action("tasks", "Task manager", "shadow-tasks · CPU, RAM, NPU, GPU, processes", "shadow-tasks"),
         action("update", "Update", "shadow-update · check for and install updates (only changed files)", "shadow-update"),
         action("display", "Display status", "scale, text size, refresh per monitor", &hold("shadow-displayd status")),
         action("logout", "Log out", "leave the session", "niri msg action quit --skip-confirmation"),
@@ -60,7 +61,8 @@ fn actions() -> Vec<Entry> {
         action("poweroff", "Shut down", "", "systemctl poweroff"),
     ];
     if shadow_apps::cmd_out(&["sh", "-c", "command -v shadow-sec"]).0 == 0 {
-        v.push(action("sec", "Security report", "shadow-sec (optional subsystem)", &hold("shadow-sec report")));
+        v.push(action("sec", "Security console", "shadow-sec · precheck, enable modules (asks for your password)", "shadow-term --hold -e shadow-sec console"));
+        v.push(action("secreport", "Security report", "shadow-sec control mapping (read-only)", &hold("shadow-sec report")));
     }
     v
 }
@@ -73,7 +75,7 @@ impl Launch {
         // before there is any history, the core Shadow apps lead the list
         let base = match e.id.as_str() {
             "shadow:term" => 4,
-            "shadow:net" | "shadow:files" => 3,
+            "shadow:net" | "shadow:files" | "shadow:tasks" => 3,
             "shadow:config" => 2,
             _ => 0,
         };
@@ -191,7 +193,7 @@ impl App for Launch {
         let lh = f.line_h(pt);
         // query line
         let qy = top;
-        f.cv.fill(pad, qy, w - 2 * pad, lh + f.px(10.0), th.panel, 1.0);
+        field(f, pad, qy, w - 2 * pad, lh + f.px(10.0), true);
         let px = pad + f.px(8.0);
         let pw = f.text(px, qy + f.px(5.0), "▸ ", pt, th.amber, true);
         if self.input.text.is_empty() {
@@ -215,11 +217,10 @@ impl App for Launch {
             let y = list_top + (row - self.nav.top) as i32 * row_h;
             let sel = row == self.nav.sel;
             if sel {
-                f.cv.fill(pad, y, w - 2 * pad, row_h, th.amber, 0.14);
-                f.cv.fill(pad, y, f.px(3.0), row_h, th.amber, 1.0);
+                selection(f, pad, y, w - 2 * pad, row_h);
             }
             let ty = y + f.px(4.0);
-            let x0 = pad + f.px(12.0);
+            let x0 = pad + f.px(17.0);
             if i == usize::MAX {
                 let cmd = self.input.text.trim().trim_start_matches('!').to_string();
                 f.text(x0, ty, &format!("run  {cmd}"), pt, th.cyan, sel);

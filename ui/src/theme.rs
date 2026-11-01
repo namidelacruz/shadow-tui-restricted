@@ -14,6 +14,13 @@ pub struct Theme {
     pub green: Rgb,
     pub text: Rgb,
     pub dim: Rgb,
+    /// secondary accent for gradients (amber → violet → cyan)
+    pub violet: Rgb,
+    /// glass panels: top / bottom of their gradient
+    pub glass: Rgb,
+    pub glass_lo: Rgb,
+    /// corner radius in logical px ([look] radius)
+    pub radius: f32,
     pub font: String,
     /// body text size in points (96 dpi reference, before scaling)
     pub font_pt: f32,
@@ -52,6 +59,10 @@ impl Default for Theme {
             green: (0x7C, 0xD9, 0x5A),
             text: (0xE8, 0xE2, 0xD0),
             dim: (0x8A, 0x84, 0x74),
+            violet: (0x9B, 0x6B, 0xFF),
+            glass: (0x16, 0x1B, 0x26),
+            glass_lo: (0x0C, 0x0F, 0x16),
+            radius: 12.0,
             font: crate::font::DEFAULT_FAMILY.into(),
             font_pt: 11.0,
         }
@@ -72,6 +83,8 @@ impl Theme {
             if let Some(p) = look.get("font_pt").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))) {
                 t.font_pt = (p as f32).clamp(6.0, 32.0);
             }
+            if let Some(c) = col("violet") { t.violet = c; }
+            if let Some(r) = look.get("radius").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))) { t.radius = (r as f32).clamp(0.0, 24.0); }
             if let Some(o) = look.get("opacity").and_then(|v| v.as_float()) { t.bg_alpha = (o as f32).clamp(0.3, 1.0); }
         }
         t

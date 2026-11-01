@@ -27,6 +27,33 @@ pub struct Power {
     pub battery: Option<u8>,
     pub watts: Option<f64>,
     pub charging: bool,
+    /// stored / full energy in Wh (from energy_* or charge_* × voltage)
+    pub energy_wh: Option<f64>,
+    pub full_wh: Option<f64>,
+    pub full: bool,
+}
+
+/// Minutes until empty (discharging) or until full (charging), from a (smoothed) power draw.
+/// None when it can't be estimated (on AC and not charging, no power reading, < 0.3 W).
+pub fn time_left(p: &Power, watts: Option<f64>) -> Option<(u32, bool)> {
+    let w = watts.filter(|w| *w >= 0.3)?;
+    let (now, full) = (p.energy_wh?, p.full_wh?);
+    if p.charging {
+        let h = (full - now).max(0.0) / w;
+        return Some(((h * 60.0).round() as u32, true));
+    }
+    if p.ac || p.full {
+        return None;
+    }
+    Some(((now / w * 60.0).round() as u32, false))
+}
+
+pub fn fmt_minutes(m: u32) -> String {
+    if m >= 60 {
+        format!("{}h{:02}", m / 60, m % 60)
+    } else {
+        format!("{m} min")
+    }
 }
 
 pub fn power() -> Power {
@@ -44,6 +71,11 @@ pub fn power() -> Power {
                     Some(i * v / 1e6)
                 });
                 p.watts = uw.map(|w| w / 1e6);
+                p.full = rd(&format!("{b}/status")).as_deref() == Some("Full");
+                let num = |f: &str| rd(&format!("{b}/{f}")).and_then(|v| v.parse::<f64>().ok());
+                let volts = num("voltage_now").or(num("voltage_min_design")).map(|v| v / 1e6);
+                p.energy_wh = num("energy_now").map(|e| e / 1e6).or_else(|| Some(num("charge_now")? / 1e6 * volts?));
+                p.full_wh = num("energy_full").map(|e| e / 1e6).or_else(|| Some(num("charge_full")? / 1e6 * volts?));
             }
             _ => {}
         }
@@ -127,6 +159,7 @@ pub fn wanted_refresh() -> Option<u32> {
 
 #[cfg(test)]
 mod t {
+    use super::{fmt_minutes, time_left};
     #[test]
     fn fake_sysfs() {
         let r = std::env::temp_dir().join(format!("hud-{}", std::process::id()));
@@ -141,6 +174,8 @@ mod t {
         w("sys/class/power_supply/BAT0/capacity", "73");
         w("sys/class/power_supply/BAT0/status", "Discharging");
         w("sys/class/power_supply/BAT0/power_now", "6400000");
+        w("sys/class/power_supply/BAT0/energy_now", "40000000");
+        w("sys/class/power_supply/BAT0/energy_full", "54000000");
         w("sys/class/thermal/thermal_zone3/type", "x86_pkg_temp");
         w("sys/class/thermal/thermal_zone3/temp", "48000");
         w("sys/firmware/acpi/platform_profile", "quiet");
@@ -149,6 +184,9 @@ mod t {
         std::env::set_var("SHADOW_SYS_ROOT", &r);
         let p = super::power();
         assert_eq!((p.ac, p.battery, p.charging), (false, Some(73), false));
+        // 40 Wh left at 6.4 W -> 6h15
+        assert_eq!(time_left(&p, p.watts), Some((375, false)));
+        assert_eq!(fmt_minutes(375), "6h15");
         assert!((p.watts.unwrap() - 6.4).abs() < 1e-9);
         assert_eq!(super::package_temp(), Some(48));
         assert_eq!(super::profile(), "quiet");

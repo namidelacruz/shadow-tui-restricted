@@ -41,7 +41,7 @@ pub const DEFAULT_CONFIG: &str = r##"# Shadow TUI Restricted — ~/.config/shado
 # "eDP-1" = 1.5
 
 [bar]
-# width = 230                 # the floating side bar (right edge; follows focus when docked)
+# width = 250                 # the floating side bar (right edge; follows focus when docked)
 
 [input]
 # xkb_layout = ""

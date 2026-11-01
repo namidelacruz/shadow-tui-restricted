@@ -6,7 +6,7 @@
 //!   / filter · . hidden files · s sort · ~ home · g/G top/bottom · q close
 use shadow_apps::fsops::{self, Entry, Sort};
 use shadow_apps::{home, sh_quote, spawn};
-use shadow_ui::widgets::{chrome, footer, Input, ListNav};
+use shadow_ui::widgets::{chrome, footer, selection, Input, ListNav};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -323,7 +323,8 @@ impl App for Files {
             let y = top + (n - pstart) as i32 * row_h;
             let is_cur = Some(&e.name) == cur_name.as_ref();
             if is_cur {
-                f.cv.fill(c1, y, c2 - c1 - f.px(14.0), row_h, th.amber, 0.12);
+                let r = row_h as f32 / 2.0;
+                f.cv.rrect(c1, y, c2 - c1 - f.px(14.0), row_h, r, th.amber, 0.10);
             }
             let name = if e.dir { format!("{}/", e.name) } else { e.name.clone() };
             let t = f.fit(&name, spt, false, c2 - c1 - f.px(20.0));
@@ -337,8 +338,7 @@ impl App for Files {
             let y = top + (n - self.nav.top) as i32 * row_h;
             let sel = n == self.nav.sel;
             if sel {
-                f.cv.fill(c2, y, c3 - c2 - f.px(14.0), row_h, th.amber, 0.16);
-                f.cv.fill(c2, y, f.px(3.0), row_h, th.amber, 1.0);
+                selection(f, c2, y, c3 - c2 - f.px(14.0), row_h);
             }
             let marked = self.marked.contains(&e.path);
             let x = c2 + f.px(10.0);

@@ -62,6 +62,8 @@ pub const BINDS: &[(&str, &str)] = &[
     ("Mod+Comma", r#"spawn "shadow-config";"#),
     ("Mod+E", r#"spawn "shadow-files";"#),
     ("Mod+U", r#"spawn "shadow-update";"#),
+    ("Ctrl+Shift+Escape", r#"spawn "shadow-tasks";"#),
+    ("Mod+A", r#"spawn "shadow-flyout" "apps";"#),
     ("Mod+Alt+L", r#"spawn "shadow-lock";"#),
     ("Mod+Shift+B", r#"spawn "pkill" "-USR1" "-x" "shadow-bar";"#),
     ("Mod+Shift+BackSpace", r#"spawn "shadow" "healer" "revert";"#),
@@ -205,7 +207,7 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, &format!("    focus-ring {{ active-color {}; }}", q(&g.amber)));
     p(&mut o, "}");
     p(&mut o, "layer-rule {");
-    p(&mut o, r#"    match namespace="^shadow-bar$""#);
+    p(&mut o, r#"    match namespace="^shadow-(bar|flyout)$""#);
     p(&mut o, "    shadow { off; }");
     p(&mut o, "}");
     p(&mut o, "");

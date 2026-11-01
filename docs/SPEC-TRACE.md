@@ -139,12 +139,19 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (82);
+- unit tests in every crate (89);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 7.4, tested in the container:
+  - canvas unit tests: rounded anti-aliased shapes, gradients;
+  - headless snapshots (`SHADOW_SNAPSHOT`) of the launcher, side bar (fake battery: "5h03 left"), the three flyouts and the task manager (simulated NPU/GPU counters), all checked visually;
+  - task-manager parsers and NPU/GPU sysfs readers (unit tests);
+  - battery time-left (unit test);
+  - security precheck in the container: unsupported modules correctly reported, and `enable` refuses them;
+  - the security console enabled `sandbox` after precheck and confirmation, and logged it (as root here; as a normal user it stopped at the sudo password prompt).
 - the update source policy (7.3), with unit tests:
   - URL rules and secret detection;
   - hardened, isolated git;

@@ -3,7 +3,7 @@
 //! (shadow-displayd) and on lid close when not docked. Media and brightness keys keep working.
 use shadow_apps::pam;
 use shadow_ui::calloop::channel::{self, Sender};
-use shadow_ui::widgets::Input;
+use shadow_ui::widgets::{panel, Input};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 
 struct Lock {
@@ -90,19 +90,18 @@ impl App for Lock {
         let th = f.theme.clone();
         let (w, h) = (f.cv.w as i32, f.cv.h as i32);
         f.cv.clear(th.bg, 1.0);
+        f.cv.rrect_v(0, 0, w, h, 0.0, th.glass_lo, th.bg, 1.0);
+        f.cv.scanlines(0, 0, w, h, f.px(4.0).max(3), th.cyan, 0.02);
         let pt = th.font_pt * 1.15;
         let lh = f.line_h(pt);
         let bw = f.px(520.0).min(w - f.px(40.0));
         let bh = lh * 5 + f.px(64.0);
         let (x, y) = ((w - bw) / 2, (h - bh) / 2);
-        f.cv.fill(x, y, bw, bh, th.panel, 1.0);
-        let hair = f.hair();
-        f.cv.border(x, y, bw, bh, hair, th.amber, 0.8);
-        f.cv.brackets(x - f.px(6.0), y - f.px(6.0), bw + f.px(12.0), bh + f.px(12.0), f.px(18.0), f.px(2.0), th.amber, 1.0);
+        panel(f, x, y, bw, bh, th.amber);
         let pad = f.px(22.0);
         let tag = " ◢ SHADOW TUI // LOCKED ";
         let tw = f.text_w(tag, pt, true);
-        f.cv.fill(x + pad, y + pad, tw, lh + f.px(6.0), th.amber, 1.0);
+        f.cv.tag(x + pad, y + pad, tw + f.px(12.0), lh + f.px(6.0), th.amber, th.violet, 1.0);
         f.text(x + pad, y + pad + f.px(3.0), tag, pt, th.bg, true);
         let ly = y + pad + lh + f.px(22.0);
         f.text(x + pad, ly, "operator", pt * 0.9, th.dim, false);
