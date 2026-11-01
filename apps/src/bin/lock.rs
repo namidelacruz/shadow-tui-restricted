@@ -14,6 +14,12 @@ struct Lock {
     msg: (String, bool),
     checking: bool,
     failures: u32,
+    caps: bool,
+}
+
+/// Caps Lock from the keyboard LEDs (before the first key press tells us)
+fn caps_led() -> bool {
+    std::fs::read_dir("/sys/class/leds").map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().ends_with("capslock") && std::fs::read_to_string(e.path().join("brightness")).is_ok_and(|b| b.trim() != "0"))).unwrap_or(false)
 }
 
 fn user() -> String {
@@ -48,11 +54,26 @@ impl App for Lock {
             return;
         }
         self.failures += 1;
-        self.msg = (m.strip_prefix("fail:").unwrap_or("access denied").to_string(), true);
+        // PAM's own words when it has them ("The account is locked due to 3 failed logins.")
+        let why = m.strip_prefix("fail:").unwrap_or("access denied").to_string();
+        let hint = if why.contains("locked") || why.contains("Maximum number of tries") {
+            " · locked out by too many attempts: wait, or on a text console: shadow-passfix"
+        } else if self.caps {
+            " · Caps Lock is on"
+        } else if self.failures >= 2 {
+            " · keyboard layout? check on a text console: shadow-passfix"
+        } else {
+            ""
+        };
+        self.msg = (format!("{why}{hint}"), true);
         ctx.redraw();
     }
 
     fn key(&mut self, k: &Key, ctx: &mut Ctx) {
+        if self.caps != k.caps {
+            self.caps = k.caps;
+            ctx.redraw();
+        }
         if self.checking {
             return;
         }
@@ -116,13 +137,18 @@ impl App for Lock {
             let m = f.fit(&self.msg.0, pt * 0.9, false, bw - 2 * pad);
             f.text(x + pad, py + lh + f.px(18.0), &m, pt * 0.9, if self.msg.1 { th.crimson } else { th.cyan }, self.msg.1);
         }
+        if self.caps {
+            let c = "CAPS LOCK ON";
+            let cw = f.text_w(c, pt * 0.8, true);
+            f.text(x + bw - pad - cw, ly, c, pt * 0.8, th.amber, true);
+        }
     }
 }
 
 fn main() {
     let host = std::fs::read_to_string("/etc/hostname").or_else(|_| std::fs::read_to_string("/proc/sys/kernel/hostname")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "localhost".into());
     let (tx, rx) = channel::channel::<String>();
-    let l = Lock { tx, user: user(), host, pass: Input::secret(), msg: (String::new(), false), checking: false, failures: 0 };
+    let l = Lock { tx, user: user(), host, pass: Input::secret(), msg: (String::new(), false), checking: false, failures: 0, caps: caps_led() };
     if let Err(e) = run(Box::new(l), Some(rx)) {
         eprintln!("shadow-lock: {e}");
         std::process::exit(1);

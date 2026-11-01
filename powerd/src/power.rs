@@ -163,7 +163,8 @@ pub fn charge_token(mode: &str, available: &[String]) -> Option<String> {
         "standard" => &["Standard"],
         "adaptive" => &["Adaptive"],
         "express" => &["Fast"],
-        "ac" => &["Long_Life", "Long Life"],
+        // Dell's "Primarily AC" is the kernel's Trickle; other vendors call it Long Life
+        "ac" => &["Trickle", "Long_Life", "Long Life"],
         "custom" => &["Custom"],
         "trickle" => &["Trickle"],
         _ => &[],

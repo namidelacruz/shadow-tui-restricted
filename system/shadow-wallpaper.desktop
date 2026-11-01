@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpaper
+Comment=Shadow TUI Restricted: choose the wallpaper (per monitor, fill / fit / center / tile)
+Exec=shadow-wallpaper pick
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Categories=Settings;DesktopSettings;

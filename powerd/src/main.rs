@@ -4,6 +4,7 @@
 mod json;
 mod agent;
 mod audio;
+mod charging;
 mod daemon;
 mod hw;
 mod kernel;
@@ -239,7 +240,12 @@ fn show_charge() -> i32 {
     let cur = power::charge_current(&h).unwrap_or_else(|| "-".into());
     println!("charging : {cur}{}", power::thresholds(&h).filter(|_| cur == "Custom").map(|(s, e)| format!(" ({s}–{e} %)")).unwrap_or_default());
     println!("available: {}", if h.charge_types.is_empty() { "not exposed by this firmware/kernel".into() } else { h.charge_types.join(" ") });
-    println!("modes    : standard · adaptive (Dell learns your pattern) · express (fast) · ac (mostly plugged in) · custom START END");
+    println!("modes    : smart (learns how much you're on AC) · full (100 % once, then smart) · standard · adaptive (Dell learns your pattern) · express (fast) · ac (mostly plugged in) · custom START END");
+    let g = charging::Guard::load();
+    println!("guard    : {} of {} firmware writes left today{}{}", {
+        let mut g2 = charging::Guard::load();
+        g2.budget_left(sys::now())
+    }, charging::MAX_WRITES_PER_DAY, g.ac_share().map(|s| format!(" · on AC {:.0} % of the last 7 days", s * 100.0)).unwrap_or_default(), if g.paused { " · SMART PAUSED (a write did not read back)" } else { "" });
     0
 }
 

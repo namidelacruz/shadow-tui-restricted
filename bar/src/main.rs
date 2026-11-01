@@ -63,6 +63,44 @@ struct Bar {
     logical_h: u32,
     scale: f32,
     flyout: Option<String>,
+    /// the POWER dropdown
+    power_open: bool,
+    power_hits: Vec<(String, shadow_ui::widgets::Rect)>,
+    pending: Option<(String, std::time::Instant)>,
+    top_apps: Vec<(String, f32)>,
+    proc_prev: (std::collections::HashMap<i32, u64>, u64),
+}
+
+const MODES: [(&str, &str); 6] = [("auto", "AUTO"), ("performance", "PERF"), ("balanced", "BAL"), ("quiet", "QUIET"), ("cool", "COOL"), ("low-power", "LOW")];
+
+fn charge_label(m: &str) -> &'static str {
+    match m {
+        "smart" => "Smart",
+        "standard" => "Standard",
+        "adaptive" => "Adaptive",
+        "express" => "Express",
+        "ac" => "Primarily AC",
+        "custom" => "60–80 %",
+        "full" => "100 % once",
+        _ => "?",
+    }
+}
+
+/// (busy, total) jiffies of all CPUs and per-process ticks — for the power dropdown's app list
+fn proc_cpu() -> (std::collections::HashMap<i32, (String, u64)>, u64) {
+    let total: u64 = std::fs::read_to_string("/proc/stat").ok().and_then(|s| s.lines().next().map(|l| l.split_whitespace().skip(1).filter_map(|x| x.parse::<u64>().ok()).sum())).unwrap_or(0);
+    let mut m = std::collections::HashMap::new();
+    if let Ok(rd) = std::fs::read_dir("/proc") {
+        for e in rd.flatten() {
+            let Ok(pid) = e.file_name().to_string_lossy().parse::<i32>() else { continue };
+            let Ok(st) = std::fs::read_to_string(e.path().join("stat")) else { continue };
+            let (Some(a), Some(b)) = (st.find('('), st.rfind(')')) else { continue };
+            let f: Vec<&str> = st[b + 2..].split_whitespace().collect();
+            let t = f.get(11).and_then(|x| x.parse::<u64>().ok()).unwrap_or(0) + f.get(12).and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+            m.insert(pid, (st[a + 1..b].to_string(), t));
+        }
+    }
+    (m, total)
 }
 
 fn localtime() -> String {
@@ -226,6 +264,60 @@ impl Bar {
     }
 }
 
+impl Bar {
+    fn power_act(&mut self, act: &str, ctx: &mut Ctx) {
+        let (kind, val) = act.split_once(':').unwrap_or((act, ""));
+        let args: Vec<String> = match kind {
+            "toggle" => {
+                self.power_open = !self.power_open;
+                if self.power_open {
+                    self.sample_apps();
+                }
+                ctx.redraw();
+                return;
+            }
+            "mode" => vec!["mode".into(), val.into(), "keep".into()],
+            "charge" if val == "custom" => vec!["charge".into(), "custom".into(), "60".into(), "80".into()],
+            "charge" => vec!["charge".into(), val.into()],
+            "app" => {
+                let _ = std::process::Command::new("shadow-tasks").stdin(std::process::Stdio::null()).spawn();
+                return;
+            }
+            _ => return,
+        };
+        // the power daemon validates and rate-limits (charging writes go to the firmware)
+        let _ = std::process::Command::new("shadow-powerd").args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+        self.pending = Some((act.to_string(), std::time::Instant::now()));
+        ctx.redraw();
+    }
+
+    fn sample_apps(&mut self) {
+        let (m, total) = proc_cpu();
+        let dt = total.saturating_sub(self.proc_prev.1).max(1) as f32;
+        let mut v: Vec<(String, f32)> = vec![];
+        let mut ticks = std::collections::HashMap::new();
+        for (pid, (name, t)) in &m {
+            if let Some(old) = self.proc_prev.0.get(pid) {
+                let share = t.saturating_sub(*old) as f32 / dt;
+                if share > 0.002 {
+                    v.push((name.clone(), share));
+                }
+            }
+            ticks.insert(*pid, *t);
+        }
+        // one line per program name
+        let mut by: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+        for (n, s) in v {
+            *by.entry(n).or_default() += s;
+        }
+        let mut v: Vec<(String, f32)> = by.into_iter().collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        v.truncate(3);
+        self.top_apps = v;
+        self.proc_prev = (ticks, total);
+    }
+}
+
 impl App for Bar {
     fn kind(&self) -> SurfaceKind {
         SurfaceKind::Layer {
@@ -259,6 +351,13 @@ impl App for Bar {
             self.refresh_outputs();
             self.place(ctx);
         }
+        if self.power_open {
+            self.sample_apps();
+            ctx.redraw();
+        }
+        if self.pending.as_ref().is_some_and(|p| p.1.elapsed().as_secs() > 6) {
+            self.pending = None;
+        }
         let fl = open_flyout().map(|f| f.0);
         if fl != self.flyout {
             self.flyout = fl;
@@ -269,6 +368,10 @@ impl App for Bar {
 
     /// Buttons: open the page's flyout beside the button; the same button again closes it.
     fn click(&mut self, x: i32, y: i32, ctx: &mut Ctx) {
+        if let Some((act, _)) = self.power_hits.iter().find(|(_, r)| r.hit(x, y)).cloned() {
+            self.power_act(&act, ctx);
+            return;
+        }
         let Some(&(page, r)) = self.btns.iter().find(|(_, r)| r.hit(x, y)) else { return };
         let open = open_flyout();
         if let Some((_, pid)) = &open {
@@ -332,7 +435,19 @@ impl App for Bar {
         let btn_h = f.line_h(lpt) + f.px(12.0);
         let mh = f.px(5.0);
         let rows_h: i32 = self.rows.iter().map(|r| if r.label.is_empty() && r.value.is_empty() { f.px(13.0) } else { lh + r.meter.map_or(0, |_| mh + f.px(4.0)) }).sum();
-        let need = pad + head_h + f.px(10.0) + btn_h + f.px(14.0) + rows_h + pad;
+        let chip_h = f.line_h(lpt) + f.px(10.0);
+        let power_h = btn_h + f.px(8.0)
+            + if self.power_open {
+                let charge_n = sys::kv("run/shadow/power.state", "charge_avail").map(|a| a.split_whitespace().count()).unwrap_or(0) as i32;
+                let lab = f.line_h(lpt) + f.px(6.0);
+                lab + 3 * (chip_h + f.px(5.0))
+                    + if charge_n > 0 { lab + ((charge_n + 1) / 2) * (chip_h + f.px(5.0)) } else { lab + f.line_h(lpt) }
+                    + lab + 3.max(self.top_apps.len() as i32) * (f.line_h(lpt) + f.px(3.0))
+                    + f.px(8.0)
+            } else {
+                0
+            };
+        let need = pad + head_h + f.px(10.0) + btn_h + f.px(14.0) + power_h + rows_h + pad;
         let need_logical = (need as f32 / f.scale).ceil() as u32;
         if need_logical != f.logical.1 {
             f.want_size = Some((self.width, need_logical));
@@ -380,7 +495,90 @@ impl App for Bar {
             f.text(bx + (bw - lw) / 2, ly, &l, bpt, if on { th.bg } else { th.text }, true);
             self.btns.push((page, r));
         }
-        y += btn_h + f.px(10.0);
+        y += btn_h + f.px(8.0);
+        // POWER dropdown: mode · charging · the apps drawing the most power
+        self.power_hits.clear();
+        let mode = sys::kv("run/shadow/power.state", "mode").unwrap_or_else(|| "—".into());
+        let charge = sys::kv("run/shadow/power.state", "charge_mode").filter(|c| c != "-").map(|c| charge_label(&c).to_string()).or_else(|| sys::kv("run/shadow/power.state", "charge").filter(|c| !c.is_empty())).unwrap_or_else(|| "—".into());
+        let full_once = sys::kv("run/shadow/power.state", "full_once").as_deref() == Some("1");
+        {
+            let r = shadow_ui::widgets::Rect { x: pad, y, w: w - 2 * pad, h: btn_h };
+            let rr = btn_h as f32 / 2.0;
+            f.cv.rrect_h(r.x, r.y, r.w, r.h, rr, th.glass, shadow_ui::canvas::lerp(th.glass, th.violet, 0.25), 1.0);
+            f.cv.rstroke(r.x, r.y, r.w, r.h, rr, hair, if self.power_open { th.amber } else { th.violet }, 0.6);
+            let label = format!("POWER {}  {} · {}", if self.power_open { "▴" } else { "▾" }, mode, if full_once { "100 % once".into() } else { charge });
+            let l = f.fit(&label, lpt, true, r.w - f.px(16.0));
+            let ty = r.y + (btn_h - f.line_h(lpt)) / 2;
+            f.text(r.x + f.px(10.0), ty, &l, lpt, th.text, true);
+            self.power_hits.push(("toggle".into(), r));
+            y += btn_h + f.px(8.0);
+        }
+        if self.power_open {
+            let lab = f.line_h(lpt) + f.px(6.0);
+            let pending = self.pending.as_ref().map(|p| p.0.clone()).unwrap_or_default();
+            let chip = |f: &mut Frame, x: i32, y: i32, cw: i32, label: &str, on: bool, busy: bool, act: String, hits: &mut Vec<(String, shadow_ui::widgets::Rect)>| {
+                let r = shadow_ui::widgets::Rect { x, y, w: cw, h: chip_h };
+                let rr = chip_h as f32 / 2.0;
+                if on {
+                    f.cv.glow(x, y, cw, chip_h, rr, f.px(4.0), th.amber, 0.3);
+                    f.cv.rrect_h(x, y, cw, chip_h, rr, th.amber, th.violet, 1.0);
+                } else {
+                    f.cv.rrect(x, y, cw, chip_h, rr, th.glass_lo, 1.0);
+                    f.cv.rstroke(x, y, cw, chip_h, rr, hair, if busy { th.amber } else { th.cyan }, if busy { 0.9 } else { 0.35 });
+                }
+                let bpt = lpt * 0.92;
+                let l = f.fit(label, bpt, on, cw - f.px(8.0));
+                let lw = f.text_w(&l, bpt, on);
+                let ty = y + (chip_h - f.line_h(bpt)) / 2;
+                f.text(x + (cw - lw) / 2, ty, &l, bpt, if on { th.bg } else { th.text }, on);
+                hits.push((act, r));
+            };
+            let gap = f.px(5.0);
+            let cw2 = (w - 2 * pad - gap) / 2;
+            // modes: 2 columns
+            f.text(pad, y, "MODE", lpt, th.dim, false);
+            y += lab;
+            let mut hits = vec![];
+            for (i, (m, l)) in MODES.iter().enumerate() {
+                let (cx, cy) = (pad + (i as i32 % 2) * (cw2 + gap), y + (i as i32 / 2) * (chip_h + gap));
+                chip(f, cx, cy, cw2, l, mode == *m, pending == format!("mode:{m}"), format!("mode:{m}"), &mut hits);
+            }
+            y += 3 * (chip_h + gap);
+            // charging: only what the firmware offers (+ smart / 100 % once)
+            f.text(pad, y, "CHARGING", lpt, th.dim, false);
+            y += lab;
+            let avail: Vec<String> = sys::kv("run/shadow/power.state", "charge_avail").unwrap_or_default().split_whitespace().map(String::from).collect();
+            if avail.is_empty() {
+                f.text(pad, y, "not offered by this firmware", lpt, th.dim, false);
+                y += f.line_h(lpt);
+            } else {
+                let chosen = sys::kv("run/shadow/power.state", "charge_mode").unwrap_or_default();
+                for (i, m) in avail.iter().enumerate() {
+                    let (cx, cy) = (pad + (i as i32 % 2) * (cw2 + gap), y + (i as i32 / 2) * (chip_h + gap));
+                    let on = if m == "full" { full_once } else { chosen == *m && !full_once };
+                    chip(f, cx, cy, cw2, charge_label(m), on, pending == format!("charge:{m}"), format!("charge:{m}"), &mut hits);
+                }
+                y += ((avail.len() as i32 + 1) / 2) * (chip_h + gap);
+            }
+            // apps
+            f.text(pad, y, "APPS · power now", lpt, th.dim, false);
+            y += lab;
+            let pkg = sys::kv("run/shadow/rapl.state", "pkg_w").and_then(|v| v.parse::<f32>().ok());
+            for (name, share) in self.top_apps.clone() {
+                let est = pkg.map(|p| format!("~{:.1} W", p * share)).unwrap_or_else(|| format!("{:.0} % CPU", share * 100.0));
+                let ew = f.text_w(&est, lpt, false);
+                let n = f.fit(&name, lpt, false, w - 2 * pad - ew - f.px(10.0));
+                f.text(pad + f.px(4.0), y, &n, lpt, th.text, false);
+                f.text(w - pad - ew, y, &est, lpt, th.cyan, false);
+                hits.push(("app:".into(), shadow_ui::widgets::Rect { x: pad, y, w: w - 2 * pad, h: f.line_h(lpt) }));
+                y += f.line_h(lpt) + f.px(3.0);
+            }
+            if self.top_apps.is_empty() {
+                f.text(pad + f.px(4.0), y, "sampling…", lpt, th.dim, false);
+            }
+            y += (3 - self.top_apps.len().min(3) as i32) * (f.line_h(lpt) + f.px(3.0)) + f.px(8.0);
+            self.power_hits.extend(hits);
+        }
         f.cv.beam(pad, y, w - 2 * pad, hair, th.amber, th.cyan, 0.7);
         y += f.px(6.0);
         let vx = pad + label_w;
@@ -443,7 +641,7 @@ fn main() {
             niri::event_stream(|line| line.is_empty() || tx.send(line.to_string()).is_ok());
         });
     }
-    let bar = Bar { width, model: Model::default(), outs: vec![], rows: vec![], shown: true, on: None, display_mtime: None, watts: std::cell::Cell::new(None), btns: vec![], logical_h: 0, scale: 1.0, flyout: open_flyout().map(|f| f.0) };
+    let bar = Bar { width, model: Model::default(), outs: vec![], rows: vec![], shown: true, on: None, display_mtime: None, watts: std::cell::Cell::new(None), btns: vec![], logical_h: 0, scale: 1.0, flyout: open_flyout().map(|f| f.0), power_open: std::env::var_os("SHADOW_BAR_POWER_OPEN").is_some(), power_hits: vec![], pending: None, top_apps: vec![], proc_prev: (Default::default(), 0) };
     if let Err(e) = run(Box::new(bar), Some(rx)) {
         eprintln!("shadow-bar: {e}");
         std::process::exit(1);

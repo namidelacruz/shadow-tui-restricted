@@ -59,6 +59,9 @@ pub enum SurfaceKind {
     Layer { namespace: String, layer: Layer, anchor: Anchor, size: (u32, u32), margin: (i32, i32, i32, i32), exclusive: i32, keyboard: LayerKeyboard },
     /// ext-session-lock: one full-screen surface per monitor until `Ctx::unlock`.
     Lock,
+    /// Desktop background: one surface per monitor on the background layer, behind everything,
+    /// following monitors as they come and go (`Frame::output` says which one is drawn).
+    Background { namespace: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +92,8 @@ pub struct Key {
     pub alt: bool,
     pub shift: bool,
     pub logo: bool,
+    /// Caps Lock is on (password fields warn about it)
+    pub caps: bool,
 }
 
 impl Key {
@@ -361,6 +366,7 @@ pub fn run(app: Box<dyn App>, messages: Option<Channel<String>>) -> Result<(), S
             let want = sh.app.pick_output(&outs);
             sh.place_layer(want, &qh)?;
         }
+        SurfaceKind::Background { .. } => sh.cover_background(&qh)?,
         SurfaceKind::Lock => {
             let st = sh.lock_state.as_ref().ok_or("lock state")?;
             sh.lock = Some(st.lock(&qh).map_err(|_| "ext-session-lock-v1 is not available (another locker running?)")?);
@@ -598,6 +604,9 @@ impl Shell {
             }
         }
         self.surfs.retain(|s| s.output.as_ref().map_or(true, |o| o.is_alive()));
+        if matches!(self.app.kind(), SurfaceKind::Background { .. }) {
+            let _ = self.cover_background(qh);
+        }
         let mut ctx = Ctx::default();
         self.app.outputs_changed(&outs, &mut ctx);
         if self.surfs.is_empty() && !self.hidden && ctx.move_to.is_none() && matches!(self.app.kind(), SurfaceKind::Layer { .. }) {
@@ -605,6 +614,29 @@ impl Shell {
         }
         ctx.redraw = true;
         self.apply(ctx);
+    }
+
+    fn cover_background(&mut self, qh: &QueueHandle<Shell>) -> Result<(), String> {
+        let SurfaceKind::Background { namespace } = self.app.kind() else { return Ok(()) };
+        let outs: Vec<wl_output::WlOutput> = self.output_state.outputs().filter(|o| !self.surfs.iter().any(|s| s.output.as_ref() == Some(o))).collect();
+        let mut made = vec![];
+        {
+            let ls = self.layer.as_ref().ok_or("zwlr_layer_shell_v1 missing (niri provides it)")?;
+            for o in outs {
+                let surface = self.compositor.create_surface(qh);
+                let l = ls.create_layer_surface(qh, surface, Layer::Background, Some(namespace.clone()), Some(&o));
+                l.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+                l.set_size(0, 0);
+                l.set_exclusive_zone(-1);
+                l.set_keyboard_interactivity(KeyboardInteractivity::None);
+                l.commit();
+                made.push((l, o));
+            }
+        }
+        for (l, o) in made {
+            self.add_surf(Role::Layer(l), Some(o), (1, 1), qh);
+        }
+        Ok(())
     }
 
     fn cover_outputs(&mut self, lock: &SessionLock, qh: &QueueHandle<Shell>) {
@@ -620,7 +652,7 @@ impl Shell {
     }
 
     fn on_key(&mut self, ev: KeyEvent) {
-        let k = Key { sym: ev.keysym, text: ev.utf8, ctrl: self.mods.ctrl, alt: self.mods.alt, shift: self.mods.shift, logo: self.mods.logo };
+        let k = Key { sym: ev.keysym, text: ev.utf8, ctrl: self.mods.ctrl, alt: self.mods.alt, shift: self.mods.shift, logo: self.mods.logo, caps: self.mods.caps_lock };
         let mut ctx = Ctx::default();
         self.app.key(&k, &mut ctx);
         self.apply(ctx);
@@ -692,6 +724,10 @@ impl WindowHandler for Shell {
 impl LayerShellHandler for Shell {
     fn closed(&mut self, _: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
         self.surfs.retain(|s| !matches!(&s.role, Role::Layer(l) if l == layer));
+        if matches!(self.app.kind(), SurfaceKind::Background { .. }) {
+            let _ = self.cover_background(qh);
+            return;
+        }
         let outs = self.outputs();
         let want = self.app.pick_output(&outs);
         let _ = self.place_layer(want, qh);
@@ -877,7 +913,7 @@ fn snapshot(mut app: Box<dyn App>, messages: Option<Channel<String>>, path: &str
     let (lw, lh) = match app.kind() {
         SurfaceKind::Window { size, .. } => size,
         SurfaceKind::Layer { size, .. } => (size.0.max(1), if size.1 == 0 { 600 } else { size.1 }),
-        SurfaceKind::Lock => (1280, 800),
+        SurfaceKind::Lock | SurfaceKind::Background { .. } => (1280, 800),
     };
     let lh = std::env::var("SHADOW_SNAPSHOT_H").ok().and_then(|v| v.parse().ok()).unwrap_or(lh);
     if matches!(app.kind(), SurfaceKind::Layer { .. }) {

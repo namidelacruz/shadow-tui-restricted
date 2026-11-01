@@ -70,6 +70,7 @@ mod t {
         std::fs::create_dir_all(&b).unwrap();
         std::fs::write(b.join("constraint_0_power_limit_uw"), "17000000").unwrap();
         std::fs::write(b.join("constraint_1_power_limit_uw"), "30000000").unwrap();
+        let _env = crate::sys::TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("SHADOW_OPT_ROOT", &r);
         assert_eq!(super::firmware(), Some((17_000_000, 30_000_000)));
         assert_eq!(super::set(Some(9.0)).unwrap(), "PL1 9.0 W · PL2 13.5 W");

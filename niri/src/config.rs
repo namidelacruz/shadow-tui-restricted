@@ -64,6 +64,8 @@ pub const BINDS: &[(&str, &str)] = &[
     ("Mod+U", r#"spawn "shadow-update";"#),
     ("Ctrl+Shift+Escape", r#"spawn "shadow-tasks";"#),
     ("Mod+A", r#"spawn "shadow-flyout" "apps";"#),
+    ("Mod+Shift+H", r#"spawn "shadow-fix";"#),
+    ("Mod+W", r#"spawn "shadow-wallpaper" "pick";"#),
     ("Mod+Alt+L", r#"spawn "shadow-lock";"#),
     ("Mod+Shift+B", r#"spawn "pkill" "-USR1" "-x" "shadow-bar";"#),
     ("Mod+Shift+BackSpace", r#"spawn "shadow" "healer" "revert";"#),
@@ -206,6 +208,11 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, "    default-column-width { proportion 0.5; }");
     p(&mut o, &format!("    focus-ring {{ active-color {}; }}", q(&g.amber)));
     p(&mut o, "}");
+    // the wallpaper also shows behind the workspaces in the overview
+    p(&mut o, "layer-rule {");
+    p(&mut o, r#"    match namespace="^shadow-wallpaper$""#);
+    p(&mut o, "    place-within-backdrop true");
+    p(&mut o, "}");
     p(&mut o, "layer-rule {");
     p(&mut o, r#"    match namespace="^shadow-(bar|flyout)$""#);
     p(&mut o, "    shadow { off; }");
@@ -218,7 +225,7 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, "}");
     p(&mut o, "");
     p(&mut o, "// every Shadow feature is its own application; these start with the session");
-    for app in ["shadow-sessiond", "shadow-displayd", "shadow-bar"] {
+    for app in ["shadow-sessiond", "shadow-displayd", "shadow-bar", "shadow-wallpaper"] {
         p(&mut o, &format!("spawn-at-startup {}", q(app)));
     }
     p(&mut o, "");

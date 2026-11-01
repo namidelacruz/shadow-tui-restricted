@@ -9,6 +9,7 @@ mod sys;
 mod ai;
 #[allow(dead_code)]
 mod distro;
+mod fixes;
 mod greeter_admin;
 mod healer;
 mod http;
@@ -33,6 +34,7 @@ shadow — Shadow TUI Restricted system tools
   healer status|list|show|approve|reject|revert|check …   Lua self-correction (shadow-healer)
   ai status|setup|ask|collect|issues|propose|review|approve|reject   local model + approved code fixes
   update check|run|rollback|status|set-repo URL [BRANCH]
+  fix scan|apply ID|tasks|run TASK|triage|update   app fixes + tasks, triage after updates
 
 Also: shadow-bar, shadow-launch, shadow-net, shadow-config, shadow-files, shadow-lock, shadow-greet,
       shadow-sessiond, shadow-displayd, shadow-powerd, shadow-term, shadow-sec (optional).
@@ -63,6 +65,7 @@ fn main() {
             ["sync", rest @ ..] | ["backup", rest @ ..] => sync::main(rest),
             ["healer", rest @ ..] => healer::main(rest),
             ["update", rest @ ..] => updater::main(&p, rest),
+            ["fix", rest @ ..] => fixes::main(rest),
             ["ai"] | ["ai", "status"] => { println!("{}", ai::status()); 0 }
             ["ai", "setup", rest @ ..] => out(ai::setup(rest)),
             ["ai", "ask", q @ ..] if !q.is_empty() => out(ai::ask(&q.join(" "))),

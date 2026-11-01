@@ -149,6 +149,7 @@ impl Flyout {
                 let w = hud::wifi();
                 v.push(item("Wi-Fi", if w.ssid.is_empty() { "not connected".into() } else { w.ssid }, Kind::Run("shadow-net".into())));
                 v.push(item("Displays", "scale, text size, refresh", Kind::Run("shadow-config Displays".into())));
+                v.push(item("Wallpaper", "choose · per monitor · fill / fit", Kind::Run("shadow-wallpaper pick".into())));
                 v.push(item("Side bar", "hide / show (Mod+Shift+B)", Kind::Toggle("pkill -USR1 -x shadow-bar".into())));
                 v.push(item("All settings…", "shadow-config", Kind::Run("shadow-config".into())));
                 v
@@ -156,6 +157,7 @@ impl Flyout {
             _ => {
                 let mut v = vec![
                     item("Task manager", "CPU · RAM · NPU · GPU · processes", Kind::Run("shadow-tasks".into())),
+                    item("Fix center", "app problems · tasks · passwords · update + triage", Kind::Run("shadow-fix".into())),
                     item("Update", "check on demand, changed files only", Kind::Run("shadow-update".into())),
                 ];
                 if have("shadow-sec") {

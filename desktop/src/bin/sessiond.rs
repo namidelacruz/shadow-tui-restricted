@@ -281,6 +281,12 @@ fn main() {
     }
     // privileged actions must be able to ask for a password: make sure a polkit agent runs
     eprintln!("shadow-sessiond: {}", shadow_desktop::privilege::ensure_agent());
+    eprintln!("shadow-sessiond: {}", shadow_desktop::privilege::ensure_notifier());
+    // after updates (never during): if the packages changed since the last triage, say so
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_secs(20));
+        let _ = std::process::Command::new("shadow").args(["fix", "triage", "--notify"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    });
     let _ = std::fs::remove_file(&p);
     match UnixListener::bind(&p) {
         Ok(l) => {

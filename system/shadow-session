@@ -9,7 +9,9 @@
 # memory.max 16 % of RAM); the system daemons have the other 4 % in the system shadow.slice:
 # together <= 20 % (spec §3.4). Programs you start go to app.slice and keep the other 80 %.
 export XDG_CURRENT_DESKTOP=niri XDG_SESSION_DESKTOP=shadow-tui XDG_SESSION_TYPE=wayland
-export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland SDL_VIDEODRIVER=wayland ELECTRON_OZONE_PLATFORM_HINT=wayland
+export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM="wayland;xcb" SDL_VIDEODRIVER="wayland,x11" ELECTRON_OZONE_PLATFORM_HINT=auto
+# Java (AWT/Swing: JetBrains IDEs, …) draws blank grey windows on non-reparenting compositors
+export _JAVA_AWT_WM_NONREPARENTING=1
 # OpenGL only, no Vulkan, for the whole session. The Arc 140V (Lunar Lake / Xe2) runs on the
 # xe kernel driver with Mesa iris for OpenGL; niri renders with OpenGL ES through EGL.
 # GTK >= 4.16 and Qt 6 would otherwise pick Vulkan on their own. Override in

@@ -1,6 +1,6 @@
 [package]
 name = "shadow-apps"
-version = "7.4.1"
+version = "7.5.0"
 edition = "2021"
 description = "Shadow TUI Restricted applications, each its own 2D Wayland app: launcher, network, config, files, lock, updater"
 license = "MIT"
@@ -37,7 +37,21 @@ path = "src/bin/flyout.rs"
 name = "shadow-tasks"
 path = "src/bin/tasks.rs"
 
+[[bin]]
+name = "shadow-fix"
+path = "src/bin/fix.rs"
+
+[[bin]]
+name = "shadow-passfix"
+path = "src/bin/passfix.rs"
+
+[[bin]]
+name = "shadow-wallpaper"
+path = "src/bin/wallpaper.rs"
+
 [dependencies]
 shadow-ui = { path = "../ui" }
 shadow-niri = { path = "../niri" }
 libc = "0.2"
+png = "0.17"
+zune-jpeg = "0.4"

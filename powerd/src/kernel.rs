@@ -297,6 +297,7 @@ mod rule_tests {
         std::fs::create_dir_all(root.join("opt/shadow-tui/share/hw")).unwrap();
         std::fs::write(root.join("opt/shadow-tui/share/hw/known-bad.conf"),
             "# c\naudio    lunar-lake    *        6.17.8    6.18.3   Lunar Lake audio (Dummy Output)\n").unwrap();
+        let _env = crate::sys::TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("SHADOW_OPT_ROOT", &root);
         let r = rules();
         assert_eq!(r.len(), 1);

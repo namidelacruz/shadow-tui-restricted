@@ -139,12 +139,21 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (91);
+- unit tests in every crate (101);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 7.5:
+  - smart-charging guard (unit tests): only firmware-listed modes, no-op detection, read-back, 6-writes-per-day budget, 7-day AC history, smart choice;
+  - side-bar POWER dropdown, wallpaper picker, generated default wallpaper and fix center, all rendered headless and checked visually;
+  - the wallpaper's image modes and PNG decoding (unit tests);
+  - fix-center JSON/JSONC/user.js edits that keep comments and other keys, and the launcher Exec rewrite including Flatpak (unit tests);
+  - `shadow fix scan`, `apply all-user` and `run` on a scratch home with Discord and Firefox configs;
+  - `shadow-passfix`'s password test against real PAM (pam_unix): wrong, right and expired passwords told apart;
+  - faillock policy and counter parsing (unit tests).
+  - Not run here: the wallpaper on a real compositor, Dell firmware writes, gnome-keyring, and real Discord, VS Code or Steam installs.
 - 7.4.1 permissions:
   - unit tests for the brightness logic and backlight choice;
   - polkit agent detection checked with a stand-in agent;

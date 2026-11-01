@@ -159,3 +159,8 @@ pub fn read_kv(path: &Path) -> Vec<(String, String)> {
 pub fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
 }
+
+/// Tests that point SHADOW_OPT_ROOT at a fake tree take this lock (the variable is process-wide).
+#[cfg(test)]
+#[allow(dead_code)]
+pub static TEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -79,6 +79,7 @@ struct State {
     sched: crate::schedule::Schedule,
     os_checked: Option<(Instant, Option<std::time::SystemTime>)>,
     pl: String,
+    charge: crate::charging::Guard,
 }
 
 fn sched_path() -> PathBuf {
@@ -184,7 +185,33 @@ impl State {
         );
         let _ = sys::atomic_write(&state_path(), &json);
         let refresh = if src.ac { self.conf.refresh_ac } else { self.conf.refresh_battery };
-        run_state("power.state", &format!("ac={}\nmode={}\nrefresh={refresh}\npl={}\n", src.ac as u8, self.mode, self.pl));
+        // charging for the side bar: current firmware mode, the chosen mode, what the firmware offers
+        let cur = power::charge_current(&self.hw).unwrap_or_default();
+        let thr = power::thresholds(&self.hw).filter(|_| cur == "Custom").map(|(a, b)| format!(" {a}-{b}")).unwrap_or_default();
+        let mut avail: Vec<&str> = vec![];
+        for (tok, name) in [("Standard", "standard"), ("Adaptive", "adaptive"), ("Fast", "express"), ("Trickle", "ac"), ("Custom", "custom")] {
+            if self.hw.charge_types.iter().any(|t| t == tok) {
+                avail.push(name);
+            }
+        }
+        if !avail.is_empty() {
+            avail.insert(0, "smart");
+            if avail.contains(&"standard") {
+                avail.push("full");
+            }
+        }
+        run_state(
+            "power.state",
+            &format!(
+                "ac={}\nmode={}\nrefresh={refresh}\npl={}\ncharge={cur}{thr}\ncharge_mode={}\ncharge_avail={}\nfull_once={}\n",
+                src.ac as u8,
+                self.mode,
+                self.pl,
+                self.conf.charge.clone().unwrap_or_else(|| "-".into()),
+                avail.join(" "),
+                self.charge.full_once.is_some() as u8
+            ),
+        );
         let npu = match self.sched.progress(sys::now()) {
             Some((day, days, why)) => format!("state=learning\nday={day}\ndays={days}\nreason={why}\n"),
             None => "state=idle\nphase=learned\n".to_string(),
@@ -234,6 +261,51 @@ impl State {
         let _ = sys::atomic_write(&learn_path(), &self.model.save());
         sys::log_line(&log_path(), &format!("learned: class {class:08x} used {:.0}% CPU", util * 100.0));
         self.write_state();
+    }
+
+    /// Smart charging: decide from the AC history (at most once a day, or `now`), write only a
+    /// change, through the guard. Also ends "100 % once" when the battery is full.
+    fn smart_charge(&mut self, now_please: bool) -> Result<String, String> {
+        let now = sys::now();
+        if let Some(t) = self.charge.full_once {
+            let full = self.src.as_ref().and_then(|s| s.battery_pct).is_some_and(|p| p >= 99);
+            if !full && now.saturating_sub(t) < 86400 {
+                return Ok("charging to 100 % once".into());
+            }
+            self.charge.full_once = None;
+            self.charge.last_smart = 0;
+            sys::log_line(&log_path(), "charging: full charge done, back to the chosen mode");
+            if self.conf.charge.as_deref() != Some("smart") {
+                // back to the manual mode chosen before
+                let m = self.conf.charge.clone().unwrap_or_else(|| "standard".into());
+                let r = crate::charging::safe_set(&self.hw, &mut self.charge, &m, self.conf.charge_start, self.conf.charge_end, now);
+                self.charge.save();
+                return r.map(|_| m);
+            }
+        }
+        if self.conf.charge.as_deref() != Some("smart") || self.charge.paused {
+            return Ok("not smart".into());
+        }
+        if !now_please && now.saturating_sub(self.charge.last_smart) < 86400 {
+            return Ok("decided today".into());
+        }
+        self.charge.last_smart = now;
+        let (m, s, e) = crate::charging::smart_choice(&self.hw.charge_types, self.hw.charge_thresholds, self.charge.ac_share());
+        let r = crate::charging::safe_set(&self.hw, &mut self.charge, m, s, e, now);
+        self.charge.save();
+        match r {
+            Ok(written) => {
+                if written {
+                    sys::log_line(&log_path(), &format!("smart charging → {m}{} (on AC {} of the time)", s.zip(e).map(|(a, b)| format!(" {a}–{b} %")).unwrap_or_default(), self.charge.ac_share().map(|x| format!("{:.0} %", x * 100.0)).unwrap_or_else(|| "unknown share".into())));
+                }
+                self.write_state();
+                Ok(m.to_string())
+            }
+            Err(e) => {
+                sys::log_line(&log_path(), &format!("smart charging: {e}"));
+                Err(e)
+            }
+        }
     }
 
     fn save_sched(&self) {
@@ -319,20 +391,50 @@ impl State {
                 self.apply(false);
                 "ok".into()
             }
+            ["charge", "smart"] => {
+                self.conf.charge = Some("smart".into());
+                self.charge.paused = false;
+                self.charge.full_once = None;
+                save_conf(&self.conf);
+                self.charge.last_smart = 0; // decide now
+                match self.smart_charge(true) {
+                    Ok(m) => format!("ok charge smart ({m})"),
+                    Err(e) => format!("error {e}"),
+                }
+            }
+            ["charge", "full"] => match crate::charging::safe_set(&self.hw, &mut self.charge, "standard", None, None, sys::now()) {
+                Ok(_) => {
+                    self.charge.full_once = Some(sys::now());
+                    self.charge.save();
+                    sys::log_line(&log_path(), "charging → Standard until full (then back)");
+                    self.write_state();
+                    "ok charge full (100 % once, then back to your mode)".into()
+                }
+                Err(e) => {
+                    self.charge.save();
+                    format!("error {e}")
+                }
+            },
             ["charge", mode, rest @ ..] => {
                 let s = rest.first().and_then(|x| x.parse().ok());
                 let e = rest.get(1).and_then(|x| x.parse().ok());
-                match power::set_charge(&self.hw, mode, s, e) {
-                    Ok(tok) => {
+                let r = crate::charging::safe_set(&self.hw, &mut self.charge, mode, s, e, sys::now());
+                self.charge.save();
+                match r {
+                    Ok(written) => {
                         self.conf.charge = Some(mode.to_string());
+                        self.charge.full_once = None;
+                        self.charge.paused = false;
                         if *mode == "custom" {
                             self.conf.charge_start = s;
                             self.conf.charge_end = e;
                         }
                         save_conf(&self.conf);
-                        sys::log_line(&log_path(), &format!("charging → {tok}"));
+                        if written {
+                            sys::log_line(&log_path(), &format!("charging → {mode}"));
+                        }
                         self.write_state();
-                        format!("ok charge {tok}")
+                        format!("ok charge {mode}{}", if written { "" } else { " (already set)" })
                     }
                     Err(e) => format!("error {e}"),
                 }
@@ -375,6 +477,7 @@ pub fn run() -> Result<(), String> {
         sched: crate::schedule::Schedule::load(&std::fs::read_to_string(sched_path()).unwrap_or_default(), sys::now(), &crate::schedule::os_fingerprint()),
         os_checked: None,
         pl: String::new(),
+        charge: crate::charging::Guard::load(),
     };
     if let Some(m) = memory_governance() {
         sys::log_line(&log_path(), &m);
@@ -390,9 +493,14 @@ pub fn run() -> Result<(), String> {
     }
     sys::log_line(&log_path(), &format!("started on {} {}", st.hw.vendor, st.hw.product));
     // restore the chosen charging mode (firmware keeps it, but a BIOS reset may not)
-    if let Some(ch) = st.conf.charge.clone() {
-        if power::charge_current(&st.hw).map(|c| power::charge_token(&ch, &st.hw.charge_types) != Some(c)).unwrap_or(false) {
-            let _ = power::set_charge(&st.hw, &ch, st.conf.charge_start, st.conf.charge_end);
+    // — through the guard (no-op when already set, read back, write budget); "smart" is decided
+    // by the daily smart pass instead
+    if let Some(ch) = st.conf.charge.clone().filter(|c| c != "smart") {
+        if st.charge.full_once.is_none() {
+            if let Err(e) = crate::charging::safe_set(&st.hw, &mut st.charge, &ch, st.conf.charge_start, st.conf.charge_end, sys::now()) {
+                sys::log_line(&log_path(), &format!("charging restore skipped: {e}"));
+            }
+            st.charge.save();
         }
     }
     let poll = Duration::from_millis(std::env::var("SHADOW_OPT_POLL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2000));
@@ -422,8 +530,17 @@ pub fn run() -> Result<(), String> {
                 st.hint = None;      // learned hints are about the old source
                 sys::log_line(&log_path(), if src.ac { "power: AC connected" } else { "power: on battery" });
             }
+            let ac_now = src.ac;
             st.src = Some(src);
             st.apply(changed);
+            // charging: AC history (persisted every ~10 min) and the once-a-day smart decision
+            if st.hw.battery.is_some() && !st.hw.charge_types.is_empty() {
+                st.charge.sample(ac_now, poll.as_secs().max(1), sys::now());
+                if loops % 60 == 0 {
+                    st.charge.save();
+                }
+                let _ = st.smart_charge(false);
+            }
             if let Some((class, util, prior)) = st.model.tick(crate::predict::cpu_times()) {
                 st.learned(class, util, prior);
             }

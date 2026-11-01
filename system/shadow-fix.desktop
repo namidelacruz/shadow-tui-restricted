@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Fix Center
+GenericName=Troubleshooter
+Comment=Shadow TUI Restricted: fix common app problems, clear caches, login and password repair, update then triage
+Exec=shadow-fix
+Icon=applications-utilities
+Terminal=false
+Categories=System;Settings;
+Keywords=fix;repair;discord;firefox;password;keyring;cache;update;

@@ -68,6 +68,22 @@ pub fn ensure_agent() -> String {
     }
 }
 
+/// Notifications: niri has no notification daemon, so app notifications vanish without one.
+pub fn ensure_notifier() -> String {
+    let running = std::process::Command::new("busctl").args(["--user", "status", "org.freedesktop.Notifications"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    if running {
+        return "notification daemon running".into();
+    }
+    for d in ["mako", "swaync", "dunst", "fnott"] {
+        let found = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|x| x.join(d).is_file()));
+        if found {
+            crate::spawn(d);
+            return format!("notification daemon started: {d}");
+        }
+    }
+    "no notification daemon installed (shadow fix apply notifications)".into()
+}
+
 // ── brightness ─────────────────────────────────────────────────────────────────────────────────
 
 /// The backlight to drive: firmware/platform interfaces before raw ones.

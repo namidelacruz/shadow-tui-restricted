@@ -21,6 +21,9 @@ Version 6, with its own Smithay compositor and orbital ring, stays on the `v6` b
 | `shadow-bar` | The floating side bar (layer-shell, right edge), with **APPS · SETTINGS · SYSTEM** buttons at the top. It shows battery % with time left or time to full (smoothed), and the monitor and scale, workspace, focused app, NPU state, sync, battery and watts, panel Hz, package °C and profile, audio DSP, Wi-Fi SSID/dBm/EAP, Lua widgets and the time. It sits on the laptop panel; when docked it follows the monitor that has focus. `Mod+Shift+B` hides it. |
 | `shadow-flyout` | The panels behind the side bar's **APPS**, **SETTINGS** and **SYSTEM** buttons. Each opens beside its button; the same button closes it again.<br>• **Apps:** search and launch.<br>• **Settings:** brightness, volume, power mode, Wi-Fi, displays, all settings.<br>• **System:** task manager, update, security console, lock, log out, suspend, reboot, shut down; log out, reboot and shut down need a second press.<br>`Mod+A` opens Apps. Tab switches page; Esc, or moving focus away, closes it. |
 | `shadow-tasks` | Task manager (`Ctrl+Shift+Esc`).<br>• **Cards:** CPU (total, per core, frequency), memory (RAM, swap, memory pressure), NPU (busy % from the Intel NPU driver, frequency, learning state), GPU (busy % from xe/i915 idle residency, frequency), power (battery draw, package power, time left, temperature), I/O (network, disk, pressure).<br>• **Processes:** sort with c/m/p, filter with /, end with k (SIGTERM) or K (SIGKILL), each confirmed first. |
+| `shadow-fix` | Fix center (`Mod+Shift+H`), with four pages:<br>• **Issues:** known problems of your apps under niri, with repairs.<br>• **Tasks:** clear caches, unlock a Firefox profile, force quit, restart portals or PipeWire.<br>• **Login:** password and login problems.<br>• **Update:** update the system and Flatpaks, then triage. Repairs come after updates, never during them.<br>On a text console the same is `shadow fix …`. |
+| `shadow-passfix` | Password repair, a plain text console that works on Ctrl+Alt+F2. See [Fix center](#fix-center-and-password-repair). |
+| `shadow-wallpaper` | Wallpaper on every monitor (background layer, also behind the overview) and a picker (`Mod+W`). With no image chosen it uses the generated Shadow wallpaper. |
 | `shadow-launch` | Launcher, opened as its own normal window (tiled, opaque), not an overlay over what's on screen. Click or press Enter to launch. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
 | `shadow-net` | Wi-Fi: networks, UC-Secure and eduroam setup, self-repair, with a live EAP/TLS log. |
 | `shadow-config` | Live settings matrix over `config.toml`. Changes apply immediately; if niri rejects one, it is rolled back. |
@@ -112,6 +115,7 @@ Shadow's niri config is generated into `~/.config/shadow-state/niri.kdl`, and th
 | `Mod+F` · `Mod+Shift+F` | full width (the bar stays visible) · true fullscreen |
 | `Mod+Return` `Mod+Space` `Mod+E` `Mod+N` `Mod+Comma` `Mod+U` | terminal, launcher, files, network, settings, updates |
 | `Mod+A` · `Ctrl+Shift+Esc` | apps flyout beside the bar · task manager |
+| `Mod+Shift+H` · `Mod+W` | fix center · wallpaper picker |
 | `Mod+Ctrl+arrows` · `Mod+Shift+Ctrl+arrows` | focus another monitor · move the window there |
 | `Mod+1…9` · `Mod+Shift+1…9` | workspace · move the window to a workspace |
 | `Mod+O` | overview |
@@ -309,6 +313,79 @@ The repository holds:
 - package and service lists.
 
 Plaintext secrets are refused by a scanner. The side bar shows the sync state.
+
+## Fix center and password repair
+
+The issues come from what niri, Hyprland and sway users run into most. Each detected problem has a repair:
+
+| Area | Problem → repair |
+|---|---|
+| Session | No polkit agent → install one. X11-only apps (Steam, games) → xwayland-satellite. Screen sharing and file pickers → xdg-desktop-portal-gnome + gtk. Notifications vanish → mako, started by the session. Keyring not unlocked at login → `optional` pam_gnome_keyring lines in `/etc/pam.d/greetd` (can't block a login; backup kept). Light GTK apps → dark colour scheme. Java apps open grey and Qt apps without the Wayland plugin crash → the session sets `_JAVA_AWT_WM_NONREPARENTING=1` and `QT_QPA_PLATFORM="wayland;xcb"`. |
+| Discord | The "update available, download" loop of distro packages → `SKIP_HOST_UPDATE`. Closing hides it in a tray niri doesn't have → `MINIMIZE_TO_TRAY: false`. Native Wayland and PipeWire capture → launcher override. Screen sharing from the Discord app stays limited on Wayland; the browser or Vesktop share reliably. |
+| VS Code | "OS keyring couldn't be identified" → `"password-store": "gnome-libsecret"` in `argv.json` (comments kept). |
+| Chrome / Chromium / Brave / Vivaldi / Edge | Wayland plus keyring flags, through a launcher override. |
+| Firefox | VA-API hardware video decoding (and whether Intel's driver is installed). Portal file dialogs. |
+| Steam | UI scaling on a HiDPI panel. |
+| Spotify / Slack / Obsidian | Native Wayland. |
+| Flatpak | Wayland socket and GTK theme overrides. |
+
+How the repairs are made:
+- **Your own files only.** User-level repairs edit only your files and keep a `.shadow-bak` copy.
+- **Launcher overrides.** Overrides are copies in `~/.local/share/applications`, marked with the system file's age. When an update changes the app's launcher, the override shows up as stale and is refreshed. Overrides you wrote yourself are never replaced.
+- **System repairs.** Repairs that change the system ask for your password through sudo.
+
+**After updates, not during them.** Shadow uses no package-manager hooks. The triage runs at the next login when the package database changed (you get a notification), or right after `shadow fix update`. It lists:
+- apps whose version changed;
+- launchers that went stale;
+- caches to clear. Electron apps (Discord, VS Code, Chrome) and Firefox are known to show blank or broken windows when an update leaves an old cache behind.
+
+You pick what to fix: all, only what needs no password, or by number.
+
+**Password repair (`shadow-passfix`)** checks the usual causes of "my password doesn't work":
+- a `pam_faillock` lockout: 3 wrong passwords lock the account for 10 minutes on Arch, Fedora and RHEL, and even the right password then fails;
+- Caps Lock and Num Lock;
+- the text-console keymap differing from the desktop layout;
+- missing or broken PAM files (restored from the shipped copies);
+- an expired password or account;
+- membership of `wheel`;
+- fingerprint-first PAM stacks;
+- a login keyring that still expects your old password.
+
+It can test your password through the `shadow-passtest` PAM service. That service has no faillock, so testing can't lock you out. Repairs that need root go through sudo. If sudo is locked out by the same counter, it tells you that the counter lives in `/run` and clears at reboot.
+
+The lock screen now shows PAM's own messages (for example "account locked due to 3 failed logins") and a Caps Lock warning.
+
+## Power and smart charging (side bar)
+
+**POWER ▾** in the side bar opens three sections:
+- **Mode:** auto, performance, balanced, quiet, cool, low-power.
+- **Charging:** the modes this battery's firmware offers, plus Smart and 100 % once.
+- **Apps:** the programs drawing the most power right now, in watts when package power is known.
+
+On Dell laptops (kernel `dell-laptop` driver) the charging modes are:
+
+| Mode | Firmware mode |
+|---|---|
+| Standard | Standard |
+| Adaptive | Dell's own learning |
+| Express | Fast |
+| Primarily AC | Trickle |
+| 60–80 % | Custom |
+
+**Smart** charging picks from those modes using how much of the last 7 days you spent on AC:
+- mostly plugged in (≥ 80 %) → 60–80 %, or Primarily AC if Custom isn't offered;
+- mixed use → Adaptive, or Standard.
+
+The choice is re-evaluated at most once a day. **100 % once** charges fully for travel, then returns to your mode.
+
+Charging settings live in the BIOS's non-volatile memory, so Shadow is deliberately careful:
+- only modes the firmware itself lists are written;
+- thresholds only inside Dell's limits (start 50–95, end 55–100, at least 5 apart);
+- nothing is written when the setting is already in effect;
+- every write is read back, and a mismatch pauses smart charging;
+- at most 6 charging writes in any 24 hours, manual ones included (`shadow-powerd charge` shows the budget).
+
+No vendor tool or raw SMBIOS token is ever used, only the kernel's standard battery interface.
 
 ## Permissions and password prompts
 

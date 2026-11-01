@@ -63,6 +63,14 @@ pub fn pkg(arch_name: &str) -> Option<&'static str> {
         ("pipewire-pulse", Some("pipewire-pulseaudio")),
         ("brightnessctl", Some("brightnessctl")),
         ("linux-lts", None),
+        // fix center: session pieces niri leaves to the distribution
+        ("xwayland-satellite", Some("xwayland-satellite")),
+        ("xdg-desktop-portal-gnome", Some("xdg-desktop-portal-gnome")),
+        ("xdg-desktop-portal-gtk", Some("xdg-desktop-portal-gtk")),
+        ("mako", Some("mako")),
+        ("mate-polkit", Some("mate-polkit")),
+        ("gnome-keyring", Some("gnome-keyring")),
+        ("libsecret", Some("libsecret")),
     ];
     m.iter().find(|(a, _)| *a == arch_name).and_then(|(_, r)| *r)
 }

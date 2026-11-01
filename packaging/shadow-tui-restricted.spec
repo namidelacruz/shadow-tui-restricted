@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        7.4.1
+Version:        7.5.0
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: side bar, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -112,6 +112,7 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/share/wayland-sessions/shadow-tui.desktop
 /usr/share/applications/shadow-*.desktop
 %config(noreplace) /etc/pam.d/shadow-lock
+%config(noreplace) /etc/pam.d/shadow-passtest
 %dir /etc/shadow-tui
 %config(noreplace) /etc/shadow-tui/netd.toml
 %config(noreplace) /etc/shadow-tui/healer.toml
@@ -126,6 +127,11 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Sun Nov 01 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.5.0-1
+- fix center (shadow-fix, shadow fix): app repairs + tasks, triage after updates, update console
+- shadow-passfix: password / login repair with a lockout-free password test (shadow-passtest PAM)
+- shadow-wallpaper: wallpapers per monitor + picker + generated default
+- side bar POWER dropdown; smart charging with a firmware-write guard
 * Sun Nov 01 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.4.1-1
 - permissions: polkit agent started by the session (Requires polkit, Recommends an agent),
   brightness via logind, RAPL power published by shadow-powerd, authorise-to-kill in the task
