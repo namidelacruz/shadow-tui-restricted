@@ -251,7 +251,16 @@ impl Upd {
             }
             (Some(Job::Apply), "step") => self.log.push(format!("▸ {v}")),
             (Some(Job::Apply), "replace" | "new" | "remove" | "config") => self.log.push(format!("  {k:<8} {v}")),
-            (_, "log") => self.log.push(format!("  {v}")),
+            (_, "log") => {
+                self.log.push(format!("  {v}"));
+                if v.contains("not in the sudoers file") || v.contains("is not allowed to run sudo") {
+                    let user = std::env::var("USER").unwrap_or_else(|_| "you".into());
+                    self.log.push(format!("  → {user} is not an administrator. On Fedora / RHEL / Arch: sudo usermod -aG wheel {user} (from an admin account), then log in again"));
+                    self.result = Some((false, "your account may not use sudo (not in the wheel group)".into()));
+                } else if v.contains("incorrect password") || v.contains("Sorry, try again") {
+                    self.result = Some((false, "wrong password — nothing was changed".into()));
+                }
+            }
             _ => self.log.push(format!("  {l}")),
         }
         if self.log.len() > 2000 {

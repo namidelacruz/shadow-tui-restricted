@@ -139,12 +139,18 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (89);
+- unit tests in every crate (91);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 7.4.1 permissions:
+  - unit tests for the brightness logic and backlight choice;
+  - polkit agent detection checked with a stand-in agent;
+  - installer dry runs on Fedora, Arch and RHEL 9 install an agent and warn about wheel;
+  - `rpmspec` accepts the either-agent Recommends.
+  - The actual prompts need a real session with an agent; not run here.
 - 7.4, tested in the container:
   - canvas unit tests: rounded anti-aliased shapes, gradients;
   - headless snapshots (`SHADOW_SNAPSHOT`) of the launcher, side bar (fake battery: "5h03 left"), the three flyouts and the task manager (simulated NPU/GPU counters), all checked visually;

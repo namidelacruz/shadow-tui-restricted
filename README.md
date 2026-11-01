@@ -310,6 +310,25 @@ The repository holds:
 
 Plaintext secrets are refused by a scanner. The side bar shows the sync state.
 
+## Permissions and password prompts
+
+Some actions need administrator rights or polkit authorisation. Shadow makes them ask instead of failing:
+
+| Action | How it's authorised |
+|---|---|
+| Wi-Fi system fixes, Wi-Fi device repair | polkit (`org.shadownetwork.*`). The device repair needs no password for the active local user; system fixes ask for the administrator password. |
+| Reboot / shut down while something holds an inhibitor, or with other users logged in | logind via polkit. The System flyout shows the reason when it's refused (for example an update writing files) and never overrides the inhibitor. |
+| Network connections for all users (RHEL; Fedora allows the active user) | NetworkManager via polkit |
+| Ending another user's process in the task manager | offered as "authorise as administrator" (`pkexec kill`) |
+| Updates, the security console | sudo, inside the app or the console (the security console always asks again) |
+| Brightness | systemd-logind `SetBrightness`, allowed for the active session without root (brightnessctl as fallback) |
+| Package power in the task manager | the RAPL counter is root-only; `shadow-powerd` publishes it in `/run/shadow/rapl.state` |
+
+Two things make these prompts work:
+
+- **A polkit authentication agent.** niri has none, and without one polkit can't ask for a password, so pkexec and logind just fail. `shadow-sessiond` starts the first agent installed (mate-polkit, lxqt-policykit, polkit-gnome, lxpolkit, xfce-polkit or polkit-kde), and `./install.sh` installs one. Check it with `shadow-sessiond polkit`.
+- **Membership of `wheel`.** On Fedora, RHEL and Arch, sudo and polkit treat that group as administrators. `./install.sh` and `./install.sh --check` warn if your account isn't in it. Fix: `sudo usermod -aG wheel $USER`, then log in again.
+
 ## Look
 
 The 2D apps share a "fluid HUD" style:

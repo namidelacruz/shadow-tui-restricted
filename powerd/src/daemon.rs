@@ -399,9 +399,21 @@ pub fn run() -> Result<(), String> {
     let mut last_poll = Instant::now() - poll;
     let max_loops: Option<u64> = std::env::var("SHADOW_OPT_MAX_LOOPS").ok().and_then(|v| v.parse().ok());
     let mut loops = 0u64;
+    let mut rapl_prev: Option<(u64, Instant)> = None;
     loop {
         if last_poll.elapsed() >= poll {
             last_poll = Instant::now();
+            // package power: energy_uj is root-only (0400 since the Platypus fix), so the daemon
+            // publishes it for the task manager and the bar
+            if let Some(uj) = sys::read("sys/class/powercap/intel-rapl:0/energy_uj").and_then(|v| v.trim().parse::<u64>().ok()) {
+                if let Some((p, t)) = rapl_prev {
+                    let dt = t.elapsed().as_secs_f64();
+                    if dt > 0.2 && uj >= p {
+                        run_state("rapl.state", &format!("pkg_w={:.2}\n", (uj - p) as f64 / 1e6 / dt));
+                    }
+                }
+                rapl_prev = Some((uj, Instant::now()));
+            }
             let src = power::source(&st.hw);
             let changed = st.src.as_ref().map_or(true, |o| o.ac != src.ac
                 || power::auto_mode(o) != power::auto_mode(&src));

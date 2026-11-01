@@ -255,6 +255,18 @@ fn main() {
         Some("macro") => std::process::exit(client(&format!("macro {}", args.get(1).cloned().unwrap_or_default()))),
         Some("reload") => std::process::exit(client("reload")),
         Some("status") => std::process::exit(client("status")),
+        Some("polkit") => {
+            // for the installer's check and for troubleshooting
+            match (shadow_desktop::privilege::agent_running(), shadow_desktop::privilege::agent_path()) {
+                (Some(a), _) => println!("running: {a}"),
+                (None, Some(p)) => println!("installed, not running: {p}"),
+                (None, None) => {
+                    println!("none installed");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
         Some("-h") | Some("--help") => {
             println!("shadow-sessiond [macro KEY | reload | status]");
             return;
@@ -267,6 +279,8 @@ fn main() {
         eprintln!("shadow-sessiond: already running");
         std::process::exit(0);
     }
+    // privileged actions must be able to ask for a password: make sure a polkit agent runs
+    eprintln!("shadow-sessiond: {}", shadow_desktop::privilege::ensure_agent());
     let _ = std::fs::remove_file(&p);
     match UnixListener::bind(&p) {
         Ok(l) => {

@@ -74,6 +74,23 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/shadow-tui"; pkgcache="$cache/packages"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# A polkit authentication agent: it shows the password prompt for privileged actions (Wi-Fi fixes,
+# reboot past an inhibitor, network changes that need it). niri has none of its own.
+POLKIT_AGENTS=(/usr/libexec/polkit-mate-authentication-agent-1 /usr/lib/mate-polkit/polkit-mate-authentication-agent-1
+  /usr/bin/lxqt-policykit-agent /usr/libexec/polkit-gnome-authentication-agent-1
+  /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 /usr/bin/lxpolkit /usr/libexec/xfce-polkit
+  /usr/libexec/kf6/polkit-kde-authentication-agent-1 /usr/lib/polkit-kde-authentication-agent-1)
+have_polkit_agent() { local a; for a in "${POLKIT_AGENTS[@]}"; do [[ -x $a ]] && return 0; done; return 1; }
+ensure_polkit_agent() {
+  ((DRY)) && { run sudo "$@" mate-polkit; return 0; }
+  have_polkit_agent && { info "polkit agent present"; return 0; }
+  local p
+  for p in mate-polkit lxqt-policykit polkit-gnome lxpolkit; do
+    if sudo "$@" "$p" >/dev/null 2>&1; then info "polkit agent installed: $p"; return 0; fi
+  done
+  warn "no polkit authentication agent could be installed: actions that need a password will fail (install mate-polkit or lxqt-policykit)"
+}
+
 # Failsafe while the Shadow package itself is installed: the same marker the updater uses, so no
 # Shadow desktop session can start on half-written files, and shutdown/suspend are held off. If the
 # install is cut off, shadow-update-recover.service completes or reverses it at the next boot.
@@ -131,6 +148,12 @@ preflight() {
   fi
   have sudo || die "sudo is required"
   if ((!DRY)); then sudo -v || die "sudo access is required to install packages"; fi
+  # sudo and polkit both treat the "wheel" group as administrators on Fedora, RHEL and Arch:
+  # without it, password prompts in Shadow (updates, security console, Wi-Fi fixes) are refused
+  if ! id -nG | tr ' ' '\n' | grep -qx wheel; then
+    warn "your account ($(id -un)) is not in the 'wheel' group: password prompts for administrator actions will be refused"
+    info "fix: sudo usermod -aG wheel $(id -un)   then log out and back in"
+  fi
   have git || [[ $FAM == arch ]] || ((DRY)) || dnf_install git
   need_disk "$DISK_MIN_GB"
   if [[ $FAM == el && $ID == rhel ]] && have subscription-manager && ((!DRY)); then
@@ -224,6 +247,7 @@ arch_install() {
   ((${#need[@]})) && { info "need: ${need[*]}"; ask "Install them (sudo pacman -S --needed)?" || die "cannot build"; run sudo pacman -S --needed --noconfirm "${need[@]}"; }
   say "Compositor and runtime"
   pacman -Qq niri &>/dev/null || { info "niri is the compositor (extra/niri)"; ask "Install niri?" && run sudo pacman -S --needed --noconfirm niri; }
+  ensure_polkit_agent pacman -S --needed --noconfirm
   say "Building (side bar, apps, terminal, daemons — first build ~5-10 min)"
   pacman -Qq shadow-network &>/dev/null && info "the old shadow-network package is replaced"
   local marker; marker=$(mktemp "${TMPDIR:-/tmp}/shadow-build.XXXXXX")
@@ -417,6 +441,8 @@ rpm_install() {
   say "Runtime dependencies"
   dnf_require mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig dejavu-sans-mono-fonts \
     NetworkManager wpa_supplicant iproute util-linux kmod git-core openssh-clients wireplumber pipewire
+  # shellcheck disable=SC2086  # $DNF is "dnf" or "dnf5"
+  ensure_polkit_agent $DNF install -y
   dnf_install_available brightnessctl xdg-desktop-portal-gnome libnotify alsa-sof-firmware alsa-ucm \
     jetbrains-mono-fonts-all google-noto-sans-cjk-fonts age gh iwd \
     terminus-fonts-console pipewire-pulseaudio
@@ -491,6 +517,8 @@ verify() {
   local u off=()
   for u in shadow-powerd shadow-netd shadow-healer shadow-update-recover; do systemctl is-enabled -q "$u.service" 2>/dev/null || off+=("$u"); done
   ((${#off[@]})) && wrn "services not enabled: ${off[*]} (sudo systemctl enable --now ${off[*]/%/.service})" || pass "system services enabled"
+  have_polkit_agent && pass "polkit authentication agent installed (password prompts work)" || bad "no polkit authentication agent: privileged actions fail instead of asking for a password — install mate-polkit"
+  id -nG | tr ' ' '\n' | grep -qx wheel && pass "$(id -un) is an administrator (wheel)" || wrn "$(id -un) is not in 'wheel': administrator password prompts will be refused (sudo usermod -aG wheel $(id -un))"
   if shadow update policy --offline >/dev/null 2>&1; then pass "update source set up and within policy"
   else bad "update source missing or outside policy (required): shadow update policy   →   shadow update setup"; fi
   if [[ -e /var/lib/shadow-tui/update-in-progress ]]; then

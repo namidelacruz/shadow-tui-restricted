@@ -116,8 +116,8 @@ pub const MEDIA_BINDS: &[(&str, &str)] = &[
     ("XF86AudioLowerVolume", r#"spawn "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%-";"#),
     ("XF86AudioMute", r#"spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle";"#),
     ("XF86AudioMicMute", r#"spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle";"#),
-    ("XF86MonBrightnessUp", r#"spawn "brightnessctl" "--class=backlight" "set" "5%+";"#),
-    ("XF86MonBrightnessDown", r#"spawn "brightnessctl" "--class=backlight" "set" "5%-";"#),
+    ("XF86MonBrightnessUp", r#"spawn "shadow-displayd" "brightness" "5%+";"#),
+    ("XF86MonBrightnessDown", r#"spawn "shadow-displayd" "brightness" "5%-";"#),
 ];
 
 pub fn generate(g: &Gen, user_tail: &str) -> String {

@@ -471,7 +471,7 @@ fn run_helper(action: &str, ctx: &Ctx) -> bool {
     let (c, o, e) = if sys::is_root() { exec(&h, &[action], None, 600, false) } else { exec("pkexec", &[&h, action], None, 600, false) };
     if c != 0 {
         let m = if !e.trim().is_empty() { e.trim().to_string() } else if !o.trim().is_empty() { o.trim().to_string() } else { "authorisation declined".into() };
-        log(&format!("   system fix not applied ({m})"), ctx.cb);
+        log(&format!("   system fix not applied ({})", pkexec_hint(&m)), ctx.cb);
         return false;
     }
     std::thread::sleep(Duration::from_secs(4));
@@ -881,6 +881,17 @@ pub fn fix_device(cb: Cb) -> bool {
     ok
 }
 
+/// Make pkexec's terse failures actionable.
+fn pkexec_hint(m: &str) -> String {
+    if m.contains("No authentication agent") || m.contains("authentication agent") && m.contains("not") {
+        format!("{m} — no polkit agent is running to ask for the password: log in to the Shadow session again (shadow-sessiond starts one), or install mate-polkit")
+    } else if m.contains("Not authorized") || m.contains("dismissed") {
+        format!("{m} — the password was not given, or this account is not an administrator (wheel group)")
+    } else {
+        m.to_string()
+    }
+}
+
 /// Run a fixed device action as root. Never prompts from the background guard.
 fn run_dev_helper(action: &str, cb: Cb, interactive: bool) -> bool {
     let h = dev_helper();
@@ -909,7 +920,7 @@ fn run_dev_helper(action: &str, cb: Cb, interactive: bool) -> bool {
         }
     }
     if c != 0 {
-        log(&format!("   device fix not applied ({})", if e.trim().is_empty() { "authorisation declined" } else { e.trim() }), cb);
+        log(&format!("   device fix not applied ({})", pkexec_hint(if e.trim().is_empty() { "authorisation declined" } else { e.trim() })), cb);
         return false;
     }
     true

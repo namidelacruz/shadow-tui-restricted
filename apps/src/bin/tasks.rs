@@ -6,6 +6,8 @@
 //! Below: processes, sorted by CPU, memory or PID.
 //!   ↑↓ / wheel select   c cpu · m memory · p pid sort (or click a heading)   / filter
 //!   k end process (SIGTERM, asks first)   K kill (SIGKILL, asks first)   Esc / q close
+//!   Another user's process: you're offered to authorise it — polkit asks for the administrator
+//!   password (needs the session's polkit agent, which shadow-sessiond starts).
 //! Everything is read from /proc and /sys once a second; nothing is sent anywhere.
 #[path = "../../../bar/src/sys.rs"]
 #[allow(dead_code)]
@@ -205,6 +207,8 @@ struct Tasks {
     filter: Input,
     filtering: bool,
     confirm: Option<(i32, String, i32)>,
+    /// the confirmed signal was refused (EPERM): the next confirm asks polkit for the password
+    escalate: bool,
     msg: (String, bool),
     heads: Vec<(Sort, Rect)>,
     rows: Vec<(usize, Rect)>,
@@ -286,7 +290,8 @@ impl Tasks {
         let rapl = rapl_uj();
         self.watts_pkg = match (rapl, self.prev.rapl) {
             (Some(a), Some(b)) if dt > 0.0 && a >= b => Some((a - b) as f64 / 1e6 / dt),
-            _ => None,
+            // energy_uj is root-only on current kernels: use what shadow-powerd publishes
+            _ => hud::kv("run/shadow/rapl.state", "pkg_w").and_then(|v| v.parse().ok()),
         };
         // I/O
         let disk = disk_sectors();
@@ -390,18 +395,46 @@ impl App for Tasks {
     }
 
     fn key(&mut self, k: &Key, ctx: &mut Ctx) {
-        if let Some((pid, _, sig)) = self.confirm.clone() {
+        if let Some((pid, name, sig)) = self.confirm.clone() {
+            let signame = if sig == libc::SIGKILL { "KILL" } else { "TERM" };
             match k.sym {
+                Keysym::y | Keysym::Return if self.escalate => {
+                    // another user's (or root's) process: polkit asks for the administrator
+                    // password in its own dialog (the session's authentication agent)
+                    let cmd = ["pkexec", "/usr/bin/kill", &format!("-{signame}"), &pid.to_string()].map(String::from);
+                    match std::process::Command::new(&cmd[0]).args(&cmd[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn() {
+                        Ok(child) => {
+                            // reap it in the background; the list shows the result on the next sample
+                            std::thread::spawn(move || {
+                                let _ = child.wait_with_output();
+                            });
+                            self.msg = (format!("asked for authorisation to signal {name} ({pid}) — answer the password prompt"), false);
+                        }
+                        Err(e) => self.msg = (format!("pkexec: {e}"), true),
+                    }
+                    self.escalate = false;
+                }
                 Keysym::y | Keysym::Return => {
                     // SAFETY: kill(2) with a pid we listed; failures are reported, not fatal
                     let r = unsafe { libc::kill(pid, sig) };
-                    self.msg = if r == 0 {
-                        (format!("sent {} to {pid}", if sig == libc::SIGKILL { "SIGKILL" } else { "SIGTERM" }), false)
+                    let err = std::io::Error::last_os_error();
+                    if r == 0 {
+                        self.msg = (format!("sent SIG{signame} to {pid}"), false);
+                    } else if err.raw_os_error() == Some(libc::EPERM) {
+                        // not ours: offer to authorise instead of just failing
+                        self.escalate = true;
+                        self.confirm = Some((pid, name, sig));
+                        self.msg = (String::new(), false);
+                        ctx.redraw();
+                        return;
                     } else {
-                        (format!("could not signal {pid}: {} (another user's process needs sudo)", std::io::Error::last_os_error()), true)
-                    };
+                        self.msg = (format!("could not signal {pid}: {err}"), true);
+                    }
                 }
-                _ => self.msg = ("cancelled".into(), false),
+                _ => {
+                    self.escalate = false;
+                    self.msg = ("cancelled".into(), false);
+                }
             }
             self.confirm = None;
             ctx.redraw();
@@ -591,7 +624,12 @@ impl App for Tasks {
         // prompt / message line
         let my = h - foot + f.px(4.0);
         if let Some((pid, name, sig)) = &self.confirm {
-            let s = format!("{} {name} ({pid})?  y = yes · any other key = no", if *sig == libc::SIGKILL { "KILL (SIGKILL)" } else { "End (SIGTERM)" });
+            let what = if *sig == libc::SIGKILL { "KILL (SIGKILL)" } else { "End (SIGTERM)" };
+            let s = if self.escalate {
+                format!("{name} ({pid}) belongs to another user. Authorise as administrator (password prompt)?  y / n")
+            } else {
+                format!("{what} {name} ({pid})?  y = yes · any other key = no")
+            };
             f.text(pad + f.px(10.0), my, &s, pt, th.crimson, true);
         } else if self.filtering || !self.filter.text.is_empty() {
             let s = f.text(pad + f.px(10.0), my, "filter: ", pt, th.amber, true);
@@ -637,6 +675,7 @@ fn main() {
         filter: Input::default(),
         filtering: false,
         confirm: None,
+        escalate: false,
         msg: (String::new(), false),
         heads: vec![],
         rows: vec![],

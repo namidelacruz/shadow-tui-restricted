@@ -1,6 +1,6 @@
 [package]
 name = "shadow-greet"
-version = "7.4.0"
+version = "7.4.1"
 edition = "2021"
 description = "Shadow TUI Restricted login: static console greeter for greetd (ly-style), console font sized to the panel"
 license = "MIT"

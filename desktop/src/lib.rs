@@ -2,6 +2,7 @@
 #[path = "../../bar/src/sys.rs"]
 pub mod sys;
 pub mod luahost;
+pub mod privilege;
 pub mod telemetry;
 
 use std::path::PathBuf;

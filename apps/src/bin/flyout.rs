@@ -107,11 +107,13 @@ struct Flyout {
     minus_plus: Vec<(usize, Rect, i32)>,
     had_focus: bool,
     info: String,
+    info_err: bool,
 }
 
 impl Flyout {
     fn build(&mut self) {
         self.armed = None;
+        self.info_err = false;
         self.items = match PAGES[self.page] {
             "apps" => {
                 let q = self.input.text.trim().to_lowercase();
@@ -189,7 +191,8 @@ impl Flyout {
         let Some(it) = self.items.get(i) else { return };
         match &it.kind {
             Kind::Slider("brightness") => {
-                let _ = cmd_out(&["brightnessctl", "-q", "set", if dir > 0 { "5%+" } else { "5%-" }]);
+                // logind SetBrightness (no root needed), brightnessctl as fallback
+                let _ = cmd_out(&["shadow-displayd", "brightness", if dir > 0 { "5%+" } else { "5%-" }]);
             }
             Kind::Slider("volume") => {
                 let _ = cmd_out(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", if dir > 0 { "5%+" } else { "5%-" }]);
@@ -210,6 +213,11 @@ impl Flyout {
     fn activate(&mut self, i: usize, ctx: &mut Ctx) {
         let Some(it) = self.items.get(i).cloned() else { return };
         match it.kind {
+            Kind::Run(cmd) if cmd.starts_with("systemctl ") => {
+                if self.power(&cmd, ctx) {
+                    ctx.quit();
+                }
+            }
             Kind::Run(cmd) => {
                 if let Some(rest) = cmd.strip_prefix('@') {
                     let (id, c) = rest.split_once('\u{1}').unwrap_or(("", rest));
@@ -222,8 +230,10 @@ impl Flyout {
             }
             Kind::Confirm(cmd) => {
                 if self.armed == Some(i) {
-                    spawn(&cmd);
-                    ctx.quit();
+                    self.armed = None;
+                    if self.power(&cmd, ctx) {
+                        ctx.quit();
+                    }
                 } else {
                     self.armed = Some(i);
                     ctx.redraw();
@@ -241,6 +251,28 @@ impl Flyout {
             }
             Kind::Slider(_) | Kind::Cycle(_) => self.adjust(i, 1, ctx),
         }
+    }
+
+    /// Suspend / reboot / shut down: run and wait, so a refusal (an update holding an inhibitor,
+    /// another user logged in, no polkit agent) is shown instead of silently doing nothing.
+    fn power(&mut self, cmd: &str, ctx: &mut Ctx) -> bool {
+        let argv: Vec<&str> = cmd.split_whitespace().collect();
+        let (c, o) = cmd_out(&argv);
+        if c == 0 {
+            return true;
+        }
+        let why = o.lines().find(|l| !l.trim().is_empty()).unwrap_or("refused").trim().to_string();
+        let hint = if why.contains("inhibit") {
+            " — wait for it to finish"
+        } else if why.contains("authentication agent") || why.contains("Interactive authentication required") {
+            " — no polkit agent to ask for the password (re-login, or install mate-polkit)"
+        } else {
+            ""
+        };
+        self.info = format!("✗ {why}{hint}");
+        self.info_err = true;
+        ctx.redraw();
+        false
     }
 
     /// expected logical height, to keep the panel on screen
@@ -461,7 +493,7 @@ impl App for Flyout {
         y += f.px(4.0);
         f.cv.beam(x0, y, w - 2 * x0, 1, th.cyan, th.violet, 0.35);
         let info = f.fit(&self.info, spt, false, w - 2 * x0);
-        f.text(x0, y + f.px(6.0), &info, spt, th.dim, false);
+        f.text(x0, y + f.px(6.0), &info, spt, if self.info_err { th.crimson } else { th.dim }, self.info_err);
     }
 }
 
@@ -513,6 +545,7 @@ fn main() {
         minus_plus: vec![],
         had_focus: false,
         info: String::new(),
+        info_err: false,
     };
     fl.build();
     let r = run(Box::new(fl), None);

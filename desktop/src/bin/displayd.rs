@@ -355,6 +355,17 @@ fn main() {
             print!("{r}");
             0
         }
+        // brightness for keys and the settings flyout: logind (no root) → brightnessctl → sysfs
+        Some("brightness") => match shadow_desktop::privilege::set_brightness(args.get(1).map(String::as_str).unwrap_or("")) {
+            Ok(p) => {
+                println!("{p}%");
+                0
+            }
+            Err(e) => {
+                eprintln!("shadow-displayd: {e}");
+                1
+            }
+        },
         Some("lid-close") => lid(true),
         Some("lid-open") => lid(false),
         Some("-h") | Some("--help") => {
