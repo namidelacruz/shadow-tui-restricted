@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Preferences
+GenericName=Default Apps and Crash Log
+Comment=Shadow TUI Restricted: default file manager, terminal and background; what crashed and what holds changes back
+Exec=shadow-prefs
+Icon=preferences-desktop-default-applications
+Terminal=false
+Categories=System;Settings;
+Keywords=default;terminal;file manager;wallpaper;background;crash;log;error;report;
+Actions=crash;
+
+[Desktop Action crash]
+Name=Crash log
+Exec=shadow-prefs crash

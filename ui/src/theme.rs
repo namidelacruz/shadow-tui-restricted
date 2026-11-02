@@ -34,7 +34,7 @@ pub fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("SHADOW_STATE") {
         return PathBuf::from(p);
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into())).join(".config"));
+    let base = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into())).join(".config"));
     base.join("shadow-state")
 }
 

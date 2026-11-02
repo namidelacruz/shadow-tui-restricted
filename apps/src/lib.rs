@@ -88,3 +88,57 @@ pub fn local_hour() -> usize {
 pub fn focused_app() -> String {
     shadow_niri::json(&["focused-window"]).ok().and_then(|v| v.get("app_id").and_then(|a| a.as_str()).map(|s| s.to_lowercase())).unwrap_or_default()
 }
+
+/// Known terminals: (command, how it takes a program to run). Order = the order offered.
+pub const TERMINALS: &[(&str, &str, &str)] = &[
+    // (command, name, flag before the program; "" = the program follows directly)
+    ("shadow-term", "Shadow terminal", "-e"),
+    ("foot", "Foot", "-e"),
+    ("kitty", "Kitty", ""),
+    ("alacritty", "Alacritty", "-e"),
+    ("wezterm", "WezTerm", "start --"),
+    ("ptyxis", "Ptyxis", "--"),
+    ("gnome-terminal", "GNOME Terminal", "--"),
+    ("konsole", "Konsole", "-e"),
+    ("xterm", "XTerm", "-e"),
+];
+
+/// The default terminal command ([defaults] terminal_cmd), "shadow-term" when unset.
+pub fn terminal() -> String {
+    cfg::get_in(&std::fs::read_to_string(config_path()).unwrap_or_default(), "defaults", "terminal_cmd")
+        .map(|v| v.trim_matches('"').trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "shadow-term".into())
+}
+
+/// A command line that runs `cmd` (already shell-ready) in the default terminal.
+pub fn terminal_exec(cmd: &str) -> String {
+    terminal_exec_with(&terminal(), cmd)
+}
+
+pub fn terminal_exec_with(term: &str, cmd: &str) -> String {
+    let prog = term.split_whitespace().next().unwrap_or("shadow-term");
+    let flag = TERMINALS.iter().find(|t| t.0 == prog).map(|t| t.2).unwrap_or("-e");
+    if flag.is_empty() {
+        format!("{term} {cmd}")
+    } else {
+        format!("{term} {flag} {cmd}")
+    }
+}
+
+/// Open the default terminal in `dir`.
+pub fn terminal_here(dir: &str) -> String {
+    format!("cd {} && exec {}", sh_quote(dir), terminal())
+}
+
+#[cfg(test)]
+mod term_tests {
+    use super::*;
+    #[test]
+    fn terminal_flags() {
+        assert_eq!(terminal_exec_with("foot", "htop"), "foot -e htop");
+        assert_eq!(terminal_exec_with("kitty", "htop"), "kitty htop");
+        assert_eq!(terminal_exec_with("wezterm", "htop"), "wezterm start -- htop");
+        assert_eq!(terminal_exec_with("myterm", "htop"), "myterm -e htop");
+    }
+}

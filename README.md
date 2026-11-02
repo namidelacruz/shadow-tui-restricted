@@ -23,9 +23,10 @@ Version 6, with its own Smithay compositor and orbital ring, stays on the `v6` b
 | `shadow-bar` | The floating side bar (layer-shell, right edge), with **APPS · SETTINGS · SYSTEM** buttons at the top. It shows battery % with time left or time to full (smoothed), and the monitor and scale, workspace, focused app, NPU state, sync, battery and watts, panel Hz, package °C and profile, audio DSP, Wi-Fi SSID/dBm/EAP, Lua widgets and the time. It sits on the laptop panel; when docked it follows the monitor that has focus. `Mod+Shift+B` hides it. |
 | `shadow-flyout` | The panels behind the side bar's **APPS**, **SETTINGS** and **SYSTEM** buttons. Each opens beside its button; the same button closes it again.<br>• **Apps:** search and launch.<br>• **Settings:** brightness, volume, power mode, Wi-Fi, displays, all settings.<br>• **System:** task manager, update, security console, lock, log out, suspend, reboot, shut down; log out, reboot and shut down need a second press.<br>`Mod+A` opens Apps. Tab switches page; Esc, or moving focus away, closes it. |
 | `shadow-tasks` | Task manager (`Ctrl+Shift+Esc`).<br>• **Cards:** CPU (total, per core, frequency), memory (RAM, swap, memory pressure), NPU (busy % from the Intel NPU driver, frequency, learning state), GPU (busy % from xe/i915 idle residency, frequency), power (battery draw, package power, time left, temperature), I/O (network, disk, pressure).<br>• **Processes:** sort with c/m/p, filter with /, end with k (SIGTERM) or K (SIGKILL), each confirmed first. |
-| `shadow-fix` | Fix center (`Mod+Shift+H`), with four pages:<br>• **Issues:** known problems of your apps under niri, with repairs.<br>• **Tasks:** clear caches, unlock a Firefox profile, force quit, restart portals or PipeWire.<br>• **Login:** password and login problems.<br>• **Update:** update the system and Flatpaks, then triage. Repairs come after updates, never during them.<br>On a text console the same is `shadow fix …`. |
+| `shadow-fix` | Fix center (`Mod+Shift+H`), with four pages:<br>• **Issues:** known problems of your apps under niri, with repairs.<br>• **Tasks:** clear caches, unlock a Firefox profile, force quit, restart portals or PipeWire.<br>• **Login:** password and login problems.<br>• **Update:** update the system and Flatpaks, then triage. Repairs come after updates, never during them.<br>• **Desktop:** the **solid background colour** on/off, hub or side bar, the hub check, the crash log and the default apps.<br>On a text console the same is `shadow fix …`. |
 | `shadow-passfix` | Password repair, a plain text console that works on Ctrl+Alt+F2. See [Fix center](#fix-center-and-password-repair). |
 | `shadow-wallpaper` | The wallpaper picker (`Mod+W`). Its first entry is **Vertices**, the reactive 3D field (the default); the second is the generated aurora; then your images. With the hub on, `shadow-hub` draws the wallpaper. With `[hub] enabled = false`, this program draws it instead: on every monitor, also behind the overview, with Vertices as a still frame. |
+| `shadow-prefs` | Preferences, with two pages:<br>• **Defaults:** file manager, terminal and background, each applied at once. The file manager sets the XDG folder default and Mod+E. The terminal sets Mod+Return, the terminal apps opened from the hub, launcher and files, and `~/.config/xdg-terminals.list`.<br>• **Crash log:** what is holding changes back (an interrupted update, niri refusing the config, the hub's fallback, waiting `.shadow-new` defaults), then crashes newest first: core dumps of Shadow programs and niri, hub exits, panics, journal errors. Each line has its details below it, and **Save a report** writes everything to one file to read or send. `shadow-prefs crash` opens this page. |
 | `shadow-launch` | Launcher, opened as its own normal window (tiled, opaque), not an overlay over what's on screen. Click or press Enter to launch. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
 | `shadow-net` | Wi-Fi: networks, UC-Secure and eduroam setup, self-repair, with a live EAP/TLS log. |
 | `shadow-config` | Live settings matrix over `config.toml`. Changes apply immediately; if niri rejects one, it is rolled back. |
@@ -231,6 +232,7 @@ The sections:
 - `[layout]`: presets, default width, gaps, transition time.
 - `[look]`: colours, opacity, font, text size.
 - `[display]`: refresh policy, refresh rates and `[display.scale]` pins.
+- `[defaults]`: `files` / `files_cmd` (file manager) and `terminal_cmd`. Set them with `shadow-prefs`.
 - `[hub]`: `enabled` (default true; false brings back the side bar and the wallpaper program), `output` (the monitor that shows the hub), `reactive` (false keeps the field still), and `[hub.widgets]` positions.
 - `[bar]`: width.
 - `[input]`: XKB layout and options, key repeat.
@@ -472,6 +474,10 @@ Every 2D app shares the vertex wireframe style:
 - segmented meters and wire sparklines that end in a node.
 
 App windows are translucent glass. `[look] window_opacity` sets how much (default 0.86; 1.0 makes them opaque again), and LOOK → Window glass changes it from the hub. The launcher and the updater always stay fully opaque, as asked for in 7.2.
+
+**Solid background colour.** `[look] solid_background` defaults to true, giving a flat obsidian behind the overview (and the workspaces on older niri). With it off, only the hub's field or your wallpaper shows, and black where nothing is drawn. Change it in the fix center (DESKTOP) or in Preferences.
+
+**Blur (niri 26.04).** On niri 26.04 or newer, the glass windows (settings, network, files, task manager, fix center, wallpaper) and the summoned hub get real blur behind them. On older niri, `shadow setup niri` leaves the blur out and keeps everything else.
 
 The other `[look]` options are `chamfer` (cut size, 0–32), `radius`, `violet`, `amber`, `cyan`, `obsidian`, `opacity` (the side bar), `font` and `font_pt`.
 

@@ -46,6 +46,8 @@ fn actions() -> Vec<Entry> {
         action("config", "Settings", "shadow-config · live settings matrix", "shadow-config"),
         action("files", "Files", "shadow-files", "shadow-files"),
         action("lock", "Lock screen", "", "shadow-lock"),
+        action("prefs", "Default apps", "shadow-prefs · file manager, terminal, background", "shadow-prefs"),
+        action("crash", "Crash log", "what crashed, what holds changes back · save a report", "shadow-prefs crash"),
         action("hub", "Hub", "Mod+Space · apps, settings, power, system, look", "shadow-hub summon"),
         action("bar", "Show / hide side bar", "Mod+Shift+B · optional next to the hub", "sh -c 'pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar'"),
         action("overview", "Overview", "all workspaces", "niri msg action toggle-overview"),
@@ -131,7 +133,7 @@ impl Launch {
         let e = self.all[i].clone();
         desktop::record_launch(&e.id, &self.from);
         if e.terminal {
-            spawn(&format!("shadow-term -e {}", e.cmd));
+            spawn(&shadow_apps::terminal_exec(&e.cmd));
         } else {
             spawn(&e.cmd);
         }

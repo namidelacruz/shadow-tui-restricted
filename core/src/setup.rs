@@ -297,6 +297,15 @@ pub fn niri_gen(text: &str) -> shadow_niri::config::Gen {
     if let Some(v) = get("hub", "enabled") {
         g.hub = v != "false";
     }
+    if let Some(v) = get("look", "solid_background") {
+        g.solid_bg = v != "false";
+    }
+    if let Some(v) = get("defaults", "terminal_cmd").filter(|v| !v.trim().is_empty()) {
+        g.terminal = v;
+    }
+    if let Some(v) = get("defaults", "files_cmd").filter(|v| !v.trim().is_empty()) {
+        g.files = v;
+    }
     g.pinned_scales = pinned_scales(text);
     g.macros = std::fs::read_to_string(st::state_dir().join("macros.list")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '_')).collect();
     g
@@ -329,26 +338,44 @@ pub fn niri_config(verbose: bool) -> i32 {
             Ok(())
         } else {
             let why = format!("{out}{err}");
-            Err(why.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("").trim().to_string())
+            // niri prints a boxed diagnostic: keep the line that says what is wrong
+            let lines: Vec<&str> = why.lines().map(str::trim).filter(|l| !l.is_empty() && l.chars().any(char::is_alphanumeric)).collect();
+            // the most specific "× …" line (the last one), e.g. "unexpected node `background-effect`"
+            let pick = lines.iter().rev().find(|l| l.contains('×')).or(lines.last());
+            Err(pick.map(|l| l.trim_start_matches("Error:").trim().trim_start_matches(['×', '│', '╭', '╰', '─', ' ']).to_string()).unwrap_or_default())
         }
     };
+    // tiers, newest first: everything; without blur (niri < 26.04); compatibility mode (also
+    // without the overview backdrop and layer shadows). One unknown optional line never keeps the
+    // whole config — and with it the hub, the binds and the startup programs — out.
     if let Err(why) = validate(&new) {
-        // an older niri that doesn't know one of the optional lines must not keep the whole
-        // config (and with it the hub, the binds, the startup programs) out: try without them
         eprintln!("shadow setup niri: niri rejected the full config: {why}");
-        g.compat = true;
-        new = shadow_niri::config::generate(&g, &tail);
-        if new == old {
-            let _ = std::fs::remove_file(&tmp);
-            return 0;
+        let mut accepted = false;
+        for (blur, compat, note) in [
+            (false, false, "without blur (needs niri 26.04)"),
+            (false, true, "in compatibility mode (no blur, no overview backdrop colour, no layer shadow rules) — update niri to get them back"),
+        ] {
+            g.blur = blur;
+            g.compat = compat;
+            new = shadow_niri::config::generate(&g, &tail);
+            if new == old {
+                let _ = std::fs::remove_file(&tmp);
+                return 0;
+            }
+            match validate(&new) {
+                Ok(()) => {
+                    eprintln!("shadow setup niri: using the config {note}");
+                    accepted = true;
+                    break;
+                }
+                Err(w) => eprintln!("shadow setup niri: also rejected {note}: {w}"),
+            }
         }
-        if let Err(why2) = validate(&new) {
+        if !accepted {
             let _ = std::fs::remove_file(&tmp);
             eprintln!("shadow setup niri: niri rejected the generated config — kept the current one");
-            eprintln!("{why2}");
             return 1;
         }
-        eprintln!("shadow setup niri: using compatibility mode (no overview backdrop colour, no layer shadow rules) — update niri to get them back");
     }
     if std::fs::rename(&tmp, &path).is_err() {
         eprintln!("shadow setup niri: cannot replace {}", path.display());

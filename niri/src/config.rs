@@ -31,6 +31,15 @@ pub struct Gen {
     /// (overview backdrop colour, place-within-backdrop, layer shadows). Used when niri rejects
     /// the full config, so one cosmetic line can never keep the whole Shadow config out.
     pub compat: bool,
+    /// niri >= 26.04 blur behind Shadow's glass windows and the summoned hub
+    /// (`background-effect`); dropped first when niri rejects the config
+    pub blur: bool,
+    /// [look] solid_background: the flat obsidian behind everything (overview backdrop, and the
+    /// workspaces in compatibility mode). false = no solid colour anywhere
+    pub solid_bg: bool,
+    /// [defaults] terminal_cmd / files_cmd: what Mod+Return and Mod+E start
+    pub terminal: String,
+    pub files: String,
 }
 
 impl Default for Gen {
@@ -52,8 +61,21 @@ impl Default for Gen {
             natural_scroll: true,
             hub: true,
             compat: false,
+            blur: true,
+            solid_bg: true,
+            terminal: "shadow-term".into(),
+            files: "shadow-files".into(),
         }
     }
+}
+
+/// `spawn "prog" "arg" …;` for a configured command; anything that isn't a plain word (quotes,
+/// shell syntax) falls back to `default`, so a typo can never produce a config niri rejects
+pub fn spawn_args(cmd: &str, default: &str) -> String {
+    let ok = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "._/=+-:,@%".contains(c));
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let words = if !words.is_empty() && words.iter().all(|w| ok(w)) { words } else { vec![default] };
+    format!("spawn {};", words.iter().map(|w| q(w)).collect::<Vec<_>>().join(" "))
 }
 
 fn q(s: &str) -> String {
@@ -193,7 +215,7 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     // transparent workspaces: whatever is on the background layer (the hub's field, or the
     // wallpaper placed in the backdrop) shows through. With an opaque colour here the wallpaper
     // only ever appeared in the overview. The obsidian goes to the backdrop instead (below).
-    if g.compat {
+    if g.compat && g.solid_bg {
         p(&mut o, &format!("    background-color {}", q(&g.obsidian)));
     } else {
         p(&mut o, r#"    background-color "transparent""#);
@@ -236,7 +258,23 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
         p(&mut o, "}");
     }
     if !g.compat {
-        p(&mut o, &format!("overview {{ backdrop-color {}; }}", q(&g.obsidian)));
+        let backdrop = if g.solid_bg { q(&g.obsidian) } else { q("transparent") };
+        p(&mut o, &format!("overview {{ backdrop-color {backdrop}; }}"));
+    }
+    if g.blur && !g.compat {
+        // niri 26.04: real frosted glass behind the translucent Shadow windows (the launcher and the
+        // updater are opaque and need none), and over the windows behind the summoned hub (an
+        // overlay layer: xray off, so it blurs the windows rather than the wallpaper)
+        p(&mut o, "window-rule {");
+        p(&mut o, r#"    match app-id="^shadow-(config|net|files|tasks|fix|wallpaper)$""#);
+        p(&mut o, "    background-effect { blur true; }");
+        p(&mut o, "}");
+        if g.hub {
+            p(&mut o, "layer-rule {");
+            p(&mut o, r#"    match namespace="^shadow-hub-summon$""#);
+            p(&mut o, "    background-effect { blur true; xray false; }");
+            p(&mut o, "}");
+        }
     }
     p(&mut o, "");
     p(&mut o, "// dock mode: lid closed with an external monitor on turns the panel off instead of locking");
@@ -255,7 +293,11 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     for (k, a) in BINDS {
         // with the hub, Mod+Space summons it over the windows and Mod+A opens its APPS panel;
         // Mod+Shift+B starts / stops the optional 7.x side bar next to it
-        let a = match (*k, g.hub) {
+        let term = spawn_args(&g.terminal, "shadow-term");
+        let files = spawn_args(&g.files, "shadow-files");
+        let a: &str = match (*k, g.hub) {
+            ("Mod+Return", _) => &term,
+            ("Mod+E", _) => &files,
             ("Mod+Space", true) => r#"spawn "shadow-hub" "summon";"#,
             ("Mod+A", true) => r#"spawn "shadow-hub" "summon" "apps";"#,
             ("Mod+Shift+B", true) => r#"spawn "sh" "-c" "pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar";"#,
@@ -339,5 +381,25 @@ mod tests {
         let a = generate(&Gen { compat: true, ..Gen::default() }, "");
         assert!(a.contains("spawn-at-startup \"shadow-hub\"") && a.contains("Mod+Space { spawn \"shadow-hub\" \"summon\"; }"));
         assert!(!a.contains("overview {") && !a.contains("place-within-backdrop") && !a.contains("shadow { off; }"));
+    }
+
+    #[test]
+    fn blur_is_its_own_optional_tier() {
+        let a = generate(&Gen::default(), "");
+        assert!(a.contains("background-effect { blur true; }") && a.contains("background-effect { blur true; xray false; }"));
+        let b = generate(&Gen { blur: false, ..Gen::default() }, "");
+        assert!(!b.contains("background-effect") && b.contains("overview {"), "without blur the rest stays");
+    }
+
+    #[test]
+    fn solid_background_and_default_apps() {
+        let a = generate(&Gen::default(), "");
+        assert!(a.contains("backdrop-color \"#0A0B0E\"") && a.contains("Mod+Return { spawn \"shadow-term\"; }"));
+        let b = generate(&Gen { solid_bg: false, terminal: "foot".into(), files: "nautilus --new-window".into(), ..Gen::default() }, "");
+        assert!(b.contains("backdrop-color \"transparent\"") && !b.contains("#0A0B0E\"; }"));
+        assert!(b.contains("Mod+Return { spawn \"foot\"; }") && b.contains("Mod+E { spawn \"nautilus\" \"--new-window\"; }"));
+        let c = generate(&Gen { solid_bg: false, compat: true, ..Gen::default() }, "");
+        assert!(c.contains("background-color \"transparent\""), "no solid colour in compatibility mode either");
+        assert_eq!(spawn_args("rm -rf $(x)", "shadow-term"), "spawn \"shadow-term\";");
     }
 }

@@ -423,7 +423,7 @@ impl Hub {
                     .into_iter()
                     .take(8)
                     .map(|(_, e)| {
-                        let cmd = if e.terminal { format!("shadow-term -e {}", e.cmd) } else { e.cmd.clone() };
+                        let cmd = if e.terminal { shadow_apps::terminal_exec(&e.cmd) } else { e.cmd.clone() };
                         Item { label: e.name.clone(), detail: e.detail.clone(), kind: Kind::Run(format!("@{}\u{1}{cmd}", e.id)) }
                     })
                     .collect();
@@ -440,6 +440,7 @@ impl Hub {
                 }
                 v.push(item("Displays", "scale · text size · refresh", Kind::Run("shadow-config Displays".into())));
                 v.push(item("Keyboard & input", "layouts · touchpad", Kind::Run("shadow-config Input".into())));
+                v.push(item("Default apps", "file manager · terminal · background", Kind::Run("shadow-prefs".into())));
                 v.push(item("All settings…", "shadow-config", Kind::Run("shadow-config".into())));
                 v
             }
@@ -495,6 +496,7 @@ impl Hub {
                 item("Fix center", "app problems · tasks · triage", Kind::Run("shadow-fix".into())),
                 item("Update", "check now · changed files only", Kind::Run("shadow-update".into())),
                 item("Password repair", "login / keyring / sudo", Kind::Run("shadow-term --hold -e shadow-passfix".into())),
+                item("Crash log", "what crashed · what holds changes back", Kind::Run("shadow-prefs crash".into())),
             ],
             "LOOK" => {
                 let (cur, _) = wall::choice(&self.wall_text, None);
@@ -1615,7 +1617,7 @@ fn main() {
 // ── supervision, fallback and diagnostics ──────────────────────────────────────────────────────
 
 fn log_path() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| shadow_apps::home().join(".local/state"));
+    let base = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| shadow_apps::home().join(".local/state"));
     base.join("shadow-tui/hub.log")
 }
 
@@ -1797,6 +1799,7 @@ fn doctor() -> i32 {
     if cfg.contains("spawn-at-startup") && !cfg.contains("overview {") && spawns {
         line(None, "niri compatibility mode", "on (this niri is older; cosmetic lines left out)".into());
     }
+    line(None, "glass blur", if cfg.contains("background-effect") { "on (niri 26.04+ blurs behind Shadow's windows and the summoned hub)".into() } else { "off (needs niri 26.04)".into() });
     let (_, pids) = cmd_out(&["pgrep", "-f", "^(/[^ ]*/)?shadow-hub$"]);
     let n = pids.split_whitespace().count();
     line(Some(n >= 1 || !enabled), "hub running", match n {
@@ -1840,7 +1843,7 @@ fn doctor() -> i32 {
     if tail.is_empty() {
         line(None, "hub log", format!("{} (empty)", lp.display()));
     } else {
-        println!("--- last lines of {} ---", lp.display());
+        println!("--- last lines of {} (all of it: shadow-prefs crash) ---", lp.display());
         for l in tail.iter().rev() {
             println!("{l}");
         }

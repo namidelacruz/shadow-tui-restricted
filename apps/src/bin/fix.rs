@@ -8,19 +8,32 @@
 //!             the repair console (also on a text console: shadow-passfix)
 //!   UPDATE    update the system and Flatpaks in a console, then triage what the updates changed —
 //!             repairs happen after the update, never during it
+//!   DESKTOP   the solid background colour (on / off), the hub (on / side bar instead), the hub check,
+//!             the crash log and the default apps
 //! Tab switches page · ↑↓ select · Enter apply · r rescan · Esc close
 use shadow_ui::calloop::channel::{self, Sender};
 use shadow_ui::widgets::{chrome, footer, selection, Rect};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 
-const PAGES: [&str; 4] = ["ISSUES", "TASKS", "LOGIN", "UPDATE"];
+const PAGES: [&str; 5] = ["ISSUES", "TASKS", "LOGIN", "UPDATE", "DESKTOP"];
 
 #[derive(Clone)]
 enum Act {
     Fix(String, bool),
     Task(String),
     Term(String),
+    /// start a program (no terminal)
+    Exec(String),
+    /// flip a [section] key between true and false, then rewrite niri's config
+    Toggle(&'static str, &'static str),
+    /// run in the background and show the last line
+    Work(Vec<String>),
     None,
+}
+
+fn conf_bool(section: &str, key: &str, default: bool) -> bool {
+    let t = std::fs::read_to_string(shadow_apps::config_path()).unwrap_or_default();
+    shadow_apps::cfg::get_in(&t, section, key).map(|v| v.trim_matches('"').trim() != "false").unwrap_or(default)
 }
 
 #[derive(Clone)]
@@ -101,6 +114,27 @@ impl Fixc {
                 v.push(Row { lvl: '·', text: "Can't log in at all? On a text console (Ctrl+Alt+F2) run:  shadow-passfix".into(), detail: String::new(), act: Act::None });
                 v
             }
+            "DESKTOP" => {
+                let solid = conf_bool("look", "solid_background", true);
+                let hub = conf_bool("hub", "enabled", true);
+                vec![
+                    Row {
+                        lvl: if solid { '·' } else { '✓' },
+                        text: format!("Solid background colour: {}", if solid { "ON" } else { "OFF" }),
+                        detail: if solid { "Enter turns it off: no flat obsidian behind the desktop or the overview — only the hub's field or your wallpaper".into() } else { "Enter turns it back on (obsidian behind the overview and wherever nothing else is drawn)".into() },
+                        act: Act::Toggle("look", "solid_background"),
+                    },
+                    Row {
+                        lvl: '·',
+                        text: format!("Desktop: {}", if hub { "the hub" } else { "the side bar + wallpaper" }),
+                        detail: format!("Enter switches to {} now and for later logins", if hub { "the side bar + wallpaper" } else { "the hub" }),
+                        act: Act::Work(vec!["shadow-hub".into(), if hub { "use-bar".into() } else { "switch".into() }]),
+                    },
+                    Row { lvl: '·', text: "Check the hub".into(), detail: "shadow-hub doctor: niri, config, processes, background, frame time, log".into(), act: Act::Term("shadow-hub doctor".into()) },
+                    Row { lvl: '·', text: "Crash log".into(), detail: "what crashed or is holding changes back, with the details and a report to save".into(), act: Act::Exec("shadow-prefs crash".into()) },
+                    Row { lvl: '·', text: "Default apps".into(), detail: "file manager, terminal and background".into(), act: Act::Exec("shadow-prefs".into()) },
+                ]
+            }
             _ => vec![
                 Row { lvl: '·', text: "Update the system and Flatpaks, then triage".into(), detail: "a console: the package manager asks for your password; afterwards it lists what the updates changed and offers the repairs".into(), act: Act::Term("shadow fix update".into()) },
                 Row { lvl: '·', text: "Triage now (after you updated another way)".into(), detail: "app versions that changed, launchers that went stale, caches to clear".into(), act: Act::Term("shadow fix triage".into()) },
@@ -121,6 +155,22 @@ impl Fixc {
             Act::Task(id) => self.work(vec!["shadow".into(), "fix".into(), "run".into(), id]),
             Act::Term(cmd) if cmd.starts_with("exec ") => shadow_apps::spawn(&cmd[5..]),
             Act::Term(cmd) => term(&cmd),
+            Act::Exec(cmd) => shadow_apps::spawn(&cmd),
+            Act::Toggle(section, key) => {
+                let on = conf_bool(section, key, true);
+                let p = shadow_apps::config_path();
+                let t = shadow_apps::cfg::set_in(&std::fs::read_to_string(&p).unwrap_or_default(), section, key, if on { "false" } else { "true" });
+                if let Err(e) = shadow_apps::atomic_write(&p, &t) {
+                    self.msg = (format!("cannot write {}: {e}", p.display()), true);
+                } else {
+                    self.work(vec!["shadow".into(), "setup".into(), "niri".into()]);
+                    self.load();
+                    self.msg = (format!("{key} = {} — niri applies it now", !on), false);
+                }
+            }
+            Act::Work(cmd) => {
+                self.work(cmd);
+            }
             Act::None => return,
         }
         ctx.redraw();

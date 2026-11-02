@@ -130,7 +130,7 @@ impl Flyout {
                     .into_iter()
                     .take(9)
                     .map(|(_, e)| {
-                        let cmd = if e.terminal { format!("shadow-term -e {}", e.cmd) } else { e.cmd.clone() };
+                        let cmd = if e.terminal { shadow_apps::terminal_exec(&e.cmd) } else { e.cmd.clone() };
                         Item { label: e.name.clone(), detail: e.detail.clone(), kind: Kind::Run(format!("@{}\u{1}{cmd}", e.id)) }
                     })
                     .collect();

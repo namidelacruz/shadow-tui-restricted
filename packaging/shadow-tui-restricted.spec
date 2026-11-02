@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        8.0.2
+Version:        8.1.0
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -128,6 +128,13 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.1.0-1
+- shadow-prefs: default file manager, terminal and background; crash log (interrupted update,
+  refused niri config, hub fallback, waiting defaults, core dumps, panics, journal errors) with
+  details and a saved report
+- fix center DESKTOP page: solid background colour on/off, hub or side bar, hub check
+- niri 26.04: blur behind the glass windows and the summoned hub, left out on older niri
+- empty XDG_* directories count as unset
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.0.2-1
 - shadow-hub switch / use-bar: change desktop in the running session and for later logins;
   the updater uses the same command

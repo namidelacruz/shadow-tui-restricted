@@ -95,7 +95,7 @@ impl Files {
         }
         let p = sh_quote(&e.path.to_string_lossy());
         if !with_default && fsops::is_text(&e.path) {
-            spawn(&format!("shadow-term --working-directory={} -e {} {p}", sh_quote(&self.cwd.to_string_lossy()), editor()));
+            spawn(&format!("cd {} && exec {}", sh_quote(&self.cwd.to_string_lossy()), shadow_apps::terminal_exec(&format!("{} {p}", editor()))));
         } else {
             spawn(&format!("xdg-open {p}"));
         }
@@ -233,10 +233,10 @@ impl App for Files {
             (_, "o") => self.open(true),
             (_, "e") => {
                 if let Some(e) = self.entries.get(self.nav.sel).filter(|e| !e.dir) {
-                    spawn(&format!("shadow-term -e {} {}", editor(), sh_quote(&e.path.to_string_lossy())));
+                    spawn(&shadow_apps::terminal_exec(&format!("{} {}", editor(), sh_quote(&e.path.to_string_lossy()))));
                 }
             }
-            (_, "t") => spawn(&format!("shadow-term --working-directory={}", sh_quote(&self.cwd.to_string_lossy()))),
+            (_, "t") => spawn(&shadow_apps::terminal_here(&self.cwd.to_string_lossy())),
             (_, " ") => {
                 if let Some(e) = self.entries.get(self.nav.sel) {
                     if !self.marked.remove(&e.path) {

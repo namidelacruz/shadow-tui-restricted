@@ -140,12 +140,26 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (112);
+- unit tests in every crate (117);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 8.1.0 (on a real niri 26.04 build, nested, the version you run):
+  - The hub works on it: field following the pointer, ring and panels, typing on the desktop, glass windows, the summoned hub with the windows behind it blurred. `shadow-hub doctor` and `switch` work too.
+  - niri 26.04 accepts the generated config:
+    - with blur;
+    - with the solid colour off;
+    - with foot as the terminal;
+    - with `nautilus --new-window` as the file manager.
+  - niri 25.08 rejects the blur lines. `shadow setup niri` then writes the config without them and names niri's reason (`unexpected node \`background-effect\``).
+  - Preferences and the crash log run in it. Unit tests cover:
+    - the crash log reading seeded logs: fallback, refused config, hub exit, a panic named by its program;
+    - the terminal flags;
+    - the solid-colour and default-app binds;
+    - command sanitising.
+  - Found and fixed: an empty `XDG_STATE_HOME`/`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` was taken as a path (relative to the current folder). That affected the config directory of every app, the logs and the trash. Empty now counts as unset.
 - 8.0.2 (the 8.0.1 fixes checked end to end in nested niri 25.08, plus what was still untested):
   - `shadow-hub switch` from a 7.x session (side bar + wallpaper running, the 7.x niri config) gives: hub and supervisor running, bar and wallpaper stopped, `Mod+Space` bound to the hub in the rewritten config. niri reloaded the new config live without errors (its log shows one more config load). `shadow-hub use-bar` switches back. The updater now runs that same command, so its switch is the tested one.
   - Keyboard on the desktop works: one click on the empty desktop, then typing "foot", opens APPS with the search filled in. That gives background-layer `on-demand` focus under niri.

@@ -206,7 +206,7 @@ fn url_encode(p: &str) -> String {
 
 /// freedesktop.org Trash (~/.local/share/Trash), so file managers and `gio trash --restore` see it.
 pub fn trash(p: &Path) -> std::io::Result<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/share")).join("Trash");
+    let base = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(".local/share")).join("Trash");
     std::fs::create_dir_all(base.join("files"))?;
     std::fs::create_dir_all(base.join("info"))?;
     let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());

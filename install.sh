@@ -495,7 +495,7 @@ verify() {
   else v=$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' shadow-tui-restricted 2>/dev/null || true); fi
   [[ -n $v && $v != *"not installed"* ]] && pass "package shadow-tui-restricted $v" || bad "package shadow-tui-restricted is not installed"
   local b missing=()
-  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-hub shadow-greet \
+  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-hub shadow-prefs shadow-greet \
            shadow-sessiond shadow-displayd shadow-term shadow-powerd; do
     f=/opt/shadow-tui/bin/$b
     if [[ ! -x $f ]]; then missing+=("$b"); elif ldd "$f" 2>/dev/null | grep -q "not found"; then missing+=("$b(libraries)"); fi
