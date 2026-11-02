@@ -11,7 +11,7 @@
 %bcond_without compositor
 
 Name:           shadow-tui-restricted
-Version:        8.2.1
+Version:        8.2.2
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -148,6 +148,10 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.2.2-1
+- hub: the core no longer shows the time (the clock widget does); it reads SHADOW / MENU
+  (CLOSE while the menu is open)
+
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.2.1-1
 - fail-safe: install.sh, build-rpm.sh and the PKGBUILD refuse a checkout folder whose path has
   spaces, brackets or other shell characters (a second download: "(1)", "- Copy") and print the

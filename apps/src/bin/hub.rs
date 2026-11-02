@@ -877,11 +877,11 @@ impl Hub {
             let (a0, a1) = (i as f32 * std::f32::consts::TAU / 48.0, (i as f32 + 0.6) * std::f32::consts::TAU / 48.0);
             f.cv.wline(c.0 + ir * a0.cos(), c.1 + ir * a0.sin(), c.0 + ir * a1.cos(), c.1 + ir * a1.sin(), th.violet, 0.45);
         }
-        let (hh, mm, _) = local_hm();
+        // the time lives in the clock widget only; the core names itself and what a click does
         let pt = th.font_pt;
-        let ty = (c.1 - f.line_h(pt * 1.6) as f32 * 0.62) as i32;
-        label_c(f, c.0 as i32, ty, &format!("{hh:02}:{mm:02}"), pt * 1.6, th.text, true, 1.0);
-        label_c(f, c.0 as i32, (c.1 + f.px(6.0) as f32) as i32, if self.open { "CLOSE" } else { "SHADOW" }, pt * 0.8, if self.open { th.amber } else { th.cyan }, true, 0.9);
+        let ty = (c.1 - f.line_h(pt * 1.25) as f32 * 0.62) as i32;
+        label_c(f, c.0 as i32, ty, "SHADOW", pt * 1.25, th.text, true, 1.0);
+        label_c(f, c.0 as i32, (c.1 + f.px(6.0) as f32) as i32, if self.open { "CLOSE" } else { "MENU" }, pt * 0.8, if self.open { th.amber } else { th.cyan }, true, 0.9);
         hits.push((Hit::Core, Rect { x: (c.0 - r) as i32, y: (c.1 - r) as i32, w: (2.0 * r) as i32, h: (2.0 * r) as i32 }));
     }
 

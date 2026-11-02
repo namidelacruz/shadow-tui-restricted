@@ -1,6 +1,6 @@
 [package]
 name = "shadow-compositor"
-version = "8.2.1"
+version = "8.2.2"
 edition = "2021"
 description = "Shadow TUI Restricted display server: independent Smithay Wayland compositor with the orbital ring layout, tactical shaders, bezel HUD, greeter and lock screen"
 license = "MIT"
