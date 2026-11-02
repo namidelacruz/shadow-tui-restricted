@@ -15,7 +15,7 @@
 # config file, so a niri update can't break Shadow's binaries.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
-pkgver=8.2.0
+pkgver=8.2.1
 pkgrel=1
 pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on niri — vertex wireframe hub, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')
@@ -27,6 +27,12 @@ _src="$startdir"
 _bundle=${SHADOW_BUNDLE:-1}
 
 prepare() {
+  # fail-safe: no building from a folder like "shadow-tui-restricted (1)" (see install.sh)
+  case "$_src" in *[!A-Za-z0-9._/+-]*)
+    error "this folder can't be built from: $_src"
+    error "rename it so its path has only letters, digits and . _ - + /  (e.g. drop \" (1)\")"
+    return 1 ;;
+  esac
   cd "$_src"
   export RUSTUP_TOOLCHAIN=stable
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"

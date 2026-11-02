@@ -6,9 +6,12 @@
 %global debug_package %{nil}
 %global _build_id_links none
 %global __brp_check_rpaths %{nil}
+# Shadow's own compositor (preview). Leave it out with  --without compositor  — the niri session
+# does not need it; packaging/build-rpm.sh does this by itself when only the compositor fails to build
+%bcond_without compositor
 
 Name:           shadow-tui-restricted
-Version:        8.2.0
+Version:        8.2.1
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -56,24 +59,36 @@ logs, behaviour monitor, fs-verity, PQC SSH, zeroize. Nothing is active until yo
 # built in place from %{shadow_src}
 
 %build
-cd %{shadow_src}
-export CARGO_TARGET_DIR=%{?shadow_target}%{!?shadow_target:%{_builddir}/target}
-cargo build --release --locked --workspace
+cd "%{shadow_src}"
+export CARGO_TARGET_DIR="%{?shadow_target}%{!?shadow_target:%{_builddir}/target}"
+# Fedora's %%build exports RUSTFLAGS meant for its own Rust packages (codegen-units=1, full debug
+# info). With no debuginfo package here that only multiplies memory and build time — enough to run a
+# laptop out of memory on the compositor — so the workspace's release profile decides instead.
+unset RUSTFLAGS
+# one compile job per ~2 GB of available memory (SHADOW_BUILD_JOBS overrides)
+jobs=${SHADOW_BUILD_JOBS:-$(awk -v n="$(nproc)" '/^MemAvailable/{j=int($2/2097152); if(j<1)j=1; if(j>n)j=n; print j}' /proc/meminfo)}
+cargo build --release --locked --workspace -j "$jobs" %{!?with_compositor:--exclude shadow-compositor}
 
 %check
-cd %{shadow_src}
-export CARGO_TARGET_DIR=%{?shadow_target}%{!?shadow_target:%{_builddir}/target}
-cargo test --release --locked --workspace
+cd "%{shadow_src}"
+export CARGO_TARGET_DIR="%{?shadow_target}%{!?shadow_target:%{_builddir}/target}"
+# Fedora's %%build exports RUSTFLAGS meant for its own Rust packages (codegen-units=1, full debug
+# info). With no debuginfo package here that only multiplies memory and build time — enough to run a
+# laptop out of memory on the compositor — so the workspace's release profile decides instead.
+unset RUSTFLAGS
+# one compile job per ~2 GB of available memory (SHADOW_BUILD_JOBS overrides)
+jobs=${SHADOW_BUILD_JOBS:-$(awk -v n="$(nproc)" '/^MemAvailable/{j=int($2/2097152); if(j<1)j=1; if(j>n)j=n; print j}' /proc/meminfo)}
+cargo test --release --locked --workspace -j "$jobs" %{!?with_compositor:--exclude shadow-compositor}
 for m in modules/*.lua; do "$CARGO_TARGET_DIR/release/shadow" healer check "$m"; done
 for s in system/wifi-helper system/wifi-device-helper system/greeter-wrapper system/shadow-session system/shadow-tui.sleep packaging/install-files.sh packaging/post-install.sh; do sh -n "$s"; done
 if command -v niri >/dev/null; then
-  "$CARGO_TARGET_DIR/release/shadow-niri-gen" > %{_builddir}/niri-check.kdl && niri validate -c %{_builddir}/niri-check.kdl
+  "$CARGO_TARGET_DIR/release/shadow-niri-gen" > "%{_builddir}/niri-check.kdl" && niri validate -c "%{_builddir}/niri-check.kdl"
 fi
 
 %install
-export CARGO_TARGET_DIR=%{?shadow_target}%{!?shadow_target:%{_builddir}/target}
-SHADOW_VERSION=%{version}-%{release} sh %{shadow_src}/packaging/install-files.sh %{buildroot} rpm "$CARGO_TARGET_DIR" %{shadow_src} main
-sh %{shadow_src}/packaging/install-files.sh %{buildroot} rpm "$CARGO_TARGET_DIR" %{shadow_src} sec
+export CARGO_TARGET_DIR="%{?shadow_target}%{!?shadow_target:%{_builddir}/target}"
+SHADOW_VERSION=%{version}-%{release} sh "%{shadow_src}/packaging/install-files.sh" "%{buildroot}" rpm "$CARGO_TARGET_DIR" "%{shadow_src}" main
+sh "%{shadow_src}/packaging/install-files.sh" "%{buildroot}" rpm "$CARGO_TARGET_DIR" "%{shadow_src}" sec
 
 %post
 if [ "$1" -eq 1 ]; then /opt/shadow-tui/lib/post-install.sh install; else /opt/shadow-tui/lib/post-install.sh upgrade; fi
@@ -113,7 +128,9 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system-sleep/shadow-tui
 /usr/share/polkit-1/actions/org.shadownetwork.wifi.policy
 /usr/share/wayland-sessions/shadow-tui.desktop
+%if %{with compositor}
 /usr/share/wayland-sessions/shadow-tui-own.desktop
+%endif
 /usr/share/applications/shadow-*.desktop
 %config(noreplace) /etc/pam.d/shadow-lock
 %config(noreplace) /etc/pam.d/shadow-passtest
@@ -131,6 +148,16 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.2.1-1
+- fail-safe: install.sh, build-rpm.sh and the PKGBUILD refuse a checkout folder whose path has
+  spaces, brackets or other shell characters (a second download: "(1)", "- Copy") and print the
+  exact command to rename it; nothing is changed. --check and --uninstall still work from anywhere
+- build: paths quoted in the spec, so a checkout folder with spaces or brackets in its name
+  (e.g. "shadow-tui-restricted (1)") no longer stops %%build with a shell syntax error
+- build: Fedora's RUSTFLAGS no longer applied (full debug info, one codegen unit); compile jobs
+  follow available memory; Shadow's own compositor can be left out (--without compositor)
+- build-rpm.sh: full log in ~/.local/state/shadow-tui/build-rpm.log, the compiler's error shown on
+  failure, retried with one job when out of memory, or without the compositor preview when only it fails
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.2.0-1
 - hub speed: layer compositing by spans, field quality (high / battery 30 fps / low half-res)
   chosen by power source and hardware, shorter easing, widget redraws only on change

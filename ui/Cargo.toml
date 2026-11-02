@@ -1,6 +1,6 @@
 [package]
 name = "shadow-ui"
-version = "8.2.0"
+version = "8.2.1"
 edition = "2021"
 description = "Shadow TUI Restricted shared 2D UI toolkit: Wayland surfaces (window, layer, lock), fractional scaling with automatic text-size correction, CPU-rendered canvas, mapped fonts"
 license = "MIT"

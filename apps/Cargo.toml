@@ -1,6 +1,6 @@
 [package]
 name = "shadow-apps"
-version = "8.2.0"
+version = "8.2.1"
 edition = "2021"
 description = "Shadow TUI Restricted applications, each its own 2D Wayland app: launcher, network, config, files, lock, updater"
 license = "MIT"

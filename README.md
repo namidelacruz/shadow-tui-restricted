@@ -59,6 +59,10 @@ git clone <this repo> && cd shadow-tui-restricted
 ./install.sh --uninstall
 ```
 
+The checkout's folder path may only hold letters, digits and `. _ - + /`. A second download such as `shadow-tui-restricted (1)` or `… - Copy` is refused before anything changes, and the installer prints the exact `mv` command to rename it. Packaging tools paste that path into shell scripts, where a bracket or space breaks the build. `--check` and `--uninstall` work from any folder.
+
+If a build fails, the compiler's own error is printed and the full log is kept in `~/.local/state/shadow-tui/build-rpm.log` (Fedora/RHEL).
+
 What it does on each system:
 
 | | Arch | Fedora 41+ | RHEL family 10 | RHEL family 9 |

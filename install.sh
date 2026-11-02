@@ -51,6 +51,27 @@ while (($#)); do
 done
 [[ $EUID -ne 0 ]] || die "run as your normal user; sudo is used where needed."
 
+# ── fail-safe: the checkout folder's name ───────────────────────────────
+# A second download lands in "shadow-tui-restricted (1)" or "… - Copy"; brackets, spaces, quotes
+# and other shell characters in that path break the package build (rpmbuild and makepkg paste it
+# into shell scripts). Nothing is installed from such a folder: rename it first. --check and
+# --uninstall build nothing, so they still work from anywhere.
+path_safe() { [[ $1 =~ ^[A-Za-z0-9._/+-]+$ ]]; }
+if ((!CHECK && !UNINSTALL)) && ! path_safe "$SRC"; then
+  bad=$(printf '%s' "$SRC" | tr -d 'A-Za-z0-9._/+-' | fold -w1 | sort -u | sed 's/^ $/space/' | tr '\n' ' ')
+  clean=$(basename "$SRC" | sed -E 's/ *\([0-9]+\)$//; s/ - Copy( \([0-9]+\))?$//; s/[^A-Za-z0-9._+-]+/-/g; s/^-+|-+$//g')
+  [[ -n $clean ]] || clean=shadow-tui-restricted
+  dest="$(dirname "$SRC")/$clean"
+  # a folder above it has these characters too: move the checkout into home instead
+  path_safe "$dest" || dest="$HOME/shadow-tui-restricted"
+  [[ -e $dest ]] && dest="$dest-$(date +%Y%m%d)"
+  warn "this folder can't be installed from: $SRC"
+  warn "its path contains: ${bad% }  (only letters, digits and . _ - + / are allowed)"
+  warn "this is usually a second download, like \"(1)\" or \"- Copy\". Nothing was changed. Move it and run again:"
+  printf '\n    mv %q %q && %q/install.sh\n\n' "$SRC" "$dest" "$dest" >&2
+  exit 2
+fi
+
 # ── which distribution ──────────────────────────────────────────────────
 OSR=${SHADOW_OS_RELEASE:-/etc/os-release}
 [[ -r "$OSR" ]] || die "cannot read $OSR"
@@ -496,12 +517,14 @@ verify() {
   else v=$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' shadow-tui-restricted 2>/dev/null || true); fi
   [[ -n $v && $v != *"not installed"* ]] && pass "package shadow-tui-restricted $v" || bad "package shadow-tui-restricted is not installed"
   local b missing=()
-  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-hub shadow-prefs shadow-craft shadow-compositor shadowctl shadow-greet \
+  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-hub shadow-prefs shadow-craft shadow-greet \
            shadow-sessiond shadow-displayd shadow-term shadow-powerd; do
     f=/opt/shadow-tui/bin/$b
     if [[ ! -x $f ]]; then missing+=("$b"); elif ldd "$f" 2>/dev/null | grep -q "not found"; then missing+=("$b(libraries)"); fi
   done
-  ((${#missing[@]})) && bad "programs missing or broken: ${missing[*]}" || pass "all 12 programs present, libraries resolved"
+  ((${#missing[@]})) && bad "programs missing or broken: ${missing[*]}" || pass "all programs present, libraries resolved"
+  if [[ -x /opt/shadow-tui/bin/shadow-compositor ]]; then pass "Shadow's own compositor (preview) present"
+  else wrn "Shadow's own compositor (preview) was left out of this build — niri is unaffected$([[ $FAM == arch ]] || echo "; see ~/.local/state/shadow-tui/build-rpm.log")"; fi
   if have niri; then
     if niri_ok; then pass "niri $(niri_version) ($(command -v niri))"; else bad "niri $(niri_version) is older than $NIRI_MIN — re-run ./install.sh"; fi
     local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state/niri.kdl"
