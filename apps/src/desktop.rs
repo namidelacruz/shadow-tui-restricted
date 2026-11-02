@@ -81,7 +81,8 @@ fn parse_desktop(path: &PathBuf, id: &str) -> Option<Entry> {
         id: format!("app:{id}"),
         name: kv.get("Name")?.clone(),
         detail: kv.get("GenericName").or_else(|| kv.get("Comment")).cloned().unwrap_or_default(),
-        tag: "app",
+        // Craft apps installed by shadow-craft get their own tag (listed together, "craft" filters)
+        tag: if kv.contains_key("X-Shadow-Craft") { "craft" } else { "app" },
         cmd: exec.clone(),
         terminal: is_true("Terminal"),
         keywords: kv.get("Keywords").cloned().unwrap_or_default(),

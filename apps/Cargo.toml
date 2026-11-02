@@ -1,6 +1,6 @@
 [package]
 name = "shadow-apps"
-version = "8.1.1"
+version = "8.2.0"
 edition = "2021"
 description = "Shadow TUI Restricted applications, each its own 2D Wayland app: launcher, network, config, files, lock, updater"
 license = "MIT"
@@ -46,6 +46,10 @@ name = "shadow-passfix"
 path = "src/bin/passfix.rs"
 
 [[bin]]
+name = "shadow-craft"
+path = "src/bin/craft.rs"
+
+[[bin]]
 name = "shadow-prefs"
 path = "src/bin/prefs.rs"
 
@@ -63,3 +67,4 @@ shadow-niri = { path = "../niri" }
 libc = "0.2"
 png = "0.17"
 zune-jpeg = "0.4"
+serde_json = "1"

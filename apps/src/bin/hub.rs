@@ -46,7 +46,7 @@ mod hud;
 
 use shadow_apps::cfg::{get_in, set_in};
 use shadow_apps::desktop::{self, Entry};
-use shadow_apps::vertex::Field;
+use shadow_apps::vertex::{Field, Quality};
 use shadow_apps::wall::{self, Img, Mode};
 use shadow_apps::{atomic_write, cmd_out, config_path, spawn};
 use shadow_ui::calloop::channel::{self, Sender};
@@ -189,6 +189,28 @@ fn human(b: f64) -> String {
 }
 
 impl Stats {
+    /// The widgets' visible values, rounded the way they are shown (CPU / RAM to 5 %, watts to
+    /// 1 W, traffic to its displayed unit): equal signatures mean an identical picture.
+    fn signature(&self) -> String {
+        let r5 = |v: f32| (v * 20.0).round() as i32;
+        let cpu = self.cpu.back().copied().unwrap_or(0.0);
+        let left = hud::time_left(&self.power, self.watts).map(|(m, c)| format!("{}{}", m / 5, c)).unwrap_or_default();
+        format!(
+            "{}|{}|{:?}|{}|{}|{:?}|{}|{}|{}|{:?}|{:?}",
+            r5(cpu),
+            r5(self.ram.0),
+            self.npu.map(r5),
+            self.power.battery.unwrap_or(0),
+            left,
+            self.watts.map(|w| w.round() as i32),
+            self.mode,
+            self.wifi.ssid,
+            human(self.net.0) + &human(self.net.1),
+            self.workspaces,
+            self.temp
+        )
+    }
+
     fn sample(&mut self, with_workspaces: bool) {
         let stat = std::fs::read_to_string("/proc/stat").unwrap_or_default();
         if let Some(l) = stat.lines().next() {
@@ -332,6 +354,12 @@ struct Hub {
     overlay: Vec<u8>,
     overlay_size: (usize, usize),
     overlay_dirty: bool,
+    /// byte ranges of the layer that hold anything (the rest is fully transparent)
+    spans: Vec<(usize, usize)>,
+    /// [hub] quality: None = auto (by power source and hardware)
+    quality_pref: Option<Quality>,
+    /// what the widgets showed last time (see Stats::signature)
+    shown_sig: String,
 }
 
 fn conf() -> String {
@@ -388,10 +416,29 @@ impl Hub {
             overlay: vec![],
             overlay_size: (0, 0),
             overlay_dirty: true,
+            spans: vec![],
+            quality_pref: None,
+            shown_sig: String::new(),
         };
+        h.quality_pref = get_in(&h.wall_text, "hub", "quality").and_then(|v| Quality::parse(&v));
         h.stats.sample(true);
+        h.field.set_quality(h.wanted_quality());
         h.build();
         h
+    }
+
+    /// High on mains power, lighter on battery, unless [hub] quality says otherwise
+    fn wanted_quality(&self) -> Quality {
+        if let Some(q) = self.quality_pref {
+            return q;
+        }
+        let on_battery = !self.stats.power.ac && self.stats.power.battery.is_some();
+        let hw = shadow_apps::hw::profile();
+        match (hw.tier, on_battery) {
+            (shadow_apps::hw::Tier::Low, _) => Quality::LOW,
+            (_, true) => Quality::BATTERY,
+            _ => Quality::HIGH,
+        }
     }
 
     fn animating(&self) -> bool {
@@ -427,6 +474,7 @@ impl Hub {
                         Item { label: e.name.clone(), detail: e.detail.clone(), kind: Kind::Run(format!("@{}\u{1}{cmd}", e.id)) }
                     })
                     .collect();
+                items.push(item("Craft apps…", "ArtCraft suite: install · update · launch", Kind::Run("shadow-craft".into())));
                 items.push(item("All apps…", "the full launcher", Kind::Run("shadow-launch".into())));
                 items
             }
@@ -697,6 +745,9 @@ impl Hub {
         self.composed.clear();
         self.widgets = load_widgets(&self.wall_text);
         self.reactive = get_in(&self.wall_text, "hub", "reactive").map(|v| v.trim() != "false").unwrap_or(true);
+        self.quality_pref = get_in(&self.wall_text, "hub", "quality").and_then(|v| Quality::parse(&v));
+        let q = self.wanted_quality();
+        self.field.set_quality(q);
     }
 
     /// Wallpaper image pixels for an output, when the wallpaper is an image (not "vertices").
@@ -1050,9 +1101,9 @@ impl Hub {
 
     fn widget_rect(&self, f: &Frame, i: usize, size: (i32, i32)) -> Rect {
         let (w, h) = match self.widgets[i].id {
-            "clock" => (250.0, 104.0),
+            "clock" => (260.0, 104.0),
             "workspaces" => (300.0, 70.0),
-            _ => (250.0, 118.0),
+            _ => (270.0, 118.0),
         };
         let (w, h) = (f.px(w), f.px(h));
         let (fx, fy) = self.widgets[i].pos;
@@ -1213,8 +1264,11 @@ impl App for Hub {
     }
 
     fn tick_ms(&self) -> u64 {
-        if self.animating() || self.field.moving() {
+        if self.animating() {
             16
+        } else if self.field.moving() {
+            // the field moves at the quality's frame rate (30 on battery)
+            (1000 / self.field.quality().fps.max(10)) as u64
         } else {
             1000
         }
@@ -1237,13 +1291,24 @@ impl App for Hub {
                 redraw = true;
             }
         }
-        if self.last_sample.elapsed().as_millis() >= 3000 {
+        // widgets: every 3 s on mains power, every 10 s on battery; the hub layer is redrawn only
+        // when something they show actually changed (each redraw of the layer costs a full frame)
+        let on_battery = !self.stats.power.ac && self.stats.power.battery.is_some();
+        let every = if on_battery { 10_000 } else { 3_000 };
+        if self.last_sample.elapsed().as_millis() >= every {
             self.last_sample = Instant::now();
             self.stats.sample(true);
-            if self.page.is_some_and(|p| matches!(PAGES[p], "POWER" | "NETWORK" | "TASKS")) {
+            let q = self.wanted_quality();
+            let quality_changed = self.field.set_quality(q);
+            let panel_live = self.page.is_some_and(|p| matches!(PAGES[p], "POWER" | "NETWORK" | "TASKS"));
+            if panel_live {
                 self.rebuild_keep();
             }
-            redraw = true;
+            let sig = self.stats.signature();
+            if quality_changed || panel_live || sig != self.shown_sig {
+                self.shown_sig = sig;
+                redraw = true;
+            }
         }
         let (h, m, _) = local_hm();
         if (h, m) != self.clock {
@@ -1500,20 +1565,55 @@ impl App for Hub {
                 self.draw_panel(&mut of, c, (w, h), &mut hits);
                 self.hits.insert(f.index, hits);
             }
+            self.spans = spans(&layer, uw);
             self.overlay = layer;
             self.overlay_size = (uw, uh);
             self.overlay_dirty = false;
         }
-        composite(f.cv.buf, &self.overlay);
+        composite(f.cv.buf, &self.overlay, &self.spans);
     }
 }
 
-/// premultiplied `src` over `dst` (same size); fully transparent pixels — most of the layer — are
-/// skipped
-fn composite(dst: &mut [u8], src: &[u8]) {
+/// Byte ranges of `layer` with anything in them, row by row (gaps under 16 px are bridged), so
+/// compositing skips the ~90 % that is fully transparent without looking at it.
+fn spans(layer: &[u8], w: usize) -> Vec<(usize, usize)> {
+    let mut v = vec![];
+    if w == 0 {
+        return v;
+    }
+    for (y, row) in layer.chunks_exact(w * 4).enumerate() {
+        let mut start: Option<usize> = None;
+        let mut last = 0;
+        for x in 0..w {
+            if row[x * 4 + 3] != 0 {
+                if start.is_none() {
+                    start = Some(x);
+                } else if x - last > 16 {
+                    let s0 = start.unwrap();
+                    v.push(((y * w + s0) * 4, (y * w + last + 1) * 4));
+                    start = Some(x);
+                }
+                last = x;
+            }
+        }
+        if let Some(s0) = start {
+            v.push(((y * w + s0) * 4, (y * w + last + 1) * 4));
+        }
+    }
+    v
+}
+
+/// premultiplied `src` over `dst` (same size), only within `spans`
+fn composite(dst: &mut [u8], src: &[u8], spans: &[(usize, usize)]) {
     if dst.len() != src.len() {
         return;
     }
+    for &(a, b) in spans {
+        composite_range(&mut dst[a..b], &src[a..b]);
+    }
+}
+
+fn composite_range(dst: &mut [u8], src: &[u8]) {
     for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
         let a = s[3] as u32;
         if a == 0 {
@@ -1638,7 +1738,7 @@ fn log(msg: &str) {
 
 /// niri (the session) still answers; when it doesn't, the session is over and nothing restarts
 fn session_alive() -> bool {
-    std::env::var_os("NIRI_SOCKET").is_some_and(|p| std::path::Path::new(&p).exists()) && cmd_out(&["niri", "msg", "version"]).0 == 0
+    shadow_niri::session_alive()
 }
 
 extern "C" fn ignore_signal(_: libc::c_int) {}
@@ -1789,13 +1889,15 @@ fn doctor() -> i32 {
     let text = conf();
     let enabled = get_in(&text, "hub", "enabled").map(|v| v.trim() != "false").unwrap_or(true);
     line(Some(enabled), "[hub] enabled", if enabled { "yes".into() } else { "no — the side bar and wallpaper are used (set enabled = true)".into() });
-    let (c, v) = cmd_out(&["niri", "--version"]);
-    line(Some(c == 0), "niri", if c == 0 { v.trim().to_string() } else { "not found".into() });
-    line(Some(session_alive()), "niri session", if session_alive() { "running, answers niri msg".into() } else { "not reachable from here (NIRI_SOCKET unset or niri not running)".into() });
+    let own = shadow_niri::shadow_compositor().is_some();
+    let (c, v) = if own { (0, shadow_niri::msg(&["version"]).unwrap_or_default()) } else { cmd_out(&["niri", "--version"]) };
+    line(Some(c == 0), "compositor", if c == 0 { v.trim().trim_start_matches("Compositor version: ").to_string() } else { "niri not found".into() });
+    line(Some(session_alive()), "session", if session_alive() { "running, answers".into() } else { "not reachable from here (no NIRI_SOCKET / SHADOW_SOCKET, or the compositor is not running)".into() });
     let kdl = shadow_niri::config::path();
     let cfg = std::fs::read_to_string(&kdl).unwrap_or_default();
-    let spawns = cfg.contains("spawn-at-startup \"shadow-hub\"");
-    line(Some(spawns || !enabled), "niri config starts the hub", if spawns { format!("yes ({})", kdl.display()) } else { format!("no — {} still has the old startup programs; run: shadow-hub switch", kdl.display()) });
+    // Shadow's own compositor starts the hub itself ([hub] enabled)
+    let spawns = cfg.contains("spawn-at-startup \"shadow-hub\"") || own;
+    line(Some(spawns || !enabled), "session starts the hub", if own { "yes (Shadow's own compositor: [hub] enabled)".into() } else if spawns { format!("yes ({})", kdl.display()) } else { format!("no — {} still has the old startup programs; run: shadow-hub switch", kdl.display()) });
     if cfg.contains("spawn-at-startup") && !cfg.contains("overview {") && spawns {
         line(None, "niri compatibility mode", "on (this niri is older; cosmetic lines left out)".into());
     }
@@ -1837,6 +1939,10 @@ fn doctor() -> i32 {
         fld.draw(&mut shadow_ui::Canvas { buf: &mut buf, w, h }, &th);
     }
     let ms = t.elapsed().as_secs_f64() * 100.0;
+    let hwp = shadow_apps::hw::profile();
+    line(None, "hardware", hwp.summary());
+    let qp = get_in(&text, "hub", "quality").map(|v| v.trim_matches('"').to_string()).unwrap_or_else(|| "auto".into());
+    line(None, "field quality", format!("{qp} (auto: high on mains power, battery on battery, low on {} hardware)", "slow"));
     line(Some(ms < 25.0), "field frame at 2560×1600", format!("{ms:.1} ms{}", if ms >= 25.0 { " — slow here; [hub] reactive = false keeps it still" } else { "" }));
     let lp = log_path();
     let tail: Vec<String> = std::fs::read_to_string(&lp).unwrap_or_default().lines().rev().take(8).map(String::from).collect();

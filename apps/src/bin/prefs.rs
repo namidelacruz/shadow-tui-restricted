@@ -4,6 +4,7 @@
 //!
 //!   shadow-prefs          DEFAULTS: file manager, terminal, background
 //!   shadow-prefs crash    CRASH LOG: what crashed, and what is holding changes back
+//!   shadow-prefs report   write the crash report file and print its path (works on a text console)
 //!
 //! DEFAULTS:
 //! - **File manager:** sets the XDG default for folders (`xdg-mime … inode/directory`) and
@@ -239,17 +240,28 @@ fn crash_rows() -> Vec<Row> {
         r.body = vec![l.clone()];
         crashes.push(r);
     }
-    // Rust panics of Shadow programs (their stderr goes to the session log)
-    for (i, l) in slines.iter().enumerate() {
+    // Rust panics of Shadow programs (their stderr goes to the session log; the hub's to hub.log)
+    let mut panic_src: Vec<String> = slines.clone();
+    panic_src.extend(hl.iter().cloned());
+    let slines_all = panic_src;
+    let mut seen_panics = std::collections::HashSet::new();
+    for (i, l) in slines_all.iter().enumerate() {
+        let slines = &slines_all;
         if l.contains("panicked at") || l.contains("panicked:") {
             // "panicked at apps/src/bin/net.rs:212:9" → shadow-net; else a "shadow-…" word in the line
-            let prog = l
+            let lead = l.split_whitespace().next().filter(|w| w.starts_with("shadow-")).map(|w| w.trim_end_matches(':').to_string());
+            let prog = lead.or_else(|| l
                 .split("src/bin/")
                 .nth(1)
                 .and_then(|r| r.split(".rs").next())
                 .map(|b| format!("shadow-{b}"))
-                .or_else(|| l.split(['\'', ' ', ':']).find(|w| w.starts_with("shadow")).map(String::from))
+                .or_else(|| l.split(['\'', ' ', ':']).find(|w| w.starts_with("shadow")).map(String::from)))
                 .unwrap_or_else(|| "a Shadow program".into());
+            // the same panic repeated (a restart loop) is one entry
+            let key = l.split("panicked").nth(1).unwrap_or(l).trim().to_string();
+            if !seen_panics.insert(format!("{prog}{key}")) {
+                continue;
+            }
             let mut r = row('✗', format!("{prog} panicked"), l.trim().chars().take(140).collect::<String>(), Act::None);
             r.body = slines[i.saturating_sub(3)..(i + 6).min(slines.len())].to_vec();
             r.when = slines[..i].iter().rev().map(|x| stamp(x)).find(|s| !s.is_empty()).unwrap_or_default();
@@ -291,7 +303,8 @@ fn crash_rows() -> Vec<Row> {
     }
     v.extend(crashes);
     v.extend([
-        row('·', "Save a report", "all of the above, the hub check and the recent logs in one file in your home folder", Act::Report),
+        row('·', "Save a report", "one plain-text file in ~/shadow-reports (personal details replaced) — attach or upload it yourself", Act::Report),
+        row('·', "Open the reports folder", "~/shadow-reports", Act::Exec("xdg-open ~/shadow-reports".into())),
         row('·', "Check the hub", "shadow-hub doctor", Act::Term("shadow-hub doctor".into())),
         row('·', "Open the fix center", "app problems, tasks, login, updates, desktop", Act::Exec("shadow-fix".into())),
         row('·', "Clear the Shadow logs", "empties session.log and hub.log (press twice)", Act::Clear),
@@ -299,31 +312,118 @@ fn crash_rows() -> Vec<Row> {
     v
 }
 
+/// Where saved reports go: one plain-text file each, for you to attach or upload by hand
+fn reports_dir() -> PathBuf {
+    home().join("shadow-reports")
+}
+
+/// Replace personal details in a report: your user name, home folder and computer name, Wi-Fi
+/// network names, MAC and IP addresses, e-mail addresses, and anything shaped like a password or
+/// token. What stays is what's needed to fix a crash.
+pub fn redact(text: &str, user: &str, hostname: &str, ssids: &[String]) -> String {
+    let mut t = text.to_string();
+    let home_dir = home().to_string_lossy().to_string();
+    if home_dir.len() > 1 {
+        t = t.replace(&home_dir, "~");
+    }
+    for (needle, with) in [(user, "<user>"), (hostname, "<host>")] {
+        if needle.len() >= 2 {
+            t = t.replace(needle, with);
+        }
+    }
+    for s in ssids.iter().filter(|s| s.len() >= 2) {
+        t = t.replace(s.as_str(), "<wifi>");
+    }
+    let mut out = String::with_capacity(t.len());
+    for line in t.lines() {
+        let low = line.to_lowercase();
+        // whole value after a secret-looking key
+        let secret_key = ["password", "passwd", "psk", "token", "secret", "api_key", "apikey", "authorization", "private_key"].iter().find(|k| low.contains(*k));
+        if let Some(k) = secret_key {
+            if let Some(pos) = low.find(*k) {
+                let rest = &line[pos + k.len()..];
+                if let Some(sep) = rest.find([':', '=']) {
+                    out.push_str(&line[..pos + k.len() + sep + 1]);
+                    out.push_str(" <redacted>\n");
+                    continue;
+                }
+            }
+        }
+        let words: Vec<String> = line
+            .split_inclusive([' ', '\t', ',', ';', '(', ')', '[', ']', '"', '\''])
+            .map(|w| {
+                let core = w.trim_end_matches([' ', '\t', ',', ';', '(', ')', '[', ']', '"', '\'']);
+                let tail = &w[core.len()..];
+                let red = if is_mac(core) {
+                    "<mac>".to_string()
+                } else if is_ipv4(core) {
+                    "<ip>".to_string()
+                } else if core.contains('@') && core.contains('.') && !core.starts_with('@') && core.len() > 5 {
+                    "<email>".to_string()
+                } else if core.starts_with("ghp_") || core.starts_with("github_pat_") || core.starts_with("gho_") || core.starts_with("sk-") || (core.len() >= 32 && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') && core.chars().any(|c| c.is_ascii_digit()) && core.chars().any(|c| c.is_ascii_uppercase()) && core.chars().any(|c| c.is_ascii_lowercase())) {
+                    "<token>".to_string()
+                } else {
+                    core.to_string()
+                };
+                red + tail
+            })
+            .collect();
+        out.push_str(&words.concat());
+        out.push('\n');
+    }
+    out
+}
+
+fn is_mac(s: &str) -> bool {
+    let p: Vec<&str> = s.split(':').collect();
+    p.len() == 6 && p.iter().all(|x| x.len() == 2 && x.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn is_ipv4(s: &str) -> bool {
+    let s = s.split('/').next().unwrap_or(s);
+    let p: Vec<&str> = s.split('.').collect();
+    p.len() == 4 && p.iter().all(|x| !x.is_empty() && x.len() <= 3 && x.parse::<u16>().is_ok_and(|v| v <= 255)) && !s.starts_with("0.") && s != "127.0.0.1"
+}
+
 fn write_report(rows: &[Row]) -> Result<PathBuf, String> {
-    let date = cmd_out(&["date", "+%Y%m%d-%H%M"]).1.trim().to_string();
-    let p = home().join(format!("shadow-report-{date}.txt"));
+    let date = cmd_out(&["date", "+%Y%m%d-%H%M%S"]).1.trim().to_string();
+    let dir = reports_dir();
+    let p = dir.join(format!("shadow-report-{date}.txt"));
     let mut t = String::new();
-    t.push_str(&format!("Shadow TUI Restricted report — {}\n", cmd_out(&["date", "-Is"]).1.trim()));
-    for (label, args) in [("shadow", vec!["shadow", "--version"]), ("niri", vec!["niri", "--version"]), ("kernel", vec!["uname", "-r"])] {
+    t.push_str(&format!("Shadow TUI Restricted crash report — {}\n", cmd_out(&["date", "-Is"]).1.trim()));
+    t.push_str("Personal details (user and computer name, Wi-Fi names, MAC / IP / e-mail addresses, passwords and tokens) are replaced by <placeholders>.\nRead it before you send it: it is plain text.\n\n");
+    for (label, args) in [("shadow", vec!["shadow", "--version"]), ("niri", vec!["niri", "--version"]), ("kernel", vec!["uname", "-r"]), ("os", vec!["sh", "-c", ". /etc/os-release && echo \"$PRETTY_NAME\""])] {
         t.push_str(&format!("{label}: {}\n", cmd_out(&args).1.lines().next().unwrap_or("?").trim()));
     }
+    t.push_str(&format!("hardware: {}\n", shadow_apps::hw::profile().summary()));
     t.push_str("\n== hub check (shadow-hub doctor) ==\n");
     t.push_str(&cmd_out(&["shadow-hub", "doctor"]).1);
     t.push_str("\n== crash log ==\n");
-    for r in rows.iter().filter(|r| !matches!(r.act, Act::Report | Act::Clear) && r.text != "Check the hub" && r.text != "Open the fix center") {
+    for r in rows.iter().filter(|r| !matches!(r.act, Act::Report | Act::Clear | Act::Exec(_)) && r.text != "Check the hub") {
         t.push_str(&format!("[{}] {} — {}\n", r.lvl, r.text, r.detail));
         for b in &r.body {
             t.push_str(&format!("      {b}\n"));
         }
     }
     let sd = state_dir();
-    for (name, n) in [("session.log", 200), ("hub.log", 80)] {
+    for (name, n) in [("session.log", 300), ("hub.log", 120)] {
         t.push_str(&format!("\n== {name} (last {n} lines) ==\n"));
         for l in tail(&sd.join(name), n) {
             t.push_str(&l);
             t.push('\n');
         }
     }
+    let user = std::env::var("USER").unwrap_or_default();
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_string();
+    let ssids: Vec<String> = cmd_out(&["nmcli", "-t", "-f", "NAME", "connection", "show"]).1.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && !l.starts_with("lo")).collect();
+    let mut t = redact(&t, &user, &host, &ssids);
+    // keep it attachable everywhere: at most 1 MB, the newest part kept
+    if t.len() > 1_000_000 {
+        let cut = t.len() - 1_000_000;
+        let cut = (cut..t.len()).find(|i| t.is_char_boundary(*i)).unwrap_or(cut);
+        t = format!("[… earlier lines cut to keep the report under 1 MB]\n{}", &t[cut..]);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     atomic_write(&p, &t).map_err(|e| e.to_string())?;
     Ok(p)
 }
@@ -450,10 +550,18 @@ impl Prefs {
                 spawn(&format!("shadow-term --hold -e sh -c {}", sh_quote(&cmd)));
                 self.msg = (format!("opened a terminal: {cmd}"), false);
             }
-            Act::Exec(cmd) => spawn(&cmd),
+            Act::Exec(cmd) => {
+                if cmd.contains("shadow-reports") {
+                    let _ = std::fs::create_dir_all(reports_dir());
+                }
+                spawn(&cmd)
+            }
             Act::Report => {
                 self.msg = match write_report(&self.rows) {
-                    Ok(p) => (format!("saved {}", p.display()), false),
+                    Ok(p) => {
+                        let copied = std::process::Command::new("wl-copy").arg(p.to_string_lossy().to_string()).stdin(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+                        (format!("saved {}{}", p.display(), if copied { " (path copied)" } else { "" }), false)
+                    }
                     Err(e) => (format!("could not save the report: {e}"), true),
                 }
             }
@@ -649,6 +757,19 @@ impl App for Prefs {
 }
 
 fn main() {
+    // on a text console too: write the report and print where it is
+    if std::env::args().nth(1).as_deref() == Some("report") {
+        match write_report(&crash_rows()) {
+            Ok(p) => {
+                println!("{}", p.display());
+                std::process::exit(0)
+            }
+            Err(e) => {
+                eprintln!("shadow-prefs: {e}");
+                std::process::exit(1)
+            }
+        }
+    }
     let page = match std::env::args().nth(1).as_deref() {
         Some("crash") | Some("crashes") | Some("log") => 1,
         _ => 0,
@@ -666,6 +787,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reports_hide_personal_details() {
+        let t = "user nami on nami-laptop at /home/nami/x\nwlan0 ssid=UC-Secure bssid 3c:7c:3f:aa:bb:cc ip 192.168.1.42/24\npsk=hunter2hunter2\nmail nami@example.com token ghp_ABCdef1234567890ABCdef1234567890ab\npanicked at apps/src/bin/net.rs:10:5 (0.9.2)\n";
+        let r = redact(t, "nami", "nami-laptop", &["UC-Secure".to_string()]);
+        for gone in ["nami", "UC-Secure", "3c:7c:3f", "192.168", "hunter2", "example.com", "ghp_"] {
+            assert!(!r.contains(gone), "{gone} still in: {r}");
+        }
+        assert!(r.contains("panicked at apps/src/bin/net.rs:10:5 (0.9.2)"), "the useful part stays: {r}");
+        assert!(r.contains("<mac>") && r.contains("<ip>") && r.contains("<wifi>") && r.contains("<redacted>"));
+    }
+
+    #[test]
     fn timestamps_from_log_lines() {
         assert_eq!(stamp("2026-11-02T05:13:42-06:00 the hub exited"), "2026-11-02 05:13:42");
         assert_eq!(stamp("wrote /x"), "");
@@ -677,7 +809,7 @@ mod tests {
         let sd = d.join("shadow-tui");
         std::fs::create_dir_all(&sd).unwrap();
         std::env::set_var("XDG_STATE_HOME", &d);
-        std::fs::write(sd.join("hub.log"), "2026-11-02T05:13:42-06:00 the hub exited (signal: 11 (SIGSEGV)) after 6 s\n2026-11-02T05:13:44-06:00 falling back to the side bar and the wallpaper: it stopped 3 times\n").unwrap();
+        std::fs::write(sd.join("hub.log"), "shadow-hub panicked: panicked at apps/src/vertex.rs:205:16:\ncopy_from_slice: source slice length (16400644) does not match destination slice length (16400704)\n2026-11-02T05:13:42-06:00 the hub exited (signal: 11 (SIGSEGV)) after 6 s\nshadow-hub panicked: panicked at apps/src/vertex.rs:205:16:\n2026-11-02T05:13:44-06:00 falling back to the side bar and the wallpaper: it stopped 3 times\n").unwrap();
         std::fs::write(sd.join("session.log"), "shadow setup niri: niri rejected the generated config — kept the current one\nunexpected node `foo`\nthread 'main' panicked at apps/src/bin/net.rs:10:5:\nboom\n").unwrap();
         let rows = crash_rows();
         let has = |t: &str| rows.iter().any(|r| r.text.contains(t));
@@ -685,6 +817,8 @@ mod tests {
         assert!(has("niri refused the new config"), "rejected config shown");
         assert!(has("exited and was restarted"), "hub exit shown");
         assert!(rows.iter().any(|r| r.text == "shadow-net panicked"), "the panicking program is named");
+        // the hub's own panic, from hub.log, once even though it repeated
+        assert_eq!(rows.iter().filter(|r| r.text == "shadow-hub panicked").count(), 1);
         // what holds changes back comes before the crashes
         let held = rows.iter().position(|r| r.text.contains("niri refused")).unwrap();
         let crash = rows.iter().position(|r| r.text.contains("exited and was restarted")).unwrap();

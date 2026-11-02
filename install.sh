@@ -433,7 +433,8 @@ rpm_install() {
   have dnf || ((DRY)) || die "dnf not found"
   [[ $FAM == el ]] && el_repos
   say "Build tools"
-  dnf_require gcc gcc-c++ make git curl pkgconf-pkg-config pam-devel libxkbcommon-devel rpm-build
+  dnf_require gcc gcc-c++ make git curl pkgconf-pkg-config pam-devel libxkbcommon-devel rpm-build \
+    systemd-devel libinput-devel libseat-devel libdrm-devel mesa-libgbm-devel mesa-libEGL-devel wayland-devel
   ensure_rust
   # the spec's own BuildRequires, exactly as rpmbuild will check them
   run sudo $DNF builddep -y "$SRC/packaging/shadow-tui-restricted.spec" || warn "dnf builddep could not read the spec; using the list above"
@@ -495,7 +496,7 @@ verify() {
   else v=$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' shadow-tui-restricted 2>/dev/null || true); fi
   [[ -n $v && $v != *"not installed"* ]] && pass "package shadow-tui-restricted $v" || bad "package shadow-tui-restricted is not installed"
   local b missing=()
-  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-hub shadow-prefs shadow-greet \
+  for b in shadow shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-hub shadow-prefs shadow-craft shadow-compositor shadowctl shadow-greet \
            shadow-sessiond shadow-displayd shadow-term shadow-powerd; do
     f=/opt/shadow-tui/bin/$b
     if [[ ! -x $f ]]; then missing+=("$b"); elif ldd "$f" 2>/dev/null | grep -q "not found"; then missing+=("$b(libraries)"); fi

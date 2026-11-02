@@ -206,7 +206,8 @@ pub fn install(yes: bool) -> i32 {
     if niri_config(false) == 0 {
         info(&format!("niri config: {}", shadow_niri::config::path().display()));
     }
-    if sys::which("xdg-mime").is_some() {
+    // the folder default is Shadow's file manager unless one was chosen in Preferences
+    if sys::which("xdg-mime").is_some() && st::get_in(&std::fs::read_to_string(st::state_dir().join("config.toml")).unwrap_or_default(), "defaults", "files").is_none() {
         sys::run(&["xdg-mime", "default", "shadow-files.desktop", "inode/directory"]);
     }
     user_units(&["daemon-reload"]);
@@ -294,6 +295,10 @@ pub fn niri_gen(text: &str) -> shadow_niri::config::Gen {
     if let Some(v) = get("input", "natural_scroll") {
         g.natural_scroll = v != "false";
     }
+    // blur costs GPU time on every frame behind a blurred window: none on software rendering
+    if software_rendering() {
+        g.blur = false;
+    }
     if let Some(v) = get("hub", "enabled") {
         g.hub = v != "false";
     }
@@ -309,6 +314,21 @@ pub fn niri_gen(text: &str) -> shadow_niri::config::Gen {
     g.pinned_scales = pinned_scales(text);
     g.macros = std::fs::read_to_string(st::state_dir().join("macros.list")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '_')).collect();
     g
+}
+
+/// No 3D-capable GPU driver (same test as the UI's theme): blur would cost CPU on every frame
+fn software_rendering() -> bool {
+    let root = std::path::PathBuf::from(std::env::var_os("SHADOW_SYS_ROOT").filter(|v| !v.is_empty()).unwrap_or_else(|| "/".into()));
+    if root.join("dev/dxg").exists() {
+        return false;
+    }
+    let Ok(rd) = std::fs::read_dir(root.join("sys/class/drm")) else { return true };
+    !rd.flatten().any(|e| {
+        let n = e.file_name().to_string_lossy().to_string();
+        n.starts_with("card")
+            && !n.contains('-')
+            && std::fs::read_link(e.path().join("device/driver")).ok().and_then(|t| t.file_name().map(|f| f.to_string_lossy().to_string())).is_some_and(|d| !matches!(d.as_str(), "vmwgfx" | "bochs-drm" | "bochs" | "cirrus" | "simpledrm" | "efifb" | "hyperv_drm" | "vboxvideo" | "qxl"))
+    })
 }
 
 /// `shadow setup niri`: regenerate niri's config from config.toml; niri validates it before it

@@ -1,7 +1,9 @@
 //! Shared code for the Shadow TUI Restricted applications.
 pub mod cfg;
+pub mod craft;
 pub mod desktop;
 pub mod fsops;
+pub mod hw;
 pub mod pam;
 pub mod vertex;
 pub mod wall;

@@ -42,6 +42,22 @@ pub fn config() -> toml::Table {
     std::fs::read_to_string(state_dir().join("config.toml")).ok().and_then(|s| s.parse::<toml::Table>().ok()).unwrap_or_default()
 }
 
+/// No GPU driver that accelerates 3D (none, or a basic virtual one): translucent windows then cost
+/// the compositor CPU time on every frame, so glass defaults to opaque. WSLg composites on Windows.
+pub fn software_rendering() -> bool {
+    let root = PathBuf::from(std::env::var_os("SHADOW_SYS_ROOT").filter(|v| !v.is_empty()).unwrap_or_else(|| "/".into()));
+    if root.join("dev/dxg").exists() {
+        return false;
+    }
+    let Ok(rd) = std::fs::read_dir(root.join("sys/class/drm")) else { return true };
+    !rd.flatten().any(|e| {
+        let n = e.file_name().to_string_lossy().to_string();
+        n.starts_with("card")
+            && !n.contains('-')
+            && std::fs::read_link(e.path().join("device/driver")).ok().and_then(|t| t.file_name().map(|f| f.to_string_lossy().to_string())).is_some_and(|d| !matches!(d.as_str(), "vmwgfx" | "bochs-drm" | "bochs" | "cirrus" | "simpledrm" | "efifb" | "hyperv_drm" | "vboxvideo" | "qxl"))
+    })
+}
+
 pub fn hex(s: &str) -> Option<Rgb> {
     let h = s.trim().trim_start_matches('#');
     if h.len() != 6 {
@@ -92,7 +108,7 @@ impl Theme {
             if let Some(c) = col("violet") { t.violet = c; }
             if let Some(r) = look.get("radius").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))) { t.radius = (r as f32).clamp(0.0, 24.0); }
             let num = |k: &str| look.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
-            if let Some(o) = num("window_opacity") { t.window_opacity = (o as f32).clamp(0.4, 1.0); }
+            if let Some(o) = num("window_opacity") { t.window_opacity = (o as f32).clamp(0.4, 1.0); } else if software_rendering() { t.window_opacity = 1.0; }
             if let Some(c) = num("chamfer") { t.chamfer = (c as f32).clamp(0.0, 32.0); }
             if let Some(o) = look.get("opacity").and_then(|v| v.as_float()) { t.bg_alpha = (o as f32).clamp(0.3, 1.0); }
         }

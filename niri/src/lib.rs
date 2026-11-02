@@ -13,8 +13,42 @@ fn niri() -> Command {
     c
 }
 
+/// Which compositor this session runs: niri, or Shadow's own (shadow-compositor). Shadow's own
+/// exports SHADOW_SOCKET and answers the same questions in niri's format (`niri …` on its socket).
+pub fn shadow_compositor() -> Option<std::path::PathBuf> {
+    if std::env::var_os("NIRI_SOCKET").is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    std::env::var_os("SHADOW_SOCKET").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).filter(|p| p.exists())
+}
+
+fn compositor_ask(sock: &std::path::Path, line: &str) -> Result<String, String> {
+    use std::io::{Read, Write};
+    let mut s = std::os::unix::net::UnixStream::connect(sock).map_err(|e| format!("shadow-compositor: {e}"))?;
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    s.write_all(format!("{line}\n").as_bytes()).map_err(|e| e.to_string())?;
+    let mut out = String::new();
+    s.read_to_string(&mut out).map_err(|e| e.to_string())?;
+    let out = out.trim_end().to_string();
+    match out.strip_prefix("error: ") {
+        Some(e) => Err(e.to_string()),
+        None => Ok(out),
+    }
+}
+
+/// The running session answers (niri, or Shadow's own compositor)
+pub fn session_alive() -> bool {
+    match shadow_compositor() {
+        Some(sock) => compositor_ask(&sock, "ping").is_ok(),
+        None => std::env::var_os("NIRI_SOCKET").is_some_and(|p| std::path::Path::new(&p).exists()) && msg(&["version"]).is_ok(),
+    }
+}
+
 /// `niri msg <args>`; Ok(stdout) on success.
 pub fn msg(args: &[&str]) -> Result<String, String> {
+    if let Some(sock) = shadow_compositor() {
+        return compositor_ask(&sock, &format!("niri {}", args.join(" ")));
+    }
     let out = niri().arg("msg").args(args).output().map_err(|e| format!("niri: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -38,7 +72,7 @@ pub fn action(args: &[&str]) -> Result<(), String> {
 }
 
 pub fn available() -> bool {
-    std::env::var_os("NIRI_SOCKET").is_some()
+    std::env::var_os("NIRI_SOCKET").is_some() || shadow_compositor().is_some()
 }
 
 #[derive(Clone, Debug, PartialEq)]

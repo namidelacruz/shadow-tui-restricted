@@ -46,6 +46,7 @@ fn actions() -> Vec<Entry> {
         action("config", "Settings", "shadow-config · live settings matrix", "shadow-config"),
         action("files", "Files", "shadow-files", "shadow-files"),
         action("lock", "Lock screen", "", "shadow-lock"),
+        action("craft", "Craft apps", "shadow-craft · ArtCraft suite: install, update, launch (PhotoCraft, FilmCraft, …)", "shadow-craft"),
         action("prefs", "Default apps", "shadow-prefs · file manager, terminal, background", "shadow-prefs"),
         action("crash", "Crash log", "what crashed, what holds changes back · save a report", "shadow-prefs crash"),
         action("hub", "Hub", "Mod+Space · apps, settings, power, system, look", "shadow-hub summon"),
@@ -96,12 +97,14 @@ impl Launch {
                 v.push((usize::MAX, 0));
             }
         } else {
-            let (only_actions, q) = match q.strip_prefix('>') {
-                Some(r) => (true, r.trim().to_string()),
-                None => (false, q),
+            // ">" only Shadow's own actions, "+" only Craft apps
+            let (only, q) = match (q.strip_prefix('>'), q.strip_prefix('+')) {
+                (Some(r), _) => (Some("shadow"), r.trim().to_string()),
+                (_, Some(r)) => (Some("craft"), r.trim().to_string()),
+                _ => (None, q),
             };
             for (i, e) in self.all.iter().enumerate() {
-                if only_actions && e.tag != "shadow" {
+                if only.is_some_and(|t| e.tag != t) {
                     continue;
                 }
                 let hay = format!("{} {} {}", e.name, e.keywords, e.detail);
@@ -241,7 +244,7 @@ impl App for Launch {
                 _ => String::new(),
             };
             let est_w = if est.is_empty() { 0 } else { f.text_w(&est, pt * 0.9, false) };
-            let name_col = if e.tag == "shadow" { th.amber } else { th.text };
+            let name_col = if e.tag == "shadow" { th.amber } else if e.tag == "craft" { th.violet } else { th.text };
             let nw = f.text(x0, ty, &e.name, pt, name_col, sel);
             if !e.detail.is_empty() {
                 let max = w - pad - x0 - nw - est_w - f.px(40.0);

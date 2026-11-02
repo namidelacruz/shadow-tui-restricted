@@ -26,7 +26,9 @@ Version 6, with its own Smithay compositor and orbital ring, stays on the `v6` b
 | `shadow-fix` | Fix center (`Mod+Shift+H`), with four pages:<br>• **Issues:** known problems of your apps under niri, with repairs.<br>• **Tasks:** clear caches, unlock a Firefox profile, force quit, restart portals or PipeWire.<br>• **Login:** password and login problems.<br>• **Update:** update the system and Flatpaks, then triage. Repairs come after updates, never during them.<br>• **Desktop:** the **solid background colour** on/off, hub or side bar, the hub check, the crash log and the default apps.<br>On a text console the same is `shadow fix …`. |
 | `shadow-passfix` | Password repair, a plain text console that works on Ctrl+Alt+F2. See [Fix center](#fix-center-and-password-repair). |
 | `shadow-wallpaper` | The wallpaper picker (`Mod+W`). Its first entry is **Vertices**, the reactive 3D field (the default); the second is the generated aurora; then your images. With the hub on, `shadow-hub` draws the wallpaper. With `[hub] enabled = false`, this program draws it instead: on every monitor, also behind the overview, with Vertices as a still frame. |
-| `shadow-prefs` | Preferences, with two pages:<br>• **Defaults:** file manager, terminal and background, each applied at once. The file manager sets the XDG folder default and Mod+E. The terminal sets Mod+Return, the terminal apps opened from the hub, launcher and files, and `~/.config/xdg-terminals.list`.<br>• **Crash log:** what is holding changes back (an interrupted update, niri refusing the config, the hub's fallback, waiting `.shadow-new` defaults), then crashes newest first: core dumps of Shadow programs and niri, hub exits, panics, journal errors. Each line has its details below it, and **Save a report** writes everything to one file to read or send. `shadow-prefs crash` opens this page. |
+| `shadow-craft` | The **Craft App Suite** (ArtCraft: PhotoCraft, VectorCraft, FilmCraft, LightCraft, PdfCraft and the rest, 16 apps).<br>• **Install, update, remove, launch** per user, with no password. Apps go to `~/Applications/Craft` with a menu entry, AppImage first, else the tar.gz.<br>• **Checked:** every download is verified against the SHA-256 GitHub publishes for it. Only exact asset names from the app's own repository are used, and an app without a published checksum is not installed.<br>• **Elsewhere:** in the launcher type `+` to list only Craft apps; the hub's APPS panel has "Craft apps…".<br>• **Command line:** `shadow-craft list / install ID / remove ID / update`.<br>The catalog follows the official ArtCraft Launcher (MIT / Apache-2.0). |
+| `shadow-compositor` | **Shadow's own compositor (preview)**, the v6 Smithay compositor brought up to date.<br>• **Choose it:** at the login screen ("Shadow TUI Restricted (own compositor, preview)"), or with `[session] compositor = "shadow"`.<br>• **Same desktop:** it starts the hub (or the side bar), uses the same keys, and answers the questions the hub and apps ask niri, so they work unchanged.<br>• **Fallback:** if niri is missing or won't start, the session starts this compositor instead.<br>• **Not there yet:** XWayland, multiple monitors, the standard lock protocol (`shadow-lock` uses the compositor's built-in lock instead) and the niri event stream. |
+| `shadow-prefs` | Preferences, with two pages:<br>• **Defaults:** file manager, terminal and background, each applied at once. The file manager sets the XDG folder default and Mod+E. The terminal sets Mod+Return, the terminal apps opened from the hub, launcher and files, and `~/.config/xdg-terminals.list`.<br>• **Crash log:** what is holding changes back (an interrupted update, niri refusing the config, the hub's fallback, waiting `.shadow-new` defaults), then crashes newest first: core dumps of Shadow programs and niri, hub exits, panics, journal errors. Each line has its details below it. `shadow-prefs crash` opens this page.<br>• **Crash reports:** **Save a report** (or `shadow-prefs report` on a text console) writes one plain-text file to `~/shadow-reports/`, for you to attach or upload yourself; Shadow sends nothing anywhere. Your user and computer name, Wi-Fi network names, MAC / IP / e-mail addresses, passwords and tokens are replaced by placeholders, and the file is capped at 1 MB. |
 | `shadow-launch` | Launcher, opened as its own normal window (tiled, opaque), not an overlay over what's on screen. Click or press Enter to launch. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
 | `shadow-net` | Wi-Fi: networks, UC-Secure and eduroam setup, self-repair, with a live EAP/TLS log. |
 | `shadow-config` | Live settings matrix over `config.toml`. Changes apply immediately; if niri rejects one, it is rolled back. |
@@ -480,6 +482,32 @@ App windows are translucent glass. `[look] window_opacity` sets how much (defaul
 **Blur (niri 26.04).** On niri 26.04 or newer, the glass windows (settings, network, files, task manager, fix center, wallpaper) and the summoned hub get real blur behind them. On older niri, `shadow setup niri` leaves the blur out and keeps everything else.
 
 The other `[look]` options are `chamfer` (cut size, 0–32), `radius`, `violet`, `amber`, `cyan`, `obsidian`, `opacity` (the side bar), `font` and `font_pt`.
+
+**Quality and battery.** The field has three quality levels.
+- **high:** 60 fps.
+- **battery:** a lighter mesh at 30 fps.
+- **low:** half resolution, for slow machines.
+
+With `[hub] quality = "auto"` (the default), it uses high on mains power, battery on battery, and low on weak hardware. Weak hardware means 2 threads or fewer, under 4 GB of RAM, or no 3D-capable GPU. Other savings:
+- The widgets refresh every 3 s on mains power and every 10 s on battery, and redraw only when what they show changed.
+- The motion settles in about half the time it used to.
+
+Measured at 2560×1600, per frame while the mouse moves:
+
+| Version | Time per frame | One core while moving |
+|---|---|---|
+| 8.1.1 | 11.8 ms | about 71% |
+| 8.2, high | 8.3 ms | about 50% |
+| 8.2, battery (30 fps) | 7.4 ms | about 22% |
+
+**Any machine.** `shadow_apps::hw` reads the CPU, threads, memory, GPU driver, battery, virtual machine and WSL. It sets:
+- the field quality;
+- opaque windows and no blur when nothing renders in 3D (glass and blur would cost CPU on every frame);
+- what `shadow-hub doctor` and crash reports show.
+
+Display scaling was already computed from each panel's own size and resolution, so it adapts to any screen.
+
+**WSL (Windows).** In WSL, `shadow-session` detects Windows and runs the compositor as one window on the Windows desktop through WSLg. Choose niri or Shadow's own compositor as usual. It needs WSLg: Windows 11, or WSL from the Microsoft Store on Windows 10.
 
 **Cost.** Everything is drawn on the CPU, as before. The hub draws into its own layer, and that layer is redrawn only when something in it changes: menus, drags, or the widgets' numbers every 3 s. Frames where only the field moves just put that layer back over the field. The figures below are from the container, at about 60 Hz:
 

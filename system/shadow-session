@@ -56,11 +56,48 @@ run() {
     fi
 }
 update_gate
+
+# which compositor: niri (default) or Shadow's own (shadow-compositor): --compositor NAME, or
+# [session] compositor = "niri" | "shadow" in config.toml
+COMP=$(sed -n '/^\[session\]/,/^\[/{s/^compositor *= *"\{0,1\}\([a-z]*\)"\{0,1\}.*/\1/p}' "$STATE/config.toml" 2>/dev/null | head -n1)
+[ "$1" = "--compositor" ] && [ -n "$2" ] && COMP=$2
+[ -n "$COMP" ] || COMP=niri
+if [ "$COMP" = niri ] && ! command -v niri >/dev/null 2>&1 && command -v shadow-compositor >/dev/null 2>&1; then
+    echo "$(date -Is) niri is not installed — using Shadow's own compositor" >>"$LOG"
+    COMP=shadow
+fi
+
+# WSL (Windows Subsystem for Linux): no DRM, no greetd, no laptop hardware. The compositor runs as a
+# window on the Windows desktop through WSLg (it detects WAYLAND_DISPLAY and goes nested), and
+# hardware services are left alone.
+if grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
+    export SHADOW_WSL=1
+    echo "$(date -Is) WSL detected: running as a window on the Windows desktop" >>"$LOG"
+    if [ -z "$WAYLAND_DISPLAY" ] && [ -S /mnt/wslg/runtime-dir/wayland-0 ]; then
+        export WAYLAND_DISPLAY=wayland-0
+        [ -n "$XDG_RUNTIME_DIR" ] || export XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir
+    fi
+    if [ -z "$WAYLAND_DISPLAY" ] && [ -z "$DISPLAY" ]; then
+        echo "Shadow TUI on WSL needs WSLg (Windows 11, or Windows 10 with WSL from the Microsoft Store): no Wayland or X display found." >&2
+        exit 1
+    fi
+fi
+
+if [ "$COMP" = shadow ]; then
+    run shadow-compositor 2>>"$LOG"
+    exit $?
+fi
 run niri --session -c "$STATE/niri.kdl" 2>>"$LOG"
 rc=$?
 # failsafe: a config niri refuses can't keep you out — niri falls back to its built-in defaults
-# for an invalid file, and if it still died at once, start it once more with no Shadow config
+# for an invalid file, and if it still died at once, start it once more with no Shadow config;
+# and if niri itself won't run at all, Shadow's own compositor gets a go
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ]; then
     echo "$(date -Is) niri exited $rc — starting once more without the Shadow config" >>"$LOG"
     run niri --session 2>>"$LOG"
+    rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ] && command -v shadow-compositor >/dev/null 2>&1; then
+        echo "$(date -Is) niri exited $rc again — starting Shadow's own compositor instead" >>"$LOG"
+        run shadow-compositor 2>>"$LOG"
+    fi
 fi

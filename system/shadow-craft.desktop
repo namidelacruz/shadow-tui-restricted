@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Craft Apps
+GenericName=ArtCraft Suite Manager
+Comment=Shadow TUI Restricted: install, update and launch the Craft App Suite (PhotoCraft, VectorCraft, FilmCraft, …)
+Exec=shadow-craft
+Icon=applications-graphics
+Terminal=false
+Categories=Graphics;System;PackageManager;
+Keywords=craft;artcraft;photocraft;vectorcraft;filmcraft;install;update;

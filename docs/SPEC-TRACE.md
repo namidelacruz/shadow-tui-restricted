@@ -140,12 +140,30 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (117);
+- unit tests in every crate (131);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 8.2.0:
+  - **Hub speed:** measured per frame at 2560×1600 while the mouse moves, best of 5 runs on this 2-thread container.
+    - 8.1.1: 11.8 ms.
+    - 8.2, mains power: 8.3 ms at 60 fps.
+    - 8.2, battery: 7.4 ms at 30 fps.
+  - **Wallpaper and UI at your setup** (niri 26.04, 2560×1600, scale 1.5), no hub crashes:
+    - an image through the hub;
+    - the wallpaper program with the side bar (it was blank before 8.1.1);
+    - the vertex field.
+  - **Shadow's own compositor** (`shadow-compositor`, nested):
+    - it starts the hub;
+    - `doctor` finds it;
+    - it answers version, workspaces and focused-output the way niri does;
+    - the summoned hub and an app window work.
+    - Not done yet: XWayland, multiple monitors, ext-session-lock, the event stream. Not tested yet: its DRM/KMS mode on hardware, and WSL itself. WSL detection is unit-tested on a fake tree, and the session script's WSL branch is syntax-checked only.
+  - **Craft manager:** unit tests for asset choice by exact name and repository, a refused checksum mismatch, install, update, remove and the SHA256SUMS fallback. The GitHub API is unreachable from this container, so a real download wasn't run.
+  - **Crash reports:** redaction is unit-tested, and the file is written by the console command.
+  - **Hardware profile:** tiers are unit-tested for a laptop, a netbook, a desktop and WSL.
 - 8.1.0 (on a real niri 26.04 build, nested, the version you run):
   - The hub works on it: field following the pointer, ring and panels, typing on the desktop, glass windows, the summoned hub with the windows behind it blurred. `shadow-hub doctor` and `switch` work too.
   - niri 26.04 accepts the generated config:

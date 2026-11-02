@@ -8,12 +8,50 @@
 use shadow_ui::canvas::lerp;
 use shadow_ui::{Canvas, Theme};
 
-const GX: usize = 44; // terrain columns
-const GZ: usize = 26; // terrain rows (depth)
+/// How much the field draws. The hub picks one from the power source and the hardware profile
+/// ([hub] quality = auto | high | battery | low).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Quality {
+    /// terrain columns × rows (depth)
+    pub gx: usize,
+    pub gz: usize,
+    /// frames per second while the field moves
+    pub fps: u32,
+    /// draw at half resolution and scale up (slow machines)
+    pub half: bool,
+}
+
+impl Quality {
+    pub const HIGH: Quality = Quality { gx: 44, gz: 26, fps: 60, half: false };
+    pub const BATTERY: Quality = Quality { gx: 34, gz: 20, fps: 30, half: false };
+    pub const LOW: Quality = Quality { gx: 30, gz: 18, fps: 30, half: true };
+
+    pub fn parse(s: &str) -> Option<Quality> {
+        match s.trim().trim_matches('"') {
+            "high" => Some(Quality::HIGH),
+            "battery" | "medium" => Some(Quality::BATTERY),
+            "low" => Some(Quality::LOW),
+            _ => None,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        if *self == Quality::HIGH {
+            "high"
+        } else if *self == Quality::BATTERY {
+            "battery"
+        } else {
+            "low"
+        }
+    }
+}
 const Z0: f32 = 0.45;
 const Z1: f32 = 4.6;
 
 pub struct Field {
+    q: Quality,
+    /// half-resolution drawing (Quality::half): its own buffer, scaled up into the frame
+    half_buf: Vec<u8>,
     terrain: Vec<[f32; 3]>,
     ico: Vec<[f32; 3]>,
     ico_e: Vec<(usize, usize)>,
@@ -40,6 +78,21 @@ impl Default for Field {
 
 fn height(x: f32, z: f32) -> f32 {
     0.07 * (2.1 * x + 0.7 * z).sin() + 0.05 * (3.3 * z - 1.3 * x).sin() + 0.035 * (4.7 * x * 0.6 + 1.9 * z).cos() + 0.02 * (z * 1.3).sin() * (x * 6.0).cos()
+}
+
+fn terrain(q: Quality) -> Vec<[f32; 3]> {
+    let (gx, gz) = (q.gx.max(4), q.gz.max(4));
+    let mut t = Vec::with_capacity(gx * gz);
+    for j in 0..gz {
+        // rows packed closer near the camera so the perspective reads evenly
+        let tz = j as f32 / (gz - 1) as f32;
+        let z = Z0 + (Z1 - Z0) * tz.powf(1.25);
+        for i in 0..gx {
+            let x = -2.2 + 4.4 * i as f32 / (gx - 1) as f32;
+            t.push([x, -0.78 + height(x, z), z]);
+        }
+    }
+    t
 }
 
 /// Icosahedron subdivided once: 42 vertices, 120 edges, on the unit sphere.
@@ -110,18 +163,32 @@ fn icosphere() -> (Vec<[f32; 3]>, Vec<(usize, usize)>) {
 
 impl Field {
     pub fn new() -> Field {
-        let mut terrain = Vec::with_capacity(GX * GZ);
-        for j in 0..GZ {
-            // rows packed closer near the camera so the perspective reads evenly
-            let tz = j as f32 / (GZ - 1) as f32;
-            let z = Z0 + (Z1 - Z0) * tz.powf(1.25);
-            for i in 0..GX {
-                let x = -2.2 + 4.4 * i as f32 / (GX - 1) as f32;
-                terrain.push([x, -0.78 + height(x, z), z]);
-            }
-        }
+        Field::with_quality(Quality::HIGH)
+    }
+
+    pub fn with_quality(q: Quality) -> Field {
         let (ico, ico_e) = icosphere();
-        Field { terrain, ico, ico_e, bg: vec![], bg_size: (0, 0), cur: (0.5, 0.5), target: (0.5, 0.5), energy: 0.0, phase: 0.0, hover: 0.0, inside: false, last: None, scratch: vec![] }
+        Field { q, half_buf: vec![], terrain: terrain(q), ico, ico_e, bg: vec![], bg_size: (0, 0), cur: (0.5, 0.5), target: (0.5, 0.5), energy: 0.0, phase: 0.0, hover: 0.0, inside: false, last: None, scratch: vec![] }
+    }
+
+    pub fn quality(&self) -> Quality {
+        self.q
+    }
+
+    /// Change quality; true when it changed (the caller redraws)
+    pub fn set_quality(&mut self, q: Quality) -> bool {
+        if q == self.q {
+            return false;
+        }
+        if (q.gx, q.gz) != (self.q.gx, self.q.gz) {
+            self.terrain = terrain(q);
+        }
+        if q.half != self.q.half {
+            self.bg.clear();
+            self.bg_size = (0, 0);
+        }
+        self.q = q;
+        true
     }
 
     /// Pointer at (x, y) as a fraction of the surface.
@@ -145,19 +212,19 @@ impl Field {
     /// True while the field is still easing (the caller should keep stepping at ~60 Hz).
     pub fn moving(&self) -> bool {
         let h = if self.inside { 1.0 } else { 0.0 };
-        (self.target.0 - self.cur.0).abs() > 0.0006 || (self.target.1 - self.cur.1).abs() > 0.0006 || self.energy > 0.01 || (h - self.hover).abs() > 0.01
+        (self.target.0 - self.cur.0).abs() > 0.0015 || (self.target.1 - self.cur.1).abs() > 0.0015 || self.energy > 0.02 || (h - self.hover).abs() > 0.02
     }
 
     /// Advance the easing by one ~16 ms step; true while anything still moves.
     pub fn step(&mut self) -> bool {
-        let k = 0.16;
+        let k = 0.22;
         self.cur.0 += (self.target.0 - self.cur.0) * k;
         self.cur.1 += (self.target.1 - self.cur.1) * k;
-        self.energy *= 0.94;
+        self.energy *= 0.90;
         self.phase += 0.20;
         let h = if self.inside { 1.0 } else { 0.0 };
-        self.hover += (h - self.hover) * 0.12;
-        let moving = (self.target.0 - self.cur.0).abs() > 0.0006 || (self.target.1 - self.cur.1).abs() > 0.0006 || self.energy > 0.01 || (h - self.hover).abs() > 0.01;
+        self.hover += (h - self.hover) * 0.18;
+        let moving = (self.target.0 - self.cur.0).abs() > 0.0015 || (self.target.1 - self.cur.1).abs() > 0.0015 || self.energy > 0.02 || (h - self.hover).abs() > 0.02;
         if !moving {
             self.cur = self.target;
             self.energy = 0.0;
@@ -197,6 +264,47 @@ impl Field {
 
     /// Draw the whole background (opaque) into `cv`.
     pub fn draw(&mut self, cv: &mut Canvas, th: &Theme) {
+        if !self.q.half || cv.w < 4 || cv.h < 4 {
+            return self.draw_at(cv, th);
+        }
+        // half resolution: draw into a buffer a quarter the size, then double every pixel
+        let (hw, hh) = (cv.w / 2, cv.h / 2);
+        let mut buf = std::mem::take(&mut self.half_buf);
+        buf.resize(hw * hh * 4, 0);
+        self.draw_at(&mut Canvas { buf: &mut buf, w: hw, h: hh }, th);
+        let (w, h) = (cv.w, cv.h);
+        let stride = w * 4;
+        for sy in 0..hh {
+            let y = sy * 2;
+            if y >= h {
+                break;
+            }
+            // widen one source row into the destination row, then copy that row below it
+            {
+                let src = &buf[sy * hw * 4..(sy + 1) * hw * 4];
+                let dst = &mut cv.buf[y * stride..(y + 1) * stride];
+                for (sx, p) in src.chunks_exact(4).enumerate() {
+                    let d = sx * 8;
+                    if d + 8 <= dst.len() {
+                        dst[d..d + 4].copy_from_slice(p);
+                        dst[d + 4..d + 8].copy_from_slice(p);
+                    }
+                }
+                if w % 2 == 1 {
+                    let last = (hw - 1) * 4;
+                    dst[stride - 4..].copy_from_slice(&src[last..last + 4]);
+                }
+            }
+            for yy in [y + 1, if sy == hh - 1 { y + 2 } else { usize::MAX }] {
+                if yy < h {
+                    cv.buf.copy_within(y * stride..(y + 1) * stride, yy * stride);
+                }
+            }
+        }
+        self.half_buf = buf;
+    }
+
+    fn draw_at(&mut self, cv: &mut Canvas, th: &Theme) {
         let (w, h) = (cv.w, cv.h);
         if w == 0 || h == 0 {
             return;
@@ -237,20 +345,21 @@ impl Field {
         }
         let fog = |z: f32| (1.0 - (z - Z0) / (Z1 - Z0)).clamp(0.0, 1.0).powf(1.3);
         let col = |f: f32, g: f32| lerp(lerp(th.violet, th.cyan, f), th.amber, (g * 1.3).min(1.0));
-        for j in 0..GZ {
-            for i in 0..GX {
-                let a = self.scratch[j * GX + i];
+        let (gx, gz) = (self.q.gx.max(4), self.q.gz.max(4));
+        for j in 0..gz {
+            for i in 0..gx {
+                let a = self.scratch[j * gx + i];
                 let mut edge = |b: (f32, f32, f32, f32)| {
                     let f = fog((a.2 + b.2) / 2.0);
                     let g = (a.3 + b.3) / 2.0;
                     let alpha = 0.05 + 0.34 * f + 0.55 * g;
                     cv.wline(a.0, a.1, b.0, b.1, col(f, g), alpha);
                 };
-                if i + 1 < GX {
-                    edge(self.scratch[j * GX + i + 1]);
+                if i + 1 < gx {
+                    edge(self.scratch[j * gx + i + 1]);
                 }
-                if j + 1 < GZ {
-                    edge(self.scratch[(j + 1) * GX + i]);
+                if j + 1 < gz {
+                    edge(self.scratch[(j + 1) * gx + i]);
                 }
             }
         }

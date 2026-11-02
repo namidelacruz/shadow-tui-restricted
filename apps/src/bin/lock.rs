@@ -146,6 +146,14 @@ impl App for Lock {
 }
 
 fn main() {
+    // Shadow's own compositor locks with its built-in lock screen (it has no ext-session-lock)
+    if let Some(sock) = shadow_niri::shadow_compositor() {
+        use std::io::Write;
+        if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&sock) {
+            let _ = s.write_all(b"lock\n");
+            return;
+        }
+    }
     let host = std::fs::read_to_string("/etc/hostname").or_else(|_| std::fs::read_to_string("/proc/sys/kernel/hostname")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "localhost".into());
     let (tx, rx) = channel::channel::<String>();
     let l = Lock { tx, user: user(), host, pass: Input::secret(), msg: (String::new(), false), checking: false, failures: 0, caps: caps_led() };

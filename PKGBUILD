@@ -15,13 +15,13 @@
 # config file, so a niri update can't break Shadow's binaries.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
-pkgver=8.1.1
+pkgver=8.2.0
 pkgrel=1
 pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on niri — vertex wireframe hub, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')
 url="https://github.com/namidelacruz/shadow-tui-restricted"
 license=('MIT')
-makedepends=(cargo clang git pkgconf)
+makedepends=(cargo clang git pkgconf libinput libdrm seatd wayland)
 options=(!debug !lto)
 _src="$startdir"
 _bundle=${SHADOW_BUNDLE:-1}
@@ -61,7 +61,7 @@ _bundle_libs() {
 }
 
 package_shadow-tui-restricted() {
-  depends=(niri mesa libxkbcommon pam systemd fontconfig ttf-jetbrains-mono-nerd
+  depends=(niri mesa libinput libdrm seatd libxkbcommon pam systemd fontconfig ttf-jetbrains-mono-nerd
            networkmanager wpa_supplicant iproute2 util-linux kmod git openssh polkit wireplumber brightnessctl)
   optdepends=(
     'mate-polkit: password prompts for privileged actions (any polkit agent works; ./install.sh installs one)'

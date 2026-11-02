@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        8.1.1
+Version:        8.2.0
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -16,9 +16,11 @@ URL:            https://github.com/namidelacruz/shadow-tui-restricted
 ExclusiveArch:  x86_64 aarch64
 
 BuildRequires:  gcc gcc-c++ make git pkgconf-pkg-config pam-devel libxkbcommon-devel
+# shadow-compositor (Shadow's own compositor): DRM/KMS, input, seat
+BuildRequires:  systemd-devel libinput-devel libseat-devel libdrm-devel mesa-libgbm-devel mesa-libEGL-devel wayland-devel
 # cargo/rustc >= 1.89: the distribution's or rustup's (install.sh checks and provides one)
 
-Requires:       mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig
+Requires:       mesa-dri-drivers mesa-libEGL mesa-libgbm libinput libseat libxkbcommon pam systemd fontconfig
 # the apps draw all text themselves: a monospace font must exist
 Requires:       dejavu-sans-mono-fonts
 Requires:       NetworkManager wpa_supplicant iproute util-linux kmod git-core openssh-clients wireplumber polkit
@@ -111,6 +113,7 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system-sleep/shadow-tui
 /usr/share/polkit-1/actions/org.shadownetwork.wifi.policy
 /usr/share/wayland-sessions/shadow-tui.desktop
+/usr/share/wayland-sessions/shadow-tui-own.desktop
 /usr/share/applications/shadow-*.desktop
 %config(noreplace) /etc/pam.d/shadow-lock
 %config(noreplace) /etc/pam.d/shadow-passtest
@@ -128,6 +131,15 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.2.0-1
+- hub speed: layer compositing by spans, field quality (high / battery 30 fps / low half-res)
+  chosen by power source and hardware, shorter easing, widget redraws only on change
+- hardware profile (CPU, memory, GPU driver, battery, VM, WSL): quality, opaque windows and no
+  blur without 3D rendering; any machine, not just the Dell 14 Plus
+- shadow-craft: the Craft App Suite (ArtCraft) — install / update / remove / launch, SHA-256 checked
+- crash reports: one plain-text file in ~/shadow-reports with personal details replaced
+- shadow-compositor (preview): Shadow's own compositor hosts the hub and apps; niri-compatible
+  answers; chosen at login or [session] compositor; fallback when niri won't start; WSL detection
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.1.1-1
 - fix: shadow-hub crashed at start on a 2560x1600 panel at scale 1.5 (buffer 2561x1601 plus
   pool alignment padding); full-monitor surfaces now use the panel's own 2560x1600 pixels and
