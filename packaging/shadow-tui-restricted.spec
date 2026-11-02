@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        8.1.0
+Version:        8.1.1
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -128,6 +128,10 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.1.1-1
+- fix: shadow-hub crashed at start on a 2560x1600 panel at scale 1.5 (buffer 2561x1601 plus
+  pool alignment padding); full-monitor surfaces now use the panel's own 2560x1600 pixels and
+  apps always get exactly w x h pixels
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.1.0-1
 - shadow-prefs: default file manager, terminal and background; crash log (interrupted update,
   refused niri config, hub fallback, waiting defaults, core dumps, panics, journal errors) with

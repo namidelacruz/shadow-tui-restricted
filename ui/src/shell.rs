@@ -581,7 +581,21 @@ impl Shell {
             }
             let scale = s.scale;
             let (lw, lh) = s.size;
-            let (w, h) = (((lw as f64) * scale).round() as i32, ((lh as f64) * scale).round() as i32);
+            let (mut w, mut h) = (((lw as f64) * scale).round() as i32, ((lh as f64) * scale).round() as i32);
+            // a surface covering a whole monitor (background, lock): at a fractional scale the
+            // logical size is rounded up (2560 px / 1.5 = 1706.67 → 1707 → 2561 px), so the buffer
+            // would be a pixel larger than the panel. Use the panel's own pixels; the viewport
+            // still maps them onto the same logical area.
+            if !matches!(s.role, Role::Window(_)) {
+                if let Some((pw, ph)) = s.output.as_ref().and_then(|o| self.output_state.info(o)).and_then(|i| i.modes.iter().find(|m| m.current).map(|m| m.dimensions)) {
+                    // the mode is in the output's native orientation; covering surfaces match it
+                    // unrotated, and only a rounding overshoot of a pixel or two is trimmed
+                    if (1..=2).contains(&(w - pw)) && (0..=2).contains(&(h - ph)) || (0..=2).contains(&(w - pw)) && (1..=2).contains(&(h - ph)) {
+                        w = pw;
+                        h = ph;
+                    }
+                }
+            }
             let out_name = s.output.as_ref().and_then(|o| self.output_name(o));
             let ideal = out_name.as_ref().and_then(|n| outs.iter().find(|d| &d.name == n)).and_then(|d| d.ideal_scale());
             let corr = scale::text_correction(scale, ideal);
@@ -590,7 +604,9 @@ impl Shell {
             let want;
             {
                 let mut f = Frame {
-                    cv: Canvas { buf: canvas, w: w as usize, h: h as usize },
+                    // the pool hands out its slot rounded up (64-byte alignment): give the app
+                    // exactly the w×h pixels, so whole-frame copies always match in length
+                    cv: Canvas { buf: &mut canvas[..(w * h * 4) as usize], w: w as usize, h: h as usize },
                     scale: scale as f32,
                     text: (scale * corr) as f32,
                     fonts: &mut self.fonts,

@@ -202,7 +202,9 @@ impl Field {
             return;
         }
         self.background(w, h, th);
-        cv.buf.copy_from_slice(&self.bg);
+        // copy over exactly the w×h pixels (a buffer may carry padding past them)
+        let n = self.bg.len().min(cv.buf.len());
+        cv.buf[..n].copy_from_slice(&self.bg[..n]);
         let (fw, fh) = (w as f32, h as f32);
         let focal = fh * 0.95;
         let (cx, cy) = (fw / 2.0, fh * 0.5);
@@ -342,6 +344,16 @@ mod tests {
         f.leave();
         while f.step() {}
         assert_eq!(f.cursor(), (0.5, 0.5));
+    }
+
+    #[test]
+    fn padded_buffer_does_not_panic() {
+        // 2561×1601 (a 1.5 scale rounding up) in a pool slot rounded up to 64 bytes: 60 bytes extra
+        let (w, h) = (2561usize, 1601usize);
+        let mut buf = vec![0u8; w * h * 4 + 60];
+        let mut f = Field::new();
+        f.draw(&mut Canvas { buf: &mut buf, w, h }, &Theme::default());
+        assert_eq!(buf[3], 255, "drawn");
     }
 
     #[test]
