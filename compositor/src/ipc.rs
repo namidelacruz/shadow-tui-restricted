@@ -54,6 +54,11 @@ pub fn command(st: &mut State, line: &str) -> String {
                 "center": center, "windows": wins, "refresh_hz": st.refresh_hz, "locked": st.ui.is_some() && !st.greeter_mode,
                 "hud": st.hud_visible, "pointer_live": st.pointer_live, "lua_modules": st.lua.as_ref().map(|l| l.modules()).unwrap_or_default(),
                 "config_problem": st.cfg_problem,
+                "pointer": [st.pointer_loc.x, st.pointer_loc.y],
+                "tutorial": st.tutorial.as_ref().map(|t| serde_json::json!({
+                    "step": t.at, "steps": t.steps.len(), "done": t.done,
+                    "buttons": st.tut_buttons.iter().map(|(n, r)| serde_json::json!({ "name": n, "x": r.x, "y": r.y, "w": r.w, "h": r.h })).collect::<Vec<_>>(),
+                })),
             }).to_string()
         }
         "action" => {
@@ -87,6 +92,16 @@ pub fn command(st: &mut State, line: &str) -> String {
                 crate::input::ui_key(st, k, None);
             }
             "ok".into()
+        }
+        // test hook for automated tests only (the variable is never set in a real session)
+        "test-click" if std::env::var_os("SHADOW_TEST_INPUT").is_some() => {
+            let v: Vec<f64> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            if v.len() == 2 {
+                crate::input::test_click(st, v[0], v[1]);
+                "ok".into()
+            } else {
+                "error: test-click X Y".into()
+            }
         }
         "refresh" => match rest.parse::<u32>() {
             Ok(hz) => {
@@ -149,7 +164,31 @@ fn niri_compat(st: &mut State, args: &str) -> String {
         // one workspace: the ring
         ["workspaces"] => serde_json::json!([{ "id": 1, "idx": 1, "name": null, "output": output, "is_active": true, "is_focused": true, "active_window_id": focused }]).to_string(),
         ["focused-output"] => serde_json::json!({ "name": output }).to_string(),
-        ["outputs"] => serde_json::json!({ output.clone(): { "name": output, "make": "", "model": "", "logical": { "scale": st.scale() } } }).to_string(),
+        ["outputs"] => {
+            // niri's shape, so shadow-displayd and the settings app read modes and scale
+            let o = st.output.clone();
+            let (modes, cur, mm, make, model) = o.as_ref().map(|o| {
+                let modes: Vec<_> = o.modes();
+                let cur = o.current_mode().and_then(|c| modes.iter().position(|m| *m == c));
+                let pref = o.preferred_mode();
+                let pp = o.physical_properties();
+                (modes.iter().map(|m| serde_json::json!({ "width": m.size.w, "height": m.size.h, "refresh_rate": m.refresh, "is_preferred": Some(*m) == pref })).collect::<Vec<_>>(), cur, [pp.size.w, pp.size.h], pp.make, pp.model)
+            }).unwrap_or_default();
+            let (lw, lh) = st.output_size();
+            serde_json::json!({ output.clone(): {
+                "name": output, "make": make, "model": model, "physical_size": mm, "modes": modes, "current_mode": cur,
+                "logical": { "x": 0, "y": 0, "width": lw as i32, "height": lh as i32, "scale": st.scale(), "transform": "Normal" },
+            } }).to_string()
+        }
+        // shadow-displayd: scale changes apply live; mode / power are handled by the compositor itself
+        ["output", _, "scale", v] => match v.parse::<f64>() {
+            Ok(x) if (0.5..=4.0).contains(&x) => {
+                st.set_output_scale(x);
+                "ok".into()
+            }
+            _ => "error: scale must be 0.5-4".into(),
+        },
+        ["output", _, "mode", ..] | ["output", _, "on"] | ["output", _, "off"] => "ok".into(),
         ["focused-window"] => match focused.and_then(|id| st.win(id)) {
             Some(w) => serde_json::json!({ "id": w.id, "app_id": w.app_id, "title": w.title, "pid": w.pid }).to_string(),
             None => "null".into(),
@@ -163,7 +202,50 @@ fn niri_compat(st: &mut State, args: &str) -> String {
             crate::input::spawn(st, &cmd.join(" "));
             "ok".into()
         }
-        ["action", "toggle-overview"] => "ok".into(),
+        // niri's actions that Shadow's apps send, on this compositor's ring
+        ["action", a, rest @ ..] => {
+            let mapped = match *a {
+                "toggle-overview" | "center-column" | "move-window-to-floating" | "toggle-window-floating" | "power-off-monitors" => Some(""),
+                "focus-column-right-or-first" | "focus-column-right" | "focus-window-down" => Some("focus-next"),
+                "focus-column-left-or-last" | "focus-column-left" | "focus-window-up" => Some("focus-prev"),
+                "switch-preset-column-width" => Some("width-up"),
+                "switch-preset-column-width-back" => Some("width-down"),
+                "fullscreen-window" | "maximize-column" => Some("fullscreen"),
+                "close-window" => Some("close"),
+                "show-hotkey-overlay" => Some("tutorial open"),
+                "set-column-width" => {
+                    // "NN%": the nearest width preset
+                    let want = rest.first().and_then(|v| v.trim_end_matches('%').parse::<f64>().ok()).unwrap_or(65.0);
+                    if let Some(id) = focused {
+                        let presets = st.cfg.layout.presets.clone();
+                        let best = presets.iter().enumerate().min_by(|a, b| (*a.1 as f64 - want).abs().partial_cmp(&(*b.1 as f64 - want).abs()).unwrap()).map(|x| x.0).unwrap_or(0);
+                        st.transition(|_| {});
+                        if let Some(w) = st.wins.iter_mut().find(|w| w.id == id) {
+                            w.size.preset = best;
+                            w.size.full = false;
+                        }
+                        st.relayout();
+                    }
+                    Some("")
+                }
+                "focus-window" => {
+                    let id = rest.iter().skip_while(|x| **x != "--id").nth(1).and_then(|v| v.parse::<u64>().ok());
+                    if let Some(id) = id.filter(|id| st.win(*id).is_some()) {
+                        st.transition(|r| { r.focus(id); });
+                    }
+                    Some("")
+                }
+                _ => None,
+            };
+            match mapped {
+                Some("") => "ok".into(),
+                Some(act) => {
+                    crate::input::run_action(st, act);
+                    "ok".into()
+                }
+                None => format!("error: shadow-compositor has no niri action `{a}`"),
+            }
+        }
         _ => format!("error: shadow-compositor does not answer `{args}`"),
     }
 }

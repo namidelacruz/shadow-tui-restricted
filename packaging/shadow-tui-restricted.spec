@@ -11,7 +11,7 @@
 %bcond_without compositor
 
 Name:           shadow-tui-restricted
-Version:        8.2.2
+Version:        8.3.0
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -32,6 +32,8 @@ Requires:       NetworkManager wpa_supplicant iproute util-linux kmod git-core o
 Recommends:     niri
 # a polkit authentication agent: without one, actions that need a password fail instead of asking
 Recommends:     (mate-polkit or lxqt-policykit or polkit-gnome or lxpolkit)
+# X11 apps (older AppImages, Electron, Steam, Wine) on Shadow's own compositor; niri uses it too
+Recommends:     xwayland-satellite xorg-x11-server-Xwayland
 Recommends:     greetd terminus-fonts-console brightnessctl xdg-desktop-portal-gnome libnotify
 Recommends:     alsa-sof-firmware alsa-ucm google-noto-sans-cjk-fonts
 Suggests:       age gh iwd
@@ -148,6 +150,18 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.3.0-1
+- shadow-compositor: full mouse and touchpad support — the hub, menus, windows and popups, click a
+  ring node to bring it forward, Mod+scroll turns the ring; its own cursor shapes (cursor-shape-v1
+  and client cursors), hidden while typing; tap to click, natural scroll, pointer speed in [input];
+  pointer lock and relative motion for 3D apps; [input] pointer = "apps" keeps keyboard-first
+- shadow-compositor: FIELD TRAINING, a hotkey tutorial on first login (Mod+Shift+/ or Mod+F1 again)
+- shadow-compositor: every Shadow app works on it — DEFAULTS terminal / file manager, niri actions
+  the apps send, output details and scale, an event stream for the bar and session daemon,
+  xdg-activation, idle notification, X11 apps through xwayland-satellite (recommended package)
+- install.sh --gui: an installer window — the full desktop, or apps only (per user in ~/.local,
+  no session or system services); --apps "…", --remove-apps, a text menu without a display
+
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.2.2-1
 - hub: the core no longer shows the time (the clock widget does); it reads SHADOW / MENU
   (CLOSE while the menu is open)

@@ -34,6 +34,8 @@ pub fn init(event_loop: &mut EventLoop<'static, State>, state: &mut State) -> Re
     let formats = backend.renderer().dmabuf_formats();
     state.dmabuf_global = Some(state.dmabuf_state.create_global::<State>(&state.dh, formats));
     let damage = OutputDamageTracker::from_output(&output);
+    // the compositor draws its own cursor: hide the host's over the window
+    backend.window().set_cursor_visible(false);
     state.backend = Backend::Winit(WinitData { backend, damage });
 
     event_loop.handle().insert_source(winit, move |event, _, state| match event {

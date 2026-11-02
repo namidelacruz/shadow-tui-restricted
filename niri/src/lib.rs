@@ -36,6 +36,14 @@ fn compositor_ask(sock: &std::path::Path, line: &str) -> Result<String, String> 
     }
 }
 
+/// A command for Shadow's own compositor (config-reload, state, action …), when it runs this session.
+pub fn compositor_command(line: &str) -> Result<String, String> {
+    match shadow_compositor() {
+        Some(sock) => compositor_ask(&sock, line),
+        None => Err("not running under shadow-compositor".into()),
+    }
+}
+
 /// The running session answers (niri, or Shadow's own compositor)
 pub fn session_alive() -> bool {
     match shadow_compositor() {
@@ -289,6 +297,9 @@ impl Model {
 /// `niri msg --json event-stream`, line by line. Reconnects with a short back-off if niri
 /// restarts; `f` returning false stops the stream.
 pub fn event_stream(mut f: impl FnMut(&str) -> bool) {
+    if shadow_compositor().is_some() {
+        return compositor_event_stream(f);
+    }
     loop {
         let child: Option<Child> = niri().args(["msg", "--json", "event-stream"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok();
         if let Some(mut c) = child {
@@ -311,9 +322,88 @@ pub fn event_stream(mut f: impl FnMut(&str) -> bool) {
     }
 }
 
+/// Shadow's own compositor has no push stream: ask it twice a second and turn the differences
+/// into the same events niri sends (so the side bar and shadow-sessiond work unchanged).
+fn compositor_event_stream(mut f: impl FnMut(&str) -> bool) {
+    let mut last_ws = String::new();
+    let mut last: Vec<Value> = vec![];
+    let mut sent_initial = false;
+    loop {
+        let ok = (|| -> Option<()> {
+            let ws = json(&["workspaces"]).ok()?;
+            let wins = json(&["windows"]).ok()?;
+            let wins = wins.as_array().cloned().unwrap_or_default();
+            let ws_s = ws.to_string();
+            let mut lines = vec![];
+            if ws_s != last_ws {
+                lines.push(serde_json::json!({ "WorkspacesChanged": { "workspaces": ws } }).to_string());
+                last_ws = ws_s;
+            }
+            if !sent_initial {
+                lines.push(serde_json::json!({ "WindowsChanged": { "windows": wins } }).to_string());
+                sent_initial = true;
+            } else {
+                lines.extend(window_diff(&last, &wins));
+            }
+            last = wins;
+            for l in lines {
+                if !f(&l) {
+                    return None;
+                }
+            }
+            Some(())
+        })();
+        if ok.is_none() && (shadow_compositor().is_none() || !f("")) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// niri events for the change from `old` to `new` window lists
+pub fn window_diff(old: &[Value], new: &[Value]) -> Vec<String> {
+    let id = |v: &Value| v.get("id").and_then(|x| x.as_u64());
+    let mut out = vec![];
+    for w in new {
+        let prev = old.iter().find(|o| id(o) == id(w));
+        if prev != Some(w) {
+            out.push(serde_json::json!({ "WindowOpenedOrChanged": { "window": w } }).to_string());
+        }
+    }
+    for o in old {
+        if !new.iter().any(|w| id(w) == id(o)) {
+            out.push(serde_json::json!({ "WindowClosed": { "id": id(o) } }).to_string());
+        }
+    }
+    let focus = |l: &[Value]| l.iter().find(|w| w.get("is_focused").and_then(|b| b.as_bool()).unwrap_or(false)).and_then(id);
+    if focus(old) != focus(new) {
+        out.push(serde_json::json!({ "WindowFocusChanged": { "id": focus(new) } }).to_string());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compositor_polling_becomes_niri_events() {
+        let a: Vec<Value> = serde_json::from_str(r#"[{"id":1,"app_id":"foot","title":"a","pid":5,"workspace_id":1,"is_focused":true}]"#).unwrap();
+        let b: Vec<Value> = serde_json::from_str(r#"[{"id":1,"app_id":"foot","title":"a","pid":5,"workspace_id":1,"is_focused":false},{"id":2,"app_id":"shadow-files","title":"f","pid":6,"workspace_id":1,"is_focused":true}]"#).unwrap();
+        let mut m = Model::default();
+        m.apply(&serde_json::json!({ "WindowsChanged": { "windows": a } }).to_string());
+        let mut changes = vec![];
+        for l in window_diff(&a, &b) {
+            changes.extend(m.apply(&l));
+        }
+        assert!(changes.contains(&Change::Opened { app_id: "shadow-files".into(), title: "f".into(), id: 2 }));
+        assert_eq!(m.focused().map(|w| w.id), Some(2));
+        let mut changes = vec![];
+        for l in window_diff(&b, &a[..0]) {
+            changes.extend(m.apply(&l));
+        }
+        assert!(changes.contains(&Change::Closed { id: 1 }) && changes.contains(&Change::Closed { id: 2 }));
+    }
 
     #[test]
     fn model_follows_events() {

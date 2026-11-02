@@ -334,6 +334,14 @@ fn software_rendering() -> bool {
 /// `shadow setup niri`: regenerate niri's config from config.toml; niri validates it before it
 /// replaces the current one (niri then reloads it live). 0 = written, 1 = rejected (old kept).
 pub fn niri_config(verbose: bool) -> i32 {
+    // Shadow's own compositor reads config.toml itself: a running one reloads now (the niri file is
+    // still written below, so switching back to niri keeps the same settings)
+    if shadow_niri::shadow_compositor().is_some() {
+        match shadow_niri::compositor_command("config-reload") {
+            Ok(_) => if verbose { println!("shadow-compositor reloaded config.toml") },
+            Err(e) => eprintln!("shadow-compositor: {e}"),
+        }
+    }
     let text = std::fs::read_to_string(st::state_dir().join("config.toml")).unwrap_or_default();
     let path = shadow_niri::config::path();
     let old = std::fs::read_to_string(&path).unwrap_or_default();

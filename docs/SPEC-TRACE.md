@@ -140,12 +140,19 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (131);
+- unit tests in every crate (135);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 8.3.0 (Shadow's own compositor, nested in headless sway at 1600×1000):
+  - **Mouse:** hover and click reach the hub, the tutorial panel and windows. A click on a ring node brought the terminal to the centre. The compositor draws its own cursor (arrow, hand, I-beam, reticle, busy, not-allowed), or the app's cursor surface when it sets one. Clicks were driven through a test-only control command (`test-click`, enabled only by `SHADOW_TEST_INPUT`): wlrctl's virtual pointer disappears after every call, so its clicks never arrive. Motion was also checked with wlrctl. Not tested on hardware: libinput touchpad settings, pointer lock and relative motion.
+  - **Default apps:** under the compositor, all eleven app windows open: terminal, launcher, network, settings, files, tasks, fix, prefs, Craft, wallpaper picker and update. So do the summoned hub, its APPS panel and the flyout (screenshots). The DEFAULTS terminal and file manager drive `Mod+Return`/`Mod+E` (unit test). `shadow setup niri` reloads the running compositor.
+  - **niri compatibility:** the compositor now answers the actions the apps send (focus, width, fullscreen, close, `set-column-width`, `focus-window`), full output details, and `output … scale`. The event stream is replaced by polling turned into niri's events (unit test with the bar's model).
+  - **FIELD TRAINING:** it opened on first login, advanced on the real action, skipped and closed by mouse, and wrote its marker. Unit tests: steps follow rebinds and removed binds, the lock step is swallowed, and keys print as keycaps.
+  - **X11 apps:** `xwayland-satellite` is started when installed. It isn't installed in this container, so this is untested.
+  - **Installer:** the window was driven by mouse inside the compositor (APPS ONLY, untick two, INSTALL) and handed back `apps shadow-term shadow-files shadow-launch`. A real apps-only install by a normal user (Arch flow, package manager stubbed) built Files and Craft into `~/.local`, Files ran from there, and `--remove-apps` left nothing behind. The text menu and the Fedora path were dry-run.
 - 8.2.0:
   - **Hub speed:** measured per frame at 2560×1600 while the mouse moves, best of 5 runs on this 2-thread container.
     - 8.1.1: 11.8 ms.
@@ -160,7 +167,7 @@ Tested in the container:
     - `doctor` finds it;
     - it answers version, workspaces and focused-output the way niri does;
     - the summoned hub and an app window work.
-    - Not done yet: XWayland, multiple monitors, ext-session-lock, the event stream. Not tested yet: its DRM/KMS mode on hardware, and WSL itself. WSL detection is unit-tested on a fake tree, and the session script's WSL branch is syntax-checked only.
+    - Not done yet (8.2): XWayland, multiple monitors, ext-session-lock, the event stream — 8.3 adds X11 through xwayland-satellite and the event stream. Not tested yet: its DRM/KMS mode on hardware, and WSL itself. WSL detection is unit-tested on a fake tree, and the session script's WSL branch is syntax-checked only.
   - **Craft manager:** unit tests for asset choice by exact name and repository, a refused checksum mismatch, install, update, remove and the SHA256SUMS fallback. The GitHub API is unreachable from this container, so a real download wasn't run.
   - **Crash reports:** redaction is unit-tested, and the file is written by the console command.
   - **Hardware profile:** tiers are unit-tested for a laptop, a netbook, a desktop and WSL.

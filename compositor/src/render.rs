@@ -175,14 +175,11 @@ impl State {
             return out;
         }
 
-        // ---------------------------------------------------------- pointer (only when a client may use it)
-        if self.pointer_live {
-            let p = self.pointer_loc.to_physical(sc);
-            let (x, y) = (p.x.round() as i32, p.y.round() as i32);
-            let c = [amber[0], amber[1], amber[2], 1.0];
-            out.push(El::Solid(self.render.solid("cur-h", Rectangle::new((x - 9, y).into(), (19, 2).into()), c)));
-            out.push(El::Solid(self.render.solid("cur-v", Rectangle::new((x, y - 9).into(), (2, 19).into()), c)));
-        }
+        // ---------------------------------------------------------- cursor (front-most)
+        self.cursor_elements(r, &mut out);
+
+        // ---------------------------------------------------------- FIELD TRAINING panel
+        self.tutorial_elements(r, &mut out, &p_plate);
 
         // ---------------------------------------------------------- HUD
         let bar_px = self.cfg.hud.height_px;
@@ -299,6 +296,116 @@ impl State {
         out
     }
 
+    fn cursor_elements(&mut self, r: &mut GlesRenderer, out: &mut Vec<El>) {
+        use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
+        use smithay::reexports::wayland_server::Resource;
+        if !self.pointer_live || self.cursor_typing_hidden || self.ui.is_some() {
+            return;
+        }
+        let scale = self.scale();
+        let sc = Scale::from(scale);
+        match self.cursor_status.clone() {
+            CursorImageStatus::Hidden => {}
+            CursorImageStatus::Surface(surface) if surface.is_alive() => {
+                let hot = smithay::wayland::compositor::with_states(&surface, |st| {
+                    st.data_map.get::<CursorImageSurfaceData>().map(|d| d.lock().unwrap().hotspot).unwrap_or_default()
+                });
+                let at = (self.pointer_loc - hot.to_f64()).to_physical(sc).to_i32_round();
+                let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                    smithay::backend::renderer::element::surface::render_elements_from_surface_tree(r, &surface, at, sc, 1.0, Kind::Cursor);
+                out.extend(els.into_iter().map(El::Surface));
+            }
+            st => {
+                let icon = match st { CursorImageStatus::Named(i) => i, _ => smithay::input::pointer::CursorIcon::Default };
+                let shape = crate::cursor::shape_for(icon);
+                let (amber, cyan, crimson) = (rgb(&self.cfg.look.amber), rgb(&self.cfg.look.cyan), rgb(&self.cfg.look.crimson));
+                let (buf, _) = self.cursors.get(shape, scale, amber, cyan, crimson);
+                let (hx, hy) = crate::cursor::hotspot(shape);
+                let p = self.pointer_loc.to_physical(sc);
+                let at = Point::<f64, Physical>::from((p.x - hx as f64 * scale, p.y - hy as f64 * scale));
+                if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(r, at, &buf, None, None, None, Kind::Cursor) {
+                    out.push(El::Mem(RescaleRenderElement::from_element(e, at.to_i32_round(), Scale::from(1.0))));
+                }
+            }
+        }
+    }
+
+    /// FIELD TRAINING: a glass panel above the bottom edge; one hotkey at a time
+    fn tutorial_elements(&mut self, r: &mut GlesRenderer, out: &mut Vec<El>, p_plate: &GlesPixelProgram) {
+        self.tut_buttons.clear();
+        if self.ui.is_some() {
+            return;
+        }
+        let Some((lines, rise, flash)) = self.tutorial.as_ref().map(|t| (t.lines(&self.cfg.input.modifier), t.rise(), t.flash())) else { return };
+        let scale = self.scale();
+        let (ow, oh) = self.output_size();
+        let (pw, ph) = ((ow * scale).round() as i32, (oh * scale).round() as i32);
+        let amber = rgb(&self.cfg.look.amber);
+        let cyan = rgb(&self.cfg.look.cyan);
+        let fpx = self.cfg.look.font_px * scale as f32;
+        let size = |i: usize| if i == 1 { fpx * 1.5 } else if i == 2 { fpx * 1.25 } else { fpx * 0.95 };
+        let lh = |i: usize| (size(i) * 1.55) as i32;
+        let text_w = lines.iter().enumerate().map(|(i, (l, _))| self.text.width(l, size(i))).max().unwrap_or(0);
+        let w_px = (text_w as f64 + 64.0 * scale).max(560.0 * scale).min(pw as f64 - 32.0 * scale);
+        let h_px: f64 = lines.iter().enumerate().map(|(i, _)| lh(i) as f64).sum::<f64>() + 40.0 * scale + fpx as f64 * 1.6;
+        // top centre: the hub keeps its widgets in the corners and along the bottom edge
+        let x0 = (pw as f64 - w_px) / 2.0;
+        let y0 = self.bar_h() * scale + 28.0 * scale - (1.0 - rise as f64) * 60.0 * scale;
+        let a = rise;
+        // text, top to bottom
+        let mut y = (y0 + 18.0 * scale) as i32;
+        for (i, (l, kind)) in lines.iter().enumerate() {
+            let col = match kind { 1 => amber, 2 => cyan, 3 => [0.93, 0.91, 0.84], _ => [0.66, 0.64, 0.58] };
+            let col = if i == 1 && flash > 0.0 { cyan } else { col };
+            let px = size(i);
+            let w = self.text.width(l, px);
+            // the key line is the call to action: a keycap frame around it
+            if i == 2 && !l.is_empty() {
+                let pad = (8.0 * scale) as i32;
+                let kx = (pw - w) / 2 - pad;
+                let kw = w + 2 * pad;
+                let kh = (px * 1.4) as i32;
+                let c = [amber[0], amber[1], amber[2], 0.85 * a];
+                for (k, rect) in [("t", (kx, y - 2, kw, 2)), ("b", (kx, y + kh - 2, kw, 2)), ("l", (kx, y - 2, 2, kh)), ("r", (kx + kw - 2, y - 2, 2, kh))] {
+                    out.push(El::Solid(self.render.solid(&format!("tut-cap-{k}"), Rectangle::new((rect.0, rect.1).into(), (rect.2, rect.3).into()), c)));
+                }
+            }
+            self.text_el(r, out, &format!("tut-{i}"), l, px, col, ((pw - w) / 2, y), a);
+            y += lh(i);
+        }
+        // buttons: SKIP › and CLOSE ✕ — clickable (input.rs reads tut_buttons)
+        let done = self.tutorial.as_ref().map(|t| t.done).unwrap_or(true);
+        let bpx = fpx * 0.9;
+        let by = (y0 + h_px - fpx as f64 * 1.5 - 10.0 * scale) as i32;
+        let mut bx = (x0 + w_px - 18.0 * scale) as i32;
+        for (name, label) in [("close", "CLOSE ✕"), ("skip", "SKIP ›")] {
+            if name == "skip" && done {
+                continue;
+            }
+            let w = self.text.width(label, bpx);
+            bx -= w;
+            let hover = {
+                let lp = self.pointer_loc;
+                let rr = R { x: bx as f64 / scale - 6.0, y: by as f64 / scale - 4.0, w: w as f64 / scale + 12.0, h: bpx as f64 * 1.5 / scale + 8.0 };
+                self.tut_buttons.push((name, rr));
+                lp.x >= rr.x && lp.x < rr.x + rr.w && lp.y >= rr.y && lp.y < rr.y + rr.h
+            };
+            self.text_el(r, out, &format!("tut-b-{name}"), label, bpx, if hover { cyan } else { amber }, (bx, by), a * if hover { 1.0 } else { 0.8 });
+            bx -= (22.0 * scale) as i32;
+        }
+        // glass plate with a cyan pulse on success
+        let rect = R { x: x0 / scale, y: y0 / scale, w: w_px / scale, h: h_px / scale };
+        let edge = [cyan[0], cyan[1], cyan[2], (0.9 * flash * (1.0 - flash) * 4.0).min(0.9) * a];
+        if edge[3] > 0.01 {
+            let (x, yy, w, h) = (x0 as i32, y0 as i32, w_px as i32, h_px as i32);
+            out.push(El::Solid(self.render.solid("tut-flash-t", Rectangle::new((x, yy).into(), (w, 3).into()), edge)));
+            out.push(El::Solid(self.render.solid("tut-flash-b", Rectangle::new((x, yy + h - 3).into(), (w, 3).into()), edge)));
+        }
+        let mut u = self.colors();
+        u.extend([("u_opacity", vec![0.97]), ("u_blur", vec![0.0]), ("u_screen", vec![x0 as f32, y0 as f32, pw as f32, ph as f32])]);
+        out.push(El::Shader(self.render.shader("tut-back", p_plate, lrect(rect), a, u)));
+    }
+
     /// true while something on screen is still moving
     pub fn animating(&mut self) -> bool {
         if let Some(crate::state::Anim::Move { start, dur, .. }) = &self.anim {
@@ -307,7 +414,19 @@ impl State {
                 self.dirty = true; // one last frame at rest
             }
         }
-        self.anim.is_some() || self.boot.is_some() || self.ui.as_ref().map(|u| u.moving()).unwrap_or(false)
+        let tut = match self.tutorial.as_mut() {
+            Some(t) => {
+                let moving = t.tick();
+                if t.done && t.expired() {
+                    crate::input::close_tutorial(self);
+                    false
+                } else {
+                    moving || t.done
+                }
+            }
+            None => false,
+        };
+        self.anim.is_some() || self.boot.is_some() || tut || self.ui.as_ref().map(|u| u.moving()).unwrap_or(false)
     }
 
     /// frame callbacks: only the centre window and layer surfaces (ring windows stay paused)
@@ -321,6 +440,10 @@ impl State {
         let map = layer_map_for_output(output);
         for l in map.layers() {
             l.send_frame(output, t, Some(std::time::Duration::ZERO), |_, _| Some(output.clone()));
+        }
+        // an animated client cursor keeps animating
+        if let smithay::input::pointer::CursorImageStatus::Surface(s) = &self.cursor_status {
+            smithay::desktop::utils::send_frames_surface_tree(s, output, t, Some(std::time::Duration::ZERO), |_, _| Some(output.clone()));
         }
     }
 }

@@ -1,6 +1,8 @@
-//! Keyboard-first input. Keys go through the bind table, then to the centre-stage client.
-//! The pointer is masked: motion/buttons/scroll are dropped unless the centre window is tagged
-//! requires_pointer (config `input.pointer_apps` or a Lua rule).
+//! Input. Keys go through the bind table, then to the focused client (centre stage, or a layer
+//! surface that holds the keyboard). The mouse works everywhere (input.pointer = "all"): the hub
+//! and other Shadow layers, the centre window and its menus, and the ring — click a wireframe node
+//! to bring it to the centre, Mod+scroll turns the ring. input.pointer = "apps" restores the
+//! keyboard-first mask for centre windows not listed in pointer_apps.
 use crate::state::State;
 use crate::ui::{Mode, Ui, UiAction, UiMsg};
 use smithay::{
@@ -9,7 +11,10 @@ use smithay::{
         keyboard::{keysyms, xkb, FilterResult, Keysym, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
+    desktop::{layer_map_for_output, LayerSurface, WindowSurfaceType},
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, SERIAL_COUNTER},
+    wayland::shell::wlr_layer::Layer,
 };
 use std::time::{Duration, Instant};
 
@@ -82,6 +87,11 @@ enum Act {
 
 pub fn on_key(state: &mut State, code: smithay::input::keyboard::Keycode, ks: KeyState, time: u32) {
     state.last_input = Instant::now();
+    activity(state);
+    if ks == KeyState::Pressed && state.cfg.input.hide_cursor_when_typing && !state.cursor_typing_hidden {
+        state.cursor_typing_hidden = true;
+        state.dirty = true;
+    }
     if ks == KeyState::Pressed {
         state.key_times.push(Instant::now());
         state.key_times.retain(|t| t.elapsed() < Duration::from_secs(5));
@@ -215,8 +225,24 @@ pub fn spawn(state: &State, cmd: &str) {
     }
 }
 
+/// any input: idle timers (ext-idle-notify clients such as shadow-sessiond) start over
+fn activity(state: &mut State) {
+    let seat = state.seat.clone();
+    state.idle_notifier.notify_activity(&seat);
+}
+
 pub fn run_action(state: &mut State, a: &str) {
     let (verb, rest) = a.split_once(' ').unwrap_or((a, ""));
+    // FIELD TRAINING watches every action; the lock step is acknowledged, not run
+    let mut trained = false;
+    if let Some(t) = state.tutorial.as_mut() {
+        let swallow = t.swallows(a);
+        trained = t.observe(a);
+        state.dirty = true;
+        if swallow {
+            return;
+        }
+    }
     match verb {
         "spawn" => spawn(state, rest),
         "focus-next" => state.transition(|r| r.next()),
@@ -250,6 +276,17 @@ pub fn run_action(state: &mut State, a: &str) {
             state.dirty = true;
         }
         "quit" => state.signal.stop(),
+        "tutorial" => {
+            if trained {
+                return; // that key press was the "open this guide again" step itself
+            }
+            if rest == "close" || state.tutorial.as_ref().map(|t| !t.done).unwrap_or(false) && rest != "open" {
+                close_tutorial(state);
+            } else {
+                state.tutorial = Some(crate::tutorial::Tutorial::new(&state.cfg.binds));
+                state.dirty = true;
+            }
+        }
         "lua" => {
             if let (Some(l), Ok(i)) = (state.lua.as_mut(), rest.parse::<usize>()) {
                 l.call_bind(i);
@@ -260,32 +297,140 @@ pub fn run_action(state: &mut State, a: &str) {
     }
 }
 
-// ---------------------------------------------------------------- pointer (masked)
+pub fn close_tutorial(state: &mut State) {
+    if state.tutorial.take().is_some() {
+        crate::tutorial::mark_done();
+    }
+    state.tut_buttons.clear();
+    state.dirty = true;
+}
+
+// ---------------------------------------------------------------- pointer
+/// What is under the pointer, front to back in the same order the scene is drawn.
+pub enum Under {
+    /// a client surface and the surface's origin in global logical coordinates
+    Surface(WlSurface, Point<f64, Logical>, Option<LayerSurface>),
+    /// a background node of the ring (drawn by the compositor)
+    Node(u64),
+    /// a button of the FIELD TRAINING panel
+    Tutorial(&'static str),
+    Nothing,
+}
+
+fn layer_hit(state: &State, p: Point<f64, Logical>, layers: &[Layer]) -> Option<(WlSurface, Point<f64, Logical>, LayerSurface)> {
+    let o = state.output.as_ref()?;
+    let map = layer_map_for_output(o);
+    for want in layers {
+        // later layers are on top: search from the end
+        let ls: Vec<LayerSurface> = map.layers_on(*want).rev().cloned().collect();
+        for l in ls {
+            let Some(g) = map.layer_geometry(&l) else { continue };
+            if let Some((s, sp)) = l.surface_under(p - g.loc.to_f64(), WindowSurfaceType::ALL) {
+                return Some((s, (sp + g.loc).to_f64(), l));
+            }
+        }
+    }
+    None
+}
+
+pub fn under(state: &State, p: Point<f64, Logical>) -> Under {
+    if state.ui.is_some() {
+        return Under::Nothing;
+    }
+    for (name, r) in &state.tut_buttons {
+        if p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h {
+            return Under::Tutorial(name);
+        }
+    }
+    if let Some((s, at, l)) = layer_hit(state, p, &[Layer::Overlay, Layer::Top]) {
+        return Under::Surface(s, at, Some(l));
+    }
+    // centre stage (its popups included)
+    let (vis, _) = state.visual();
+    if let Some((id, rect, _, _)) = vis.iter().find(|v| v.3) {
+        if state.center_takes_pointer() {
+            if let Some(w) = state.win(*id) {
+                let loc = Point::<f64, Logical>::from((rect.x, rect.y)) - w.window.geometry().loc.to_f64();
+                if let Some((s, sp)) = w.window.surface_under(p - loc, WindowSurfaceType::ALL) {
+                    return Under::Surface(s, sp.to_f64() + loc, None);
+                }
+            }
+        } else if p.x >= rect.x && p.x < rect.x + rect.w && p.y >= rect.y && p.y < rect.y + rect.h {
+            return Under::Nothing; // keyboard-only window: the click goes nowhere
+        }
+    }
+    // ring nodes, nearest first
+    let mut ring: Vec<(u64, crate::orbit::R, f64)> = vis.iter().filter(|v| !v.3).map(|v| (v.0, v.1, v.2)).collect();
+    ring.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    for (id, r, _) in ring {
+        if p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h {
+            return Under::Node(id);
+        }
+    }
+    if let Some((s, at, l)) = layer_hit(state, p, &[Layer::Bottom, Layer::Background]) {
+        return Under::Surface(s, at, Some(l));
+    }
+    Under::Nothing
+}
+
+fn surface_focus(u: &Under) -> Option<(WlSurface, Point<f64, Logical>)> {
+    match u {
+        Under::Surface(s, at, _) => Some((s.clone(), *at)),
+        _ => None,
+    }
+}
+
 pub fn on_input<B: InputBackend>(state: &mut State, event: InputEvent<B>) {
     match event {
         InputEvent::Keyboard { event } => on_key(state, event.key_code(), event.state(), event.time_msec()),
         InputEvent::PointerMotion { event } => {
             let d = event.delta();
-            let p = state.pointer_loc + d;
+            let before = state.pointer_loc;
+            // an active pointer lock keeps the cursor still; confinement keeps it on its surface
+            let mut p = before + d;
+            if let Some(s) = state.constrained.clone() {
+                let ptr = state.seat.get_pointer().unwrap();
+                let kind = smithay::wayland::pointer_constraints::with_pointer_constraint(&s, &ptr, |c| c.filter(|c| c.is_active()).map(|c| matches!(&*c, smithay::wayland::pointer_constraints::PointerConstraint::Locked(_))));
+                match kind {
+                    Some(true) => p = before,
+                    Some(false) => if !matches!(under(state, p), Under::Surface(ref u, _, _) if *u == s) { p = before },
+                    None => state.constrained = None,
+                }
+            }
             pointer_to(state, p, event.time_msec());
+            // raw deltas for 3D viewports and games (relative-pointer-v1)
+            let focus = surface_focus(&under(state, state.pointer_loc));
+            let ptr = state.seat.get_pointer().unwrap();
+            ptr.relative_motion(state, focus, &smithay::input::pointer::RelativeMotionEvent { delta: d, delta_unaccel: event.delta_unaccel(), utime: event.time() });
+            ptr.frame(state);
         }
         InputEvent::PointerMotionAbsolute { event } => {
             let (w, h) = state.output_size();
             let p = event.position_transformed((w as i32, h as i32).into());
             pointer_to(state, p, event.time_msec());
         }
-        InputEvent::PointerButton { event } => {
-            state.last_input = Instant::now();
-            if !state.pointer_live {
-                return; // keyboard-first: buttons are ignored for keyboard-only windows
-            }
-            let ptr = state.seat.get_pointer().unwrap();
-            ptr.button(state, &ButtonEvent { button: event.button_code(), state: event.state(), serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
-            ptr.frame(state);
-            let _ = ButtonState::Pressed;
-        }
+        InputEvent::PointerButton { event } => pointer_button(state, event.button_code(), event.state(), event.time_msec()),
         InputEvent::PointerAxis { event } => {
+            activity(state);
             if !state.pointer_live {
+                return;
+            }
+            // Mod + scroll (or scrolling over a ring node) turns the ring
+            let mods = state.seat.get_keyboard().map(|k| k.modifier_state()).unwrap_or_default();
+            let modkey = if state.cfg.input.modifier == "alt" { mods.alt } else { mods.logo };
+            let over_node = matches!(under(state, state.pointer_loc), Under::Node(_));
+            if modkey || over_node {
+                let v = event.amount_v120(Axis::Vertical).map(|d| d / 120.0).or(event.amount(Axis::Vertical).map(|d| d / 15.0)).unwrap_or(0.0);
+                state.ring_scroll += v;
+                while state.ring_scroll.abs() >= 1.0 {
+                    if state.ring_scroll > 0.0 {
+                        state.transition(|r| r.next());
+                        state.ring_scroll -= 1.0;
+                    } else {
+                        state.transition(|r| r.prev());
+                        state.ring_scroll += 1.0;
+                    }
+                }
                 return;
             }
             let src = event.source();
@@ -309,20 +454,110 @@ pub fn on_input<B: InputBackend>(state: &mut State, event: InputEvent<B>) {
     }
 }
 
+pub fn pointer_button(state: &mut State, button: u32, bs: ButtonState, time: u32) {
+    state.last_input = Instant::now();
+    activity(state);
+    if !state.pointer_live {
+        return; // lock / greeter screen: keyboard only
+    }
+    if state.cursor_typing_hidden {
+        state.cursor_typing_hidden = false;
+        state.dirty = true;
+    }
+    let serial = SERIAL_COUNTER.next_serial();
+    let ptr = state.seat.get_pointer().unwrap();
+    if bs == ButtonState::Pressed && !ptr.is_grabbed() {
+        match under(state, state.pointer_loc) {
+            Under::Tutorial(b) => {
+                match b {
+                    "skip" => if let Some(t) = state.tutorial.as_mut() { t.skip() },
+                    _ => close_tutorial(state),
+                }
+                state.dirty = true;
+                return; // the panel's own click: no client sees it
+            }
+            Under::Node(id) => {
+                state.transition(|r| { r.focus(id); });
+                return;
+            }
+            Under::Surface(s, _, layer) => click_focus(state, &s, layer),
+            Under::Nothing => {}
+        }
+    }
+    ptr.button(state, &ButtonEvent { button, state: bs, serial, time });
+    ptr.frame(state);
+}
+
+/// test hook (SHADOW_TEST_INPUT only): move to x,y and click there, through the same paths
+pub fn test_click(state: &mut State, x: f64, y: f64) {
+    pointer_to(state, (x, y).into(), 0);
+    pointer_button(state, 0x110, ButtonState::Pressed, 0);
+    pointer_button(state, 0x110, ButtonState::Released, 0);
+}
+
+/// a click moves the keyboard: into a layer surface that accepts it (hub widgets, a menu), or
+/// back to the centre window
+fn click_focus(state: &mut State, s: &WlSurface, layer: Option<LayerSurface>) {
+    let root = {
+        let mut r = s.clone();
+        while let Some(p) = smithay::wayland::compositor::get_parent(&r) {
+            r = p;
+        }
+        r
+    };
+    match layer {
+        Some(l) if l.can_receive_keyboard_focus() => {
+            if state.layer_kb_focus.as_ref() != Some(l.wl_surface()) {
+                state.layer_kb_focus = Some(l.wl_surface().clone());
+                state.relayout();
+            }
+        }
+        Some(_) => {}
+        None => {
+            let is_center = state.ring.center().and_then(|id| state.win(id)).and_then(|w| w.window.toplevel().map(|t| t.wl_surface() == &root)).unwrap_or(false);
+            if is_center && state.layer_kb_focus.is_some() {
+                state.layer_kb_focus = None;
+                state.relayout();
+            }
+        }
+    }
+}
+
 fn pointer_to(state: &mut State, p: Point<f64, Logical>, time: u32) {
     let (w, h) = state.output_size();
     state.pointer_loc = (p.x.clamp(0.0, w - 1.0), p.y.clamp(0.0, h - 1.0)).into();
+    activity(state);
     if !state.pointer_live {
-        return; // masked: no client sees the motion and nothing is redrawn
+        return; // lock / greeter screen: nothing sees the motion and nothing is redrawn
     }
     state.last_input = Instant::now();
-    let under = state.ring.center().and_then(|id| state.win(id)).and_then(|w| {
-        let r = state.center_rect(w.id);
-        let loc = Point::<f64, Logical>::from((r.x, r.y)) - w.window.geometry().loc.to_f64();
-        w.window.surface_under(state.pointer_loc - loc, smithay::desktop::WindowSurfaceType::ALL).map(|(s, sp)| (s, (sp.to_f64() + loc)))
-    });
+    state.cursor_typing_hidden = false;
+    let u = under(state, state.pointer_loc);
+    let hover_tut = matches!(u, Under::Tutorial(_));
+    let focus = surface_focus(&u);
+    // nothing of a client's under the pointer: the compositor's own arrow
+    if focus.is_none() {
+        let want = if hover_tut || matches!(u, Under::Node(_)) { smithay::input::pointer::CursorIcon::Pointer } else { smithay::input::pointer::CursorIcon::Default };
+        if !matches!(&state.cursor_status, smithay::input::pointer::CursorImageStatus::Named(i) if *i == want) {
+            state.cursor_status = smithay::input::pointer::CursorImageStatus::Named(want);
+        }
+    }
+    // pointer constraints follow the pointer focus: a lock is released when its surface loses
+    // the pointer (Mod+Tab, a click elsewhere) and granted when it gets it back
     let ptr = state.seat.get_pointer().unwrap();
-    ptr.motion(state, under, &MotionEvent { location: state.pointer_loc, serial: SERIAL_COUNTER.next_serial(), time });
+    let fs = focus.as_ref().map(|f| f.0.clone());
+    if state.constrained.is_some() && state.constrained != fs {
+        if let Some(old) = state.constrained.take() {
+            smithay::wayland::pointer_constraints::with_pointer_constraint(&old, &ptr, |c| if let Some(c) = c { c.deactivate() });
+        }
+    }
+    if let Some(s) = fs.as_ref().filter(|_| state.constrained.is_none()) {
+        let got = smithay::wayland::pointer_constraints::with_pointer_constraint(s, &ptr, |c| c.map(|c| { if !c.is_active() { c.activate() }; true }).unwrap_or(false));
+        if got {
+            state.constrained = Some(s.clone());
+        }
+    }
+    ptr.motion(state, focus, &MotionEvent { location: state.pointer_loc, serial: SERIAL_COUNTER.next_serial(), time });
     ptr.frame(state);
     state.dirty = true;
 }

@@ -13,6 +13,10 @@
 #  ./install.sh --update-repo URL       the repository updates come from (required; default: this
 #                                       checkout's origin). A private repo gets a read-only deploy key.
 #  ./install.sh --uninstall [--purge]   remove the packages
+#  ./install.sh --gui                   a window to choose: the full desktop, or only some apps
+#  ./install.sh --apps "shadow-term shadow-files"   apps only: for your user in ~/.local, no
+#                                       desktop, session, login screen or system services
+#  ./install.sh --remove-apps           remove an apps-only install
 #  Options: -y/--yes (no questions) · --no-greeter · --niri-ref TAG (source builds, default v25.08)
 #
 #  Arch:    pacman + makepkg (the PKGBUILD)
@@ -23,6 +27,7 @@
 set -Eeuo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 YES=0; GREETER=ask; SEC=0; UNINSTALL=0; PURGE=0; BOOT=""; DRY=0; CHECK=0; UPDATE_REPO=""
+GUI=0; APPS_LIST=""; REMOVE_APPS=0
 NIRI_REF=${NIRI_REF:-v25.08}
 GREETD_REF=${GREETD_REF:-0.10.3}
 RUST_MIN=1.89
@@ -46,7 +51,9 @@ while (($#)); do
     --bootstrap) BOOT="${2:?URL}"; shift ;; --uninstall) UNINSTALL=1 ;; --purge) PURGE=1 ;;
     --dry-run) DRY=1 ;; --check) CHECK=1 ;; --niri-ref) NIRI_REF="${2:?TAG}"; shift ;;
     --update-repo) UPDATE_REPO="${2:?URL}"; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;; *) die "unknown option: $1" ;;
+    --gui) GUI=1 ;; --apps) APPS_LIST="${2:?LIST of apps, e.g. \"shadow-term shadow-files\"}"; shift ;;
+    --remove-apps) REMOVE_APPS=1 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;; *) die "unknown option: $1" ;;
   esac; shift
 done
 [[ $EUID -ne 0 ]] || die "run as your normal user; sudo is used where needed."
@@ -57,7 +64,7 @@ done
 # into shell scripts). Nothing is installed from such a folder: rename it first. --check and
 # --uninstall build nothing, so they still work from anywhere.
 path_safe() { [[ $1 =~ ^[A-Za-z0-9._/+-]+$ ]]; }
-if ((!CHECK && !UNINSTALL)) && ! path_safe "$SRC"; then
+if ((!CHECK && !UNINSTALL && !REMOVE_APPS)) && ! path_safe "$SRC"; then
   bad=$(printf '%s' "$SRC" | tr -d 'A-Za-z0-9._/+-' | fold -w1 | sort -u | sed 's/^ $/space/' | tr '\n' ' ')
   clean=$(basename "$SRC" | sed -E 's/ *\([0-9]+\)$//; s/ - Copy( \([0-9]+\))?$//; s/[^A-Za-z0-9._+-]+/-/g; s/^-+|-+$//g')
   [[ -n $clean ]] || clean=shadow-tui-restricted
@@ -240,6 +247,117 @@ prune_cache() {
   done
 }
 
+# ── apps only (./install.sh --apps / the installer window) ──────────────
+# The apps that work on any Wayland desktop, without Shadow's session: (program crate name)
+APP_CHOICES=("shadow-term shadow-term Terminal" "shadow-files shadow-apps Files" "shadow-launch shadow-apps Launcher"
+             "shadow-tasks shadow-apps Task-manager" "shadow-craft shadow-apps Craft-apps" "shadow-wallpaper shadow-apps 3D-wallpaper")
+APPS_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/shadow-apps"
+APPS_MANIFEST="$APPS_HOME/MANIFEST"
+
+app_crate() { local want=$1 ent prog crate rest; for ent in "${APP_CHOICES[@]}"; do read -r prog crate rest <<<"$ent"; [[ $prog == "$want" ]] && { echo "$crate"; return 0; }; done; return 1; }
+
+# the build tools for the apps alone (no compositor, no daemons)
+apps_build_deps() {
+  if [[ $FAM == arch ]]; then
+    local need=() p
+    for p in base-devel git libxkbcommon ttf-dejavu; do pacman -Qq $p &>/dev/null || need+=("$p"); done
+    pacman -Qq rust &>/dev/null || pacman -Qq rustup &>/dev/null || need+=(rust)
+    if ((${#need[@]})); then info "need: ${need[*]}"; ask "Install them (sudo pacman -S --needed)?" || die "cannot build"; run sudo pacman -S --needed --noconfirm "${need[@]}"; fi
+  else
+    [[ $FAM == el ]] && el_repos
+    dnf_require gcc git pkgconf-pkg-config pam-devel libxkbcommon-devel dejavu-sans-mono-fonts
+    ensure_rust
+  fi
+}
+
+remove_apps() {
+  [[ -f $APPS_MANIFEST ]] || { info "no apps-only install found"; return 0; }
+  local f
+  while IFS= read -r f; do [[ -n $f && ( -e $f || -L $f ) ]] && run rm -f "$f"; done < "$APPS_MANIFEST"
+  run rm -rf "$APPS_HOME"
+  have update-desktop-database && run update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" 2>/dev/null || true
+  say "Apps-only install removed."
+}
+
+apps_install() {
+  local list=() ap crate args=() bad=()
+  read -r -a list <<<"$APPS_LIST"
+  for ap in "${list[@]}"; do app_crate "$ap" >/dev/null || bad+=("$ap"); done
+  ((${#bad[@]})) && die "not an app that installs on its own: ${bad[*]} (choose from: $(for ap in "${APP_CHOICES[@]}"; do printf '%s ' "${ap%% *}"; done))"
+  ((${#list[@]})) || die "no apps chosen"
+  say "Apps only: ${list[*]}"
+  info "for your user in ~/.local — your desktop, login and system services stay as they are"
+  apps_build_deps
+  if [[ " ${list[*]} " == *" shadow-craft "* ]] && ! have curl; then
+    if [[ $FAM == arch ]]; then run sudo pacman -S --needed --noconfirm curl; else dnf_install curl; fi
+  fi
+  for ap in "${list[@]}"; do crate=$(app_crate "$ap"); args+=(-p "$crate" --bin "$ap"); done
+  say "Building (first build ~2-5 min)"
+  local tgt="$cache/target"
+  run_in "$SRC" env CARGO_TARGET_DIR="$tgt" cargo build --release --locked "${args[@]}"
+  local bin="$HOME/.local/bin" apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications" files=()
+  ((DRY)) || mkdir -p "$APPS_HOME/bin" "$bin" "$apps"
+  for ap in "${list[@]}"; do
+    check_binary "$tgt/release/$ap"
+    run install -m755 "$tgt/release/$ap" "$APPS_HOME/bin/$ap"
+    run ln -sf "$APPS_HOME/bin/$ap" "$bin/$ap"
+    files+=("$APPS_HOME/bin/$ap" "$bin/$ap")
+    if [[ -f $SRC/system/$ap.desktop ]]; then
+      # absolute Exec: app menus don't always see ~/.local/bin on PATH
+      if ((DRY)); then run "sed Exec=$ap → $APPS_HOME/bin/$ap > $apps/$ap.desktop"
+      else sed "s|^Exec=$ap|Exec=$APPS_HOME/bin/$ap|; s|^TryExec=$ap|TryExec=$APPS_HOME/bin/$ap|" "$SRC/system/$ap.desktop" > "$apps/$ap.desktop"; fi
+      files+=("$apps/$ap.desktop")
+    fi
+  done
+  if ((!DRY)); then
+    { [[ -f $APPS_MANIFEST ]] && cat "$APPS_MANIFEST"; printf '%s\n' "${files[@]}"; } | sort -u > "$APPS_MANIFEST.new"
+    mv "$APPS_MANIFEST.new" "$APPS_MANIFEST"
+  fi
+  have update-desktop-database && run update-desktop-database "$apps" 2>/dev/null || true
+  say "Installed: ${list[*]}"
+  info "they are in your desktop's app menu; on the command line: ${list[*]}"
+  [[ ":$PATH:" == *":$bin:"* ]] || warn "$bin is not on your PATH yet (log out and in, or add it) — the app menu works either way"
+  [[ " ${list[*]} " == *" shadow-launch "* ]] && info "Launcher: give it a key in your desktop's keyboard settings (command: $APPS_HOME/bin/shadow-launch)"
+  [[ " ${list[*]} " == *" shadow-wallpaper "* ]] && info "3D wallpaper: start it from your desktop's autostart (needs KDE, Sway, Hyprland or niri)"
+  info "remove them again: ./install.sh --remove-apps   ·   the full desktop: ./install.sh"
+}
+
+# the text version of the installer window (no graphical session, or the window can't start)
+choose_in_terminal() {
+  [[ -t 0 ]] || die "no terminal to ask in: use --apps \"…\" or plain ./install.sh"
+  printf '\n  %sHow much of Shadow do you want?%s\n    1) Full desktop — Shadow becomes your desktop (hub, apps, daemons, updates)\n    2) Apps only    — keep your desktop, add some apps for your user\n' "$a" "$z"
+  local ans i ent picks prog rest
+  read -r -p "  1 or 2 [1]: " ans
+  if [[ $ans != 2 ]]; then CHOICE=full; return; fi
+  printf '\n'
+  i=1; for ent in "${APP_CHOICES[@]}"; do read -r prog _ rest <<<"$ent"; printf '    %d) %-14s %s\n' $i "${rest//-/ }" "$prog"; i=$((i + 1)); done
+  read -r -p "  numbers, separated by spaces [1 2 3 4 5]: " picks
+  [[ -n $picks ]] || picks="1 2 3 4 5"
+  CHOICE="apps"
+  for i in $picks; do
+    [[ $i =~ ^[0-9]+$ ]] && ((i >= 1 && i <= ${#APP_CHOICES[@]})) && CHOICE+=" ${APP_CHOICES[$((i - 1))]%% *}"
+  done
+  if [[ $CHOICE == apps ]]; then die "no apps chosen"; fi
+}
+
+# ./install.sh --gui: the installer window decides, this script does the work (sudo asks here)
+choose_with_window() {
+  if [[ -z ${WAYLAND_DISPLAY:-} ]]; then
+    info "no Wayland session here — asking in the terminal instead"
+    choose_in_terminal; return
+  fi
+  say "Preparing the installer window (first time ~2-4 min: it is built from this checkout)"
+  apps_build_deps
+  local tgt="$cache/target" f
+  if ! run_in "$SRC" env CARGO_TARGET_DIR="$tgt" cargo build --release --locked -p shadow-apps --bin shadow-installer; then
+    warn "the installer window could not be built — asking in the terminal instead"; choose_in_terminal; return
+  fi
+  ((DRY)) && { CHOICE=full; return; }
+  f=$(mktemp "${TMPDIR:-/tmp}/shadow-choice.XXXXXX")
+  SHADOW_INSTALL_CHOICE="$f" "$tgt/release/shadow-installer" || { warn "the installer window failed — asking in the terminal instead"; rm -f "$f"; choose_in_terminal; return; }
+  CHOICE=$(head -n1 "$f"); rm -f "$f"
+}
+
 # ── uninstall ───────────────────────────────────────────────────────────
 if ((UNINSTALL)); then
   purge=(); ((PURGE)) && purge=(--purge)
@@ -269,6 +387,10 @@ arch_install() {
   say "Compositor and runtime"
   pacman -Qq niri &>/dev/null || { info "niri is the compositor (extra/niri)"; ask "Install niri?" && run sudo pacman -S --needed --noconfirm niri; }
   ensure_polkit_agent pacman -S --needed --noconfirm
+  # X11 apps (older AppImages, Electron, Steam, Wine): niri and Shadow's own compositor both use it
+  if ! pacman -Qq xwayland-satellite &>/dev/null; then
+    ask "Install X11 app support (xwayland-satellite, xorg-xwayland)?" && run sudo pacman -S --needed --noconfirm xwayland-satellite xorg-xwayland || info "skipped: Wayland apps only"
+  fi
   say "Building (side bar, apps, terminal, daemons — first build ~5-10 min)"
   pacman -Qq shadow-network &>/dev/null && info "the old shadow-network package is replaced"
   local marker; marker=$(mktemp "${TMPDIR:-/tmp}/shadow-build.XXXXXX")
@@ -466,7 +588,7 @@ rpm_install() {
   # shellcheck disable=SC2086  # $DNF is "dnf" or "dnf5"
   ensure_polkit_agent $DNF install -y
   dnf_install_available brightnessctl xdg-desktop-portal-gnome libnotify alsa-sof-firmware alsa-ucm \
-    jetbrains-mono-fonts-all google-noto-sans-cjk-fonts age gh iwd \
+    jetbrains-mono-fonts-all google-noto-sans-cjk-fonts age gh iwd xwayland-satellite xorg-x11-server-Xwayland \
     terminus-fonts-console pipewire-pulseaudio
   say "Building the RPMs (side bar, apps, terminal, daemons — first build ~5-10 min, tests included)"
   rpm -q shadow-network &>/dev/null && info "the old shadow-network package is replaced"
@@ -574,6 +696,27 @@ verify() {
 }
 
 if ((CHECK)); then trap - ERR; verify; exit $?; fi
+if ((REMOVE_APPS)); then remove_apps; exit 0; fi
+
+# the installer window / text menu: full desktop or apps only
+if ((GUI)); then
+  CHOICE=""
+  choose_with_window
+  case $CHOICE in
+    full*) [[ $CHOICE == *--greeter* ]] && GREETER=yes; [[ $CHOICE == *--sec* ]] && SEC=1; say "Full desktop" ;;
+    apps\ *) APPS_LIST=${CHOICE#apps } ;;
+    *) info "cancelled — nothing was changed"; exit 0 ;;
+  esac
+fi
+if [[ -n $APPS_LIST ]]; then
+  apps_install
+  exit 0
+fi
+# the full desktop replaces an apps-only install (its ~/.local/bin copies would hide the new ones)
+if [[ -f $APPS_MANIFEST ]]; then
+  info "an apps-only install is replaced by the full desktop"
+  remove_apps
+fi
 
 preflight
 case $FAM in

@@ -114,7 +114,12 @@ pub fn init(event_loop: &mut EventLoop<'static, State>, state: &mut State) -> Re
     let mut libinput = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
     libinput.udev_assign_seat(&seat).map_err(|_| "libinput seat")?;
     let li_backend = LibinputInputBackend::new(libinput.clone());
-    event_loop.handle().insert_source(li_backend, |e, _, st| crate::input::on_input(st, e))?;
+    event_loop.handle().insert_source(li_backend, |e, _, st| {
+        if let smithay::backend::input::InputEvent::DeviceAdded { device } = &e {
+            configure_device(&mut device.clone(), &st.cfg.input);
+        }
+        crate::input::on_input(st, e)
+    })?;
 
     event_loop.handle().insert_source(notifier, |ev, _, st| {
         if let Backend::Udev(u) = &mut st.backend {
@@ -206,4 +211,24 @@ pub fn apply_refresh(state: &mut State, hz: u32) {
     }
     state.backend = Backend::Udev(u);
     state.dirty = true;
+}
+
+/// touchpads and mice as a laptop user expects them: tap to click, two-finger scroll,
+/// disable-while-typing, middle-click emulation; natural scroll and speed from [input]
+fn configure_device(d: &mut smithay::reexports::input::Device, cfg: &crate::config::Input) {
+    if d.config_tap_finger_count() > 0 {
+        let _ = d.config_tap_set_enabled(cfg.tap_to_click);
+        let _ = d.config_tap_set_drag_enabled(true);
+        let _ = d.config_dwt_set_enabled(true);
+    }
+    if d.config_scroll_has_natural_scroll() {
+        let _ = d.config_scroll_set_natural_scroll_enabled(cfg.natural_scroll);
+    }
+    if d.config_accel_is_available() {
+        let _ = d.config_accel_set_speed(cfg.pointer_speed.clamp(-1.0, 1.0));
+    }
+    if d.config_middle_emulation_is_available() {
+        let _ = d.config_middle_emulation_set_enabled(true);
+    }
+    tracing::info!("input device: {} (tap {}, natural scroll {})", d.name(), cfg.tap_to_click, cfg.natural_scroll);
 }

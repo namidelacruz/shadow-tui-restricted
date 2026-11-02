@@ -4,6 +4,7 @@
 //!   shadow-compositor --greeter    login screen for greetd (hands off to the session seamlessly)
 //!   shadow-compositor --winit      force the nested backend      --udev   force DRM/KMS
 mod config;
+mod cursor;
 mod hud;
 mod input;
 mod ipc;
@@ -16,6 +17,7 @@ mod state;
 mod telemetry;
 mod text;
 mod udev;
+mod tutorial;
 mod ui;
 mod winit;
 
@@ -134,6 +136,32 @@ fn memory_high_events() -> Option<u64> {
     ev.lines().find_map(|l| l.strip_prefix("high ").and_then(|v| v.trim().parse().ok()))
 }
 
+fn in_path(prog: &str) -> bool {
+    std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(prog).is_file())).unwrap_or(false)
+}
+
+/// Start xwayland-satellite on the first free X display and export DISPLAY for every app started
+/// after it. Returns the child (killed when the session ends).
+fn start_xwayland() -> Option<std::process::Child> {
+    if std::env::var_os("SHADOW_NO_XWAYLAND").is_some() || !in_path("xwayland-satellite") || !in_path("Xwayland") {
+        tracing::info!("X11 apps: xwayland-satellite or Xwayland not installed — Wayland apps only");
+        return None;
+    }
+    let n = (1..64).find(|n| !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists() && !std::path::Path::new(&format!("/tmp/.X{n}-lock")).exists())?;
+    let disp = format!(":{n}");
+    match std::process::Command::new("xwayland-satellite").arg(&disp).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).spawn() {
+        Ok(c) => {
+            std::env::set_var("DISPLAY", &disp);
+            tracing::info!("X11 apps: xwayland-satellite on {disp}");
+            Some(c)
+        }
+        Err(e) => {
+            tracing::warn!("xwayland-satellite: {e}");
+            None
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
@@ -192,15 +220,23 @@ fn main() {
     if let Err(e) = ipc::init(&mut state) {
         tracing::warn!("control socket: {e}");
     }
+    let mut xwayland: Option<std::process::Child> = None;
     if greeter {
         state.ui = Some(ui::Ui::new(ui::Mode::Greeter));
     } else {
+        // X11 apps (older AppImages, Electron without Wayland, Steam, Wine) through
+        // xwayland-satellite, the same helper niri uses; skipped when it isn't installed
+        xwayland = start_xwayland();
         luahost::reload(&mut state);
         for c in state.cfg.autostart.commands.clone() {
             input::spawn(&state, &c);
         }
         // once-a-day update check (notification only; nothing installs without you)
         input::spawn(&state, "shadow update login-check");
+        // first login on this compositor: FIELD TRAINING, the hotkey tutorial
+        if tutorial::first_run() {
+            state.tutorial = Some(tutorial::Tutorial::new(&state.cfg.binds));
+        }
     }
     state.binds = input::compile_binds(&state);
     tick(&mut state);
@@ -223,6 +259,10 @@ fn main() {
         let _ = st.dh.flush_clients();
     }).expect("event loop");
 
+    if let Some(mut x) = xwayland {
+        let _ = x.kill();
+        let _ = x.wait();
+    }
     let _ = std::fs::remove_file(ipc::socket_path(&socket_name));
     if !greeter {
         let _ = std::fs::remove_file(std::path::PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_default()).join("shadow/locked"));

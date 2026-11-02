@@ -58,8 +58,18 @@ impl Default for Look {
 pub struct Input {
     /// "super" (default) or "alt" (handy when nested inside another compositor)
     pub modifier: String,
-    /// app ids that may receive the pointer while they are centre stage; everything else is keyboard-only
+    /// "all" (default): the mouse works everywhere — the hub, the launcher, every window, the ring;
+    /// "apps": keyboard-first, only the centre windows listed in pointer_apps get the pointer
+    /// (Shadow's own layers — hub, launcher, menus — always do)
+    pub pointer: String,
+    /// app ids that may receive the pointer in "apps" mode
     pub pointer_apps: Vec<String>,
+    /// hide the cursor while typing; it comes back on the next move
+    pub hide_cursor_when_typing: bool,
+    /// touchpad: tap to click (on), natural (reversed) scrolling (off), pointer speed -1..1 (0)
+    pub tap_to_click: bool,
+    pub natural_scroll: bool,
+    pub pointer_speed: f64,
     pub xkb_layout: String,
     pub xkb_variant: String,
     pub xkb_options: String,
@@ -70,6 +80,11 @@ impl Default for Input {
     fn default() -> Self {
         Input {
             modifier: "super".into(),
+            pointer: "all".into(),
+            hide_cursor_when_typing: true,
+            tap_to_click: true,
+            natural_scroll: false,
+            pointer_speed: 0.0,
             pointer_apps: ["firefox", "chromium", "google-chrome", "org.gimp.GIMP", "org.inkscape.Inkscape", "blender", "libreoffice", "org.kde.krita"].map(String::from).to_vec(),
             xkb_layout: String::new(), xkb_variant: String::new(), xkb_options: String::new(), repeat_delay: 300, repeat_rate: 40,
         }
@@ -143,6 +158,14 @@ impl Default for Autostart {
     }
 }
 
+/// [defaults] from Shadow's config.toml (shadow-prefs → DEFAULTS): what Mod+Return and Mod+E start
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct Defaults {
+    pub terminal_cmd: String,
+    pub files_cmd: String,
+}
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Config {
@@ -154,6 +177,7 @@ pub struct Config {
     pub lock: Lock,
     pub memory: Memory,
     pub autostart: Autostart,
+    pub defaults: Defaults,
     pub binds: BTreeMap<String, String>,
 }
 
@@ -184,6 +208,12 @@ pub fn default_binds() -> BTreeMap<String, String> {
         ("Mod+Shift+BackSpace", "healer-revert"),
         ("Mod+Alt+L", "lock"),
         ("Mod+Shift+E", "quit"),
+        ("Mod+Shift+F", "fullscreen"),
+        ("Mod+Shift+B", "spawn sh -c 'pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar'"),
+        ("Mod+P", "spawn shadow-prefs"),
+        // the hotkey tutorial (first login opens it by itself)
+        ("Mod+Shift+Slash", "tutorial"),
+        ("Mod+F1", "tutorial"),
         ("XF86AudioRaiseVolume", "spawn wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"),
         ("XF86AudioLowerVolume", "spawn wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"),
         ("XF86AudioMute", "spawn wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"),
@@ -223,7 +253,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             layout: Layout::default(), look: Look::default(), input: Input::default(), hud: Hud::default(), display: Display::default(),
-            lock: Lock::default(), memory: Memory::default(), autostart: Autostart::default(), binds: default_binds(),
+            lock: Lock::default(), memory: Memory::default(), autostart: Autostart::default(), defaults: Defaults::default(), binds: default_binds(),
         }
     }
 }
@@ -248,6 +278,17 @@ pub fn load(path: Option<&std::path::Path>) -> (Config, Option<String>) {
             for (k, v) in std::mem::take(&mut c.binds) {
                 if v == "none" { b.remove(&k); } else { b.insert(k, v); }
             }
+            // the default terminal / file manager chosen in shadow-prefs, unless the key was rebound
+            let stock = default_binds();
+            let q = |v: &str| v.trim().trim_matches('"').trim().to_string();
+            let mut put = |k: &str, cmd: &str| {
+                if !cmd.is_empty() && b.get(k) == stock.get(k) {
+                    b.insert(k.into(), format!("spawn {cmd}"));
+                }
+            };
+            put("Mod+Return", &q(&c.defaults.terminal_cmd));
+            put("Mod+T", &q(&c.defaults.terminal_cmd));
+            put("Mod+E", &q(&c.defaults.files_cmd));
             c.binds = b;
             c.sanitize();
             (c, None)
@@ -271,6 +312,9 @@ impl Config {
         self.look.node_opacity = self.look.node_opacity.clamp(0.05, 1.0);
         self.look.font_px = self.look.font_px.clamp(8.0, 40.0);
         self.hud.height_px = self.hud.height_px.clamp(16, 96);
+        if !["all", "apps"].contains(&self.input.pointer.as_str()) {
+            self.input.pointer = "all".into();
+        }
     }
 }
 
@@ -298,5 +342,20 @@ mod t {
         assert!(e.is_some());
         assert_eq!(c.layout.presets, vec![45, 65, 85]);
         assert_eq!(super::rgb("#FFB000"), [1.0, 176.0 / 255.0, 0.0]);
+        // Shadow's own config.toml (sections shared with niri's generator) still loads, and the
+        // DEFAULTS page's terminal / file manager drive Mod+Return / Mod+E
+        let shadow = format!("{}\n[defaults]\nterminal_cmd = \"foot\"\nfiles_cmd = \"nautilus --new-window\"\n[hub]\nenabled = true\n[display.scale]\n\"eDP-1\" = 1.5\n", super::shadow_core_like());
+        std::fs::write(dir.join("c.toml"), shadow).unwrap();
+        let (c, e) = super::load(Some(&dir.join("c.toml")));
+        assert!(e.is_none(), "{e:?}");
+        assert_eq!(c.binds["Mod+Return"], "spawn foot");
+        assert_eq!(c.binds["Mod+E"], "spawn nautilus --new-window");
+        assert_eq!(c.input.pointer, "all");
+        assert_eq!(c.binds["Mod+Shift+Slash"], "tutorial");
     }
+}
+
+#[cfg(test)]
+fn shadow_core_like() -> &'static str {
+    "[layout]\npresets = [45, 65, 85]\ngaps = 12\n[look]\nopacity = 0.92\nfont_pt = 11\n[display]\nrefresh_policy = \"auto\"\n[bar]\nwidth = 250\n[input]\nxkb_layout = \"us\"\n[session]\nlock_after_min = 10\ncompositor = \"shadow\"\n[memory]\nshell_in_slice = false\n[power]\nlearning = true\n[updates]\nbranch = \"main\"\n[sync]\nage_recipient = \"\"\n"
 }

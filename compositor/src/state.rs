@@ -9,8 +9,9 @@ use smithay::{
     },
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_fractional_scale, delegate_layer_shell, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
-    desktop::{find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, LayerSurface, PopupKind, PopupManager, Space, Window, WindowSurfaceType},
-    input::{keyboard::XkbConfig, Seat, SeatHandler, SeatState},
+    delegate_cursor_shape, delegate_idle_notify, delegate_xdg_activation, delegate_pointer_constraints, delegate_relative_pointer,
+    desktop::{find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, LayerSurface, PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy, Space, Window, WindowSurfaceType},
+    input::{keyboard::XkbConfig, pointer::{CursorImageStatus, Focus}, Seat, SeatHandler, SeatState},
     output::Output,
     reexports::{
         calloop::{LoopHandle, LoopSignal},
@@ -39,6 +40,12 @@ use smithay::{
         },
         shm::{ShmHandler, ShmState},
         viewporter::ViewporterState,
+        cursor_shape::CursorShapeManagerState,
+        pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState},
+        relative_pointer::RelativePointerManagerState,
+        idle_notify::{IdleNotifierHandler, IdleNotifierState},
+        tablet_manager::TabletSeatHandler,
+        xdg_activation::{XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData},
     },
 };
 use std::collections::HashMap;
@@ -91,6 +98,13 @@ pub struct State {
     pub primary_selection_state: PrimarySelectionState,
     pub fractional_state: FractionalScaleManagerState,
     pub viewporter_state: ViewporterState,
+    pub activation_state: XdgActivationState,
+    pub cursor_shape_state: CursorShapeManagerState,
+    pub idle_notifier: IdleNotifierState<State>,
+    pub pointer_constraints_state: PointerConstraintsState,
+    pub relative_pointer_state: RelativePointerManagerState,
+    /// the surface whose pointer lock / confinement is active (games, 3D viewports)
+    pub constrained: Option<WlSurface>,
     pub popups: PopupManager,
     pub seat: Seat<State>,
 
@@ -114,6 +128,19 @@ pub struct State {
 
     pub pointer_loc: Point<f64, Logical>,
     pub pointer_live: bool,
+    /// what the client under the pointer asked for (a named shape, its own surface, or hidden)
+    pub cursor_status: CursorImageStatus,
+    pub cursors: crate::cursor::Cursors,
+    /// hidden while typing (input.hide_cursor_when_typing); back on the next move
+    pub cursor_typing_hidden: bool,
+    /// a layer surface (hub widget, menu) that got the keyboard by a click (OnDemand)
+    pub layer_kb_focus: Option<WlSurface>,
+    /// FIELD TRAINING, the hotkey tutorial (tutorial.rs)
+    pub tutorial: Option<crate::tutorial::Tutorial>,
+    /// the tutorial panel's clickable buttons: (name, logical rect)
+    pub tut_buttons: Vec<(&'static str, R)>,
+    /// fractional scroll steps toward the next ring turn
+    pub ring_scroll: f64,
     pub suppressed_keys: Vec<u32>,
     pub key_times: Vec<Instant>,
     pub last_input: Instant,
@@ -151,6 +178,11 @@ impl State {
         let primary_selection_state = PrimarySelectionState::new::<State>(&dh);
         let fractional_state = FractionalScaleManagerState::new::<State>(&dh);
         let viewporter_state = ViewporterState::new::<State>(&dh);
+        let activation_state = XdgActivationState::new::<State>(&dh);
+        let cursor_shape_state = CursorShapeManagerState::new::<State>(&dh);
+        let idle_notifier = IdleNotifierState::<State>::new(&dh, handle.clone());
+        let pointer_constraints_state = PointerConstraintsState::new::<State>(&dh);
+        let relative_pointer_state = RelativePointerManagerState::new::<State>(&dh);
         let mut seat: Seat<State> = seat_state.new_wl_seat(&dh, "seat0");
         let xkb = XkbConfig { layout: &cfg.input.xkb_layout, variant: &cfg.input.xkb_variant, options: (!cfg.input.xkb_options.is_empty()).then(|| cfg.input.xkb_options.clone()), ..Default::default() };
         if seat.add_keyboard(xkb, cfg.input.repeat_delay, cfg.input.repeat_rate).is_err() {
@@ -163,12 +195,15 @@ impl State {
             compositor_state, xdg_shell_state, decoration_state, layer_shell_state, shm_state,
             dmabuf_state: DmabufState::new(), dmabuf_global: None,
             output_manager_state, seat_state, data_device_state, primary_selection_state, fractional_state, viewporter_state,
+            activation_state, cursor_shape_state, idle_notifier, pointer_constraints_state, relative_pointer_state, constrained: None,
             popups: PopupManager::default(), seat,
             space: Space::default(), output: None, backend: Backend::None,
             wins: vec![], ring: Ring::default(), next_id: 1, anim: None, hud_visible: !crate::config::hub_enabled(), hud: None, hud_extra: vec![],
             refresh_hz: 60, wanted_refresh: None,
             ui: None, greeter_mode: greeter, boot: (!greeter).then(Instant::now),
-            pointer_loc: (0.0, 0.0).into(), pointer_live: false, suppressed_keys: vec![], key_times: vec![], last_input: Instant::now(),
+            pointer_loc: (0.0, 0.0).into(), pointer_live: false,
+            cursor_status: CursorImageStatus::default_named(), cursors: Default::default(), cursor_typing_hidden: false,
+            layer_kb_focus: None, tutorial: None, tut_buttons: vec![], ring_scroll: 0.0, suppressed_keys: vec![], key_times: vec![], last_input: Instant::now(),
             text, render: Default::default(), lua: None, dirty: true, mem_high_seen: 0,
             binds: vec![], ui_tx: None, exit_code: 0,
         }
@@ -278,7 +313,14 @@ impl State {
             let found = map.layers().find(|l| l.can_receive_keyboard_focus() && matches!(l.cached_state().keyboard_interactivity, smithay::wayland::shell::wlr_layer::KeyboardInteractivity::Exclusive)).map(|l| l.wl_surface().clone());
             found
         });
-        let target = if self.ui.is_some() { None } else { layer_focus.or(focus) };
+        // a layer surface clicked into (OnDemand) keeps the keyboard while it is still mapped
+        let clicked = self.layer_kb_focus.clone().filter(|s| {
+            self.output.as_ref().map(|o| layer_map_for_output(o).layers().any(|l| l.wl_surface() == s && l.can_receive_keyboard_focus())).unwrap_or(false)
+        });
+        if clicked.is_none() {
+            self.layer_kb_focus = None;
+        }
+        let target = if self.ui.is_some() { None } else { layer_focus.or(clicked).or(focus) };
         if let Some(k) = self.seat.get_keyboard() {
             if k.current_focus() != target {
                 k.set_focus(self, target, Serial::from(smithay::utils::SERIAL_COUNTER.next_serial()));
@@ -288,9 +330,15 @@ impl State {
         self.dirty = true;
     }
 
-    /// Keyboard-first: the pointer is live only for centre windows tagged requires_pointer.
+    /// The pointer works everywhere except on the lock / greeter screen. In input.pointer = "apps"
+    /// the centre window only gets it when tagged (pointer_apps / a Lua rule); Shadow's layers and
+    /// the ring always do (input.rs decides per surface).
     pub fn update_pointer_policy(&mut self) {
-        self.pointer_live = self.ui.is_none() && self.ring.center().and_then(|id| self.win(id)).map(|w| w.pointer).unwrap_or(false);
+        self.pointer_live = self.ui.is_none();
+    }
+    /// may the centre window receive pointer events?
+    pub fn center_takes_pointer(&self) -> bool {
+        self.cfg.input.pointer != "apps" || self.ring.center().and_then(|id| self.win(id)).map(|w| w.pointer).unwrap_or(false)
     }
 
     pub fn on_focus_changed(&mut self) {
@@ -473,7 +521,29 @@ impl XdgShellHandler for State {
     }
     fn move_request(&mut self, _: ToplevelSurface, _: wl_seat::WlSeat, _: Serial) {}
     fn resize_request(&mut self, _: ToplevelSurface, _: wl_seat::WlSeat, _: Serial, _: xdg_toplevel::ResizeEdge) {}
-    fn grab(&mut self, _: PopupSurface, _: wl_seat::WlSeat, _: Serial) {}
+    /// menus (right-click, combo boxes): the popup holds the pointer and keyboard until a click
+    /// outside it or Escape dismisses it
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let Some(seat) = Seat::<State>::from_resource(&seat) else { return };
+        let kind = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&kind) else { return };
+        let Ok(mut grab) = self.popups.grab_popup::<State>(root, kind, &seat, serial) else { return };
+        if let Some(k) = seat.get_keyboard() {
+            if k.is_grabbed() && !(k.has_grab(serial) || k.has_grab(grab.previous_serial().unwrap_or(serial))) {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            k.set_focus(self, grab.current_grab(), serial);
+            k.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(p) = seat.get_pointer() {
+            if p.is_grabbed() && !(p.has_grab(serial) || p.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial()))) {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            p.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
+    }
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _: Option<wl_output::WlOutput>) {
         if let Some(id) = self.window_for_surface(surface.wl_surface()) {
             if let Some(w) = self.wins.iter_mut().find(|w| w.id == id) {
@@ -556,7 +626,10 @@ impl SeatHandler for State {
     fn seat_state(&mut self) -> &mut SeatState<State> {
         &mut self.seat_state
     }
-    fn cursor_image(&mut self, _: &Seat<Self>, _: smithay::input::pointer::CursorImageStatus) {}
+    fn cursor_image(&mut self, _: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor_status = image;
+        self.dirty = true;
+    }
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         // only the focused (centre stage) client may see clipboard / primary selection offers
         let client = focused.and_then(|s| self.dh.get_client(s.id()).ok());
@@ -647,3 +720,44 @@ delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
 delegate_dmabuf!(State);
+delegate_cursor_shape!(State);
+delegate_idle_notify!(State);
+delegate_xdg_activation!(State);
+delegate_pointer_constraints!(State);
+delegate_relative_pointer!(State);
+
+/// pointer lock / confinement (games, Blender's viewport): granted while the surface has the pointer
+impl PointerConstraintsHandler for State {
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &smithay::input::pointer::PointerHandle<Self>) {
+        if pointer.current_focus().as_ref() == Some(surface) {
+            with_pointer_constraint(surface, pointer, |c| if let Some(c) = c { c.activate() });
+            self.constrained = Some(surface.clone());
+        }
+    }
+    fn cursor_position_hint(&mut self, _: &WlSurface, _: &smithay::input::pointer::PointerHandle<Self>, _: Point<f64, Logical>) {}
+}
+
+impl TabletSeatHandler for State {}
+
+impl IdleNotifierHandler for State {
+    fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
+        &mut self.idle_notifier
+    }
+}
+
+/// xdg-activation: an app asks for one of its windows to come forward (a link opened in the
+/// browser, a second launch of a single-instance app) — it moves to the centre of the ring
+impl XdgActivationHandler for State {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.activation_state
+    }
+    fn request_activation(&mut self, token: XdgActivationToken, data: XdgActivationTokenData, surface: WlSurface) {
+        // only tokens younger than 10 s, as other compositors do
+        if data.timestamp.elapsed() < Duration::from_secs(10) {
+            if let Some(id) = self.window_for_surface(&surface) {
+                self.transition(|r| { r.focus(id); });
+            }
+        }
+        self.activation_state.remove_token(&token);
+    }
+}

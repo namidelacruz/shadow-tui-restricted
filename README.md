@@ -27,7 +27,7 @@ Version 6, with its own Smithay compositor and orbital ring, stays on the `v6` b
 | `shadow-passfix` | Password repair, a plain text console that works on Ctrl+Alt+F2. See [Fix center](#fix-center-and-password-repair). |
 | `shadow-wallpaper` | The wallpaper picker (`Mod+W`). Its first entry is **Vertices**, the reactive 3D field (the default); the second is the generated aurora; then your images. With the hub on, `shadow-hub` draws the wallpaper. With `[hub] enabled = false`, this program draws it instead: on every monitor, also behind the overview, with Vertices as a still frame. |
 | `shadow-craft` | The **Craft App Suite** (ArtCraft: PhotoCraft, VectorCraft, FilmCraft, LightCraft, PdfCraft and the rest, 16 apps).<br>• **Install, update, remove, launch** per user, with no password. Apps go to `~/Applications/Craft` with a menu entry, AppImage first, else the tar.gz.<br>• **Checked:** every download is verified against the SHA-256 GitHub publishes for it. Only exact asset names from the app's own repository are used, and an app without a published checksum is not installed.<br>• **Elsewhere:** in the launcher type `+` to list only Craft apps; the hub's APPS panel has "Craft apps…".<br>• **Command line:** `shadow-craft list / install ID / remove ID / update`.<br>The catalog follows the official ArtCraft Launcher (MIT / Apache-2.0). |
-| `shadow-compositor` | **Shadow's own compositor (preview)**, the v6 Smithay compositor brought up to date.<br>• **Choose it:** at the login screen ("Shadow TUI Restricted (own compositor, preview)"), or with `[session] compositor = "shadow"`.<br>• **Same desktop:** it starts the hub (or the side bar), uses the same keys, and answers the questions the hub and apps ask niri, so they work unchanged.<br>• **Fallback:** if niri is missing or won't start, the session starts this compositor instead.<br>• **Not there yet:** XWayland, multiple monitors, the standard lock protocol (`shadow-lock` uses the compositor's built-in lock instead) and the niri event stream. |
+| `shadow-compositor` | **Shadow's own compositor (preview)**, the v6 Smithay compositor brought up to date.<br>• **Choose it:** at the login screen ("Shadow TUI Restricted (own compositor, preview)"), or with `[session] compositor = "shadow"`.<br>• **Same desktop:** it starts the hub (or the side bar), uses the same keys and your default terminal and file manager (`shadow-prefs` → DEFAULTS). It also answers the questions and actions the hub and apps send to niri, so every Shadow app works unchanged.<br>• **Mouse and touchpad:** they work everywhere: the hub, menus, windows, and the ring (click a wireframe node to bring it forward; `Mod`+scroll turns the ring). Tap-to-click is on by default and the cursor hides while you type. 3D apps and games can lock the pointer. `[input] pointer = "apps"` restores the keyboard-first mode.<br>• **FIELD TRAINING:** a hotkey tutorial that opens on your first login (described below).<br>• **X11 apps:** handled through `xwayland-satellite` when it is installed.<br>• **Fallback:** if niri is missing or won't start, the session starts this compositor instead.<br>• **Not there yet:** multiple monitors and the standard lock protocol (`shadow-lock` uses the compositor's built-in lock instead). |
 | `shadow-prefs` | Preferences, with two pages:<br>• **Defaults:** file manager, terminal and background, each applied at once. The file manager sets the XDG folder default and Mod+E. The terminal sets Mod+Return, the terminal apps opened from the hub, launcher and files, and `~/.config/xdg-terminals.list`.<br>• **Crash log:** what is holding changes back (an interrupted update, niri refusing the config, the hub's fallback, waiting `.shadow-new` defaults), then crashes newest first: core dumps of Shadow programs and niri, hub exits, panics, journal errors. Each line has its details below it. `shadow-prefs crash` opens this page.<br>• **Crash reports:** **Save a report** (or `shadow-prefs report` on a text console) writes one plain-text file to `~/shadow-reports/`, for you to attach or upload yourself; Shadow sends nothing anywhere. Your user and computer name, Wi-Fi network names, MAC / IP / e-mail addresses, passwords and tokens are replaced by placeholders, and the file is capped at 1 MB. |
 | `shadow-launch` | Launcher, opened as its own normal window (tiled, opaque), not an overlay over what's on screen. Click or press Enter to launch. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
 | `shadow-net` | Wi-Fi: networks, UC-Secure and eduroam setup, self-repair, with a live EAP/TLS log. |
@@ -58,6 +58,19 @@ git clone <this repo> && cd shadow-tui-restricted
 ./install.sh --bootstrap git@github.com:you/shadow-state.git   # new machine: restore your state too
 ./install.sh --uninstall
 ```
+
+### Only some apps, or with a window
+
+`./install.sh --gui` opens a small installer window (in the terminal on a TTY) with two choices:
+
+| | Full desktop | Apps only |
+|---|---|---|
+| What you get | Shadow becomes your desktop: the hub, every app, the daemons, updates. Optional login screen and security package. | Pick from Terminal, Files, Launcher, Task manager, Craft apps and the 3D wallpaper. |
+| Where | System packages (pacman / RPM), a new login session | For your user only: `~/.local/share/shadow-apps`, links in `~/.local/bin`, entries in your app menu |
+| Changes to your system | Services, session, optional greeter | None. `sudo` is used only for the build tools. |
+| Remove | `./install.sh --uninstall` | `./install.sh --remove-apps` |
+
+Without the window: `./install.sh --apps "shadow-term shadow-files"`. The window only decides; the work and any password prompt happen in the terminal you started it from. A later full install replaces an apps-only one. The 3D wallpaper needs a desktop with layer-shell (KDE, Sway, Hyprland, niri), so not GNOME.
 
 The checkout's folder path may only hold letters, digits and `. _ - + /`. A second download such as `shadow-tui-restricted (1)` or `… - Copy` is refused before anything changes, and the installer prints the exact `mv` command to rename it. Packaging tools paste that path into shell scripts, where a bracket or space breaks the build. `--check` and `--uninstall` work from any folder.
 
@@ -133,6 +146,16 @@ Shadow's niri config is generated into `~/.config/shadow-state/niri.kdl`, and th
 | `Mod+Alt+L` | lock |
 | `Mod+Shift+Backspace` | revert the healer's last automated fix |
 | `Mod+Q` · `Mod+Shift+E` | close · quit the session |
+
+**On Shadow's own compositor** the same keys apply (no workspaces or overview: the ring takes their place), plus:
+
+| Keys / mouse | Action |
+|---|---|
+| `Mod+Shift+/` · `Mod+F1` | **FIELD TRAINING**, the hotkey tutorial (opens by itself on your first login there) |
+| `Mod+P` | default apps, background and crash log (`shadow-prefs`) |
+| click a ring node · `Mod`+scroll | bring that window to the centre · turn the ring |
+
+FIELD TRAINING is a glass panel at the top of the screen. It asks for one hotkey at a time ("OPEN THE MENU — SUPER + SPACE"); you press the real key, the real thing happens, and the step locks in with a cyan flash. It shows the keys as they are actually bound, so a rebound key or the default terminal you chose shows up correctly. Every step also names its mouse alternative. SKIP and CLOSE work with the mouse. The lock step is only acknowledged during training.
 
 With `[hub] enabled = false`, the 7.x keys come back: `Mod+Space` opens the launcher and `Mod+A` the side bar's apps flyout.
 

@@ -15,7 +15,7 @@
 # config file, so a niri update can't break Shadow's binaries.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
-pkgver=8.2.2
+pkgver=8.3.0
 pkgrel=1
 pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on niri — vertex wireframe hub, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')
@@ -69,7 +69,8 @@ _bundle_libs() {
 package_shadow-tui-restricted() {
   depends=(niri mesa libinput libdrm seatd libxkbcommon pam systemd fontconfig ttf-jetbrains-mono-nerd
            networkmanager wpa_supplicant iproute2 util-linux kmod git openssh polkit wireplumber brightnessctl)
-  optdepends=(
+  optdepends=('xwayland-satellite: X11 apps on niri and shadow-compositor' 'xorg-xwayland: X11 apps'
+    
     'mate-polkit: password prompts for privileged actions (any polkit agent works; ./install.sh installs one)'
     'greetd: the Shadow login screen (shadow greeter enable)'
     'terminus-font: login screen text sized to the panel (ter-v24n on 2560x1600)'
