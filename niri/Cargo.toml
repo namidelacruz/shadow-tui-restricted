@@ -1,6 +1,6 @@
 [package]
 name = "shadow-niri"
-version = "8.0.0"
+version = "8.0.1"
 edition = "2021"
 description = "Shadow TUI Restricted: client for niri's public IPC (niri msg --json), event-stream model, config generation"
 license = "MIT"

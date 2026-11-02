@@ -444,6 +444,22 @@ The desktop has four parts:
 
 ![summon](docs/screenshots/8.0-hub-summon-apps.png)
 
+**If the hub doesn't work.** Three safeguards keep you from an empty desktop:
+
+- **Crashes.** A small supervisor (the same program) runs the hub. It restarts the hub after a crash. After 3 crashes within 2 minutes it starts the side bar and the wallpaper instead, and shows a notification. The details go to `~/.local/state/shadow-tui/hub.log`.
+- **Older niri.** If niri rejects one of the newer config lines, `shadow setup niri` drops the optional ones (overview backdrop colour, layer shadow rules) instead of keeping the whole old config. The old config would mean no hub and the 7.x keys.
+- **Updating mid-session.** An update that brings the hub starts it right away and retires the side bar and wallpaper. Before 8.0.1 that only happened at the next login.
+
+`shadow-hub doctor` checks, on your machine:
+- that niri is reachable;
+- that the generated config starts the hub;
+- whether the hub and its supervisor are running;
+- whether an image is set as the background (an image replaces the 3D field);
+- whether a keyboard-layout switch has taken Mod+Space;
+- how long a frame takes here.
+
+It also prints the end of the hub log.
+
 ### Look
 
 Every 2D app shares the vertex wireframe style:

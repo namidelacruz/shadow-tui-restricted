@@ -140,12 +140,18 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (109);
+- unit tests in every crate (110);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 8.0.1 (real-device failure paths, checked in nested niri 25.08):
+  - Crashes: a crash of the hub is restarted, and 3 crashes switch to the side bar + wallpaper with a notification and a log entry. Logging out or `pkill` is not treated as a crash.
+  - Older niri: a stand-in niri that rejects `overview {}` now gets a compatibility config that still starts the hub. Before, the whole new config was kept out and the 7.x desktop stayed.
+  - Wallpaper: with niri's opaque workspace colour, the wallpaper program (placed in the backdrop) was invisible outside the overview. Measured: the screen was obsidian before the fix and showed the wallpaper after it. Workspaces are now transparent, and the obsidian moves to the overview backdrop.
+  - A panel clamp that panicked on monitors narrower than the panel.
+  - The updater starting the hub mid-session is a code path not run here.
 - 8.0 (vertex wireframe UI, shadow-hub):
   - real niri 25.08, nested at 1600×1000 with the generated config (`niri validate` passes, including `overview { backdrop-color }`):
     - the hub starts from `spawn-at-startup`;

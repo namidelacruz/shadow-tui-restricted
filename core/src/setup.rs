@@ -308,7 +308,9 @@ pub fn niri_config(verbose: bool) -> i32 {
     let text = std::fs::read_to_string(st::state_dir().join("config.toml")).unwrap_or_default();
     let path = shadow_niri::config::path();
     let old = std::fs::read_to_string(&path).unwrap_or_default();
-    let new = shadow_niri::config::generate(&niri_gen(&text), &shadow_niri::config::user_tail(&old));
+    let tail = shadow_niri::config::user_tail(&old);
+    let mut g = niri_gen(&text);
+    let mut new = shadow_niri::config::generate(&g, &tail);
     if new == old {
         if verbose {
             println!("{} is up to date", path.display());
@@ -317,19 +319,36 @@ pub fn niri_config(verbose: bool) -> i32 {
     }
     let _ = std::fs::create_dir_all(path.parent().unwrap());
     let tmp = path.with_extension("kdl.new");
-    if std::fs::write(&tmp, &new).is_err() {
-        eprintln!("shadow setup niri: cannot write {}", tmp.display());
-        return 1;
-    }
-    if sys::which("niri").is_some() {
+    let validate = |cfg: &str| -> Result<(), String> {
+        std::fs::write(&tmp, cfg).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+        if sys::which("niri").is_none() {
+            return Ok(());
+        }
         let (code, out, err) = sys::run(&["niri", "validate", "-c", &tmp.to_string_lossy()]);
-        if code != 0 {
-            let _ = std::fs::remove_file(&tmp);
+        if code == 0 {
+            Ok(())
+        } else {
             let why = format!("{out}{err}");
+            Err(why.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("").trim().to_string())
+        }
+    };
+    if let Err(why) = validate(&new) {
+        // an older niri that doesn't know one of the optional lines must not keep the whole
+        // config (and with it the hub, the binds, the startup programs) out: try without them
+        eprintln!("shadow setup niri: niri rejected the full config: {why}");
+        g.compat = true;
+        new = shadow_niri::config::generate(&g, &tail);
+        if new == old {
+            let _ = std::fs::remove_file(&tmp);
+            return 0;
+        }
+        if let Err(why2) = validate(&new) {
+            let _ = std::fs::remove_file(&tmp);
             eprintln!("shadow setup niri: niri rejected the generated config — kept the current one");
-            eprintln!("{}", why.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("").trim());
+            eprintln!("{why2}");
             return 1;
         }
+        eprintln!("shadow setup niri: using compatibility mode (no overview backdrop colour, no layer shadow rules) — update niri to get them back");
     }
     if std::fs::rename(&tmp, &path).is_err() {
         eprintln!("shadow setup niri: cannot replace {}", path.display());

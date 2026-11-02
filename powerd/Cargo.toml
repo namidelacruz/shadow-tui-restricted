@@ -1,6 +1,6 @@
 [package]
 name = "shadow-powerd"
-version = "8.0.0"
+version = "8.0.1"
 edition = "2021"
 description = "Shadow Network hardware optimizer for the Dell 14 Plus (Lunar Lake): thermal modes, charging, refresh rate, audio, kernel guard, adaptive learning"
 license = "MIT"

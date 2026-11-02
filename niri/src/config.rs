@@ -27,6 +27,10 @@ pub struct Gen {
     pub natural_scroll: bool,
     /// 8.0 desktop: shadow-hub (vertex field + central hub) instead of the side bar + wallpaper
     pub hub: bool,
+    /// compatibility mode: leave out the optional lines older niri releases don't know
+    /// (overview backdrop colour, place-within-backdrop, layer shadows). Used when niri rejects
+    /// the full config, so one cosmetic line can never keep the whole Shadow config out.
+    pub compat: bool,
 }
 
 impl Default for Gen {
@@ -47,6 +51,7 @@ impl Default for Gen {
             macros: vec![],
             natural_scroll: true,
             hub: true,
+            compat: false,
         }
     }
 }
@@ -185,7 +190,14 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, &format!("    default-column-width {{ proportion {:.3}; }}", d));
     p(&mut o, &format!("    focus-ring {{ width 1; active-color {}; inactive-color {}; }}", q(&g.amber), q(&format!("{}66", g.amber))));
     p(&mut o, "    border { off; }");
-    p(&mut o, &format!("    background-color {}", q(&g.obsidian)));
+    // transparent workspaces: whatever is on the background layer (the hub's field, or the
+    // wallpaper placed in the backdrop) shows through. With an opaque colour here the wallpaper
+    // only ever appeared in the overview. The obsidian goes to the backdrop instead (below).
+    if g.compat {
+        p(&mut o, &format!("    background-color {}", q(&g.obsidian)));
+    } else {
+        p(&mut o, r#"    background-color "transparent""#);
+    }
     p(&mut o, "}");
     p(&mut o, "");
     let curve = format!("duration-ms {}; curve \"cubic-bezier\" 0.2 0.0 0.0 1.0;", g.anim_ms);
@@ -213,15 +225,17 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, "}");
     // the wallpaper also shows behind the workspaces in the overview. The hub is not placed there:
     // niri gives backdrop layers no input, and the hub must react to the cursor and to clicks
-    p(&mut o, "layer-rule {");
-    p(&mut o, r#"    match namespace="^shadow-wallpaper$""#);
-    p(&mut o, "    place-within-backdrop true");
-    p(&mut o, "}");
-    p(&mut o, "layer-rule {");
-    p(&mut o, r#"    match namespace="^shadow-(bar|flyout|hub|hub-summon)$""#);
-    p(&mut o, "    shadow { off; }");
-    p(&mut o, "}");
-    if g.hub {
+    if !g.compat {
+        p(&mut o, "layer-rule {");
+        p(&mut o, r#"    match namespace="^shadow-wallpaper$""#);
+        p(&mut o, "    place-within-backdrop true");
+        p(&mut o, "}");
+        p(&mut o, "layer-rule {");
+        p(&mut o, r#"    match namespace="^shadow-(bar|flyout|hub|hub-summon)$""#);
+        p(&mut o, "    shadow { off; }");
+        p(&mut o, "}");
+    }
+    if !g.compat {
         p(&mut o, &format!("overview {{ backdrop-color {}; }}", q(&g.obsidian)));
     }
     p(&mut o, "");
@@ -316,5 +330,14 @@ mod tests {
         let old = generate(&Gen { hub: false, ..Gen::default() }, "");
         assert!(old.contains("spawn-at-startup \"shadow-bar\"") && old.contains("spawn-at-startup \"shadow-wallpaper\""));
         assert!(old.contains("Mod+Space { spawn \"shadow-launch\"; }") && !old.contains("shadow-hub"));
+        // the wallpaper sits in the backdrop: workspaces must let it through
+        assert!(a.contains("background-color \"transparent\"") && old.contains("background-color \"transparent\""));
+    }
+
+    #[test]
+    fn compat_mode_keeps_the_hub_and_drops_only_optional_lines() {
+        let a = generate(&Gen { compat: true, ..Gen::default() }, "");
+        assert!(a.contains("spawn-at-startup \"shadow-hub\"") && a.contains("Mod+Space { spawn \"shadow-hub\" \"summon\"; }"));
+        assert!(!a.contains("overview {") && !a.contains("place-within-backdrop") && !a.contains("shadow { off; }"));
     }
 }

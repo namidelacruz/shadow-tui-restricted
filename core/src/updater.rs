@@ -1095,8 +1095,27 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
     // session side: niri config, Lua modules, restart the session programs that changed
     sh_quiet(&["shadow", "setup", "niri"]);
     sh_quiet(&["shadow-sessiond", "reload"]);
+    // the desktop switching to the hub (an update that brings shadow-hub, or turns it on) takes
+    // effect now, not at the next login: start the hub and retire the side bar and the wallpaper
+    let hub_wanted = std::fs::read_to_string(shadow_niri::config::path())
+        .map(|c| c.contains("spawn-at-startup \"shadow-hub\""))
+        .unwrap_or(false);
+    let hub_running = sys::run(&["pgrep", "-x", "shadow-hub"]).0 == 0;
+    let mut switched = false;
+    if hub_wanted && !hub_running && sys::run(&["niri", "msg", "version"]).0 == 0 {
+        let _ = std::process::Command::new("sh")
+            .args(["-c", "setsid -f shadow-hub >/dev/null 2>&1"])
+            .status();
+        sh_quiet(&["pkill", "-x", "shadow-bar"]);
+        sh_quiet(&["pkill", "-f", "^(/[^ ]*/)?shadow-wallpaper$"]);
+        switched = true;
+        out(porcelain, "log", "started the hub (the side bar is still there: Mod+Shift+B)");
+    }
     for prog in ["shadow-bar", "shadow-hub", "shadow-sessiond", "shadow-displayd"] {
         let f = format!("/opt/shadow-tui/bin/{prog}");
+        if (prog == "shadow-bar" || prog == "shadow-hub") && switched {
+            continue;
+        }
         if pl.iter().any(|(k, x)| k == "replace" && *x == f)
             && sys::run(&["pgrep", "-x", prog]).0 == 0
         {

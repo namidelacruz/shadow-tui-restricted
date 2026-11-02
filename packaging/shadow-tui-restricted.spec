@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        8.0.0
+Version:        8.0.1
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -128,6 +128,13 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.0.1-1
+- shadow-hub runs under a supervisor: restarts after a crash, falls back to the side bar and
+  wallpaper after 3 crashes (notification + ~/.local/state/shadow-tui/hub.log); shadow-hub doctor
+- shadow setup niri: compatibility config when niri rejects the newer optional lines, instead
+  of keeping the whole old config (which kept the 7.x desktop)
+- niri: transparent workspaces, so the wallpaper in the backdrop is visible outside the overview
+- updates that bring the hub start it at once; panel clamp panic on narrow monitors
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.0.0-1
 - vertex wireframe UI: chamfered translucent glass ([look] window_opacity, chamfer), wire edges,
   vertex nodes, segmented meters; launcher and updater stay opaque

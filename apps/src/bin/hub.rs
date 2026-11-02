@@ -8,6 +8,12 @@
 //!   shadow-hub summon [PAGE]    the hub over your windows. It uses the overlay layer and takes the
 //!                               keyboard. Esc, or a click on empty space, closes it.
 //!   shadow-hub reset-layout     puts the widgets back where they started.
+//!   shadow-hub doctor           checks what the hub needs on this machine and prints what it finds.
+//!
+//! The desktop instance runs under a small supervisor (the same program). If the hub crashes, the
+//! supervisor restarts it. After 3 crashes within 2 minutes it starts the side bar and the wallpaper
+//! instead, so you never end up with an empty desktop, and tells you. Its output goes to
+//! ~/.local/state/shadow-tui/hub.log.
 //!
 //! The hub (vertex wireframe glass):
 //!   * A static core sits in the middle of the screen. Click it, or press Space, and eight option
@@ -46,6 +52,7 @@ use shadow_ui::{run, Anchor, App, Ctx, Frame, Key, Keysym, Layer, LayerKeyboard,
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
+use std::os::unix::process::CommandExt;
 use std::time::Instant;
 
 const PAGES: [&str; 8] = ["APPS", "SETTINGS", "POWER", "SYSTEM", "NETWORK", "FIX", "LOOK", "TASKS"];
@@ -896,7 +903,8 @@ impl Hub {
         let right = p.0 >= c.0 - 1.0;
         let ring = f.px(165.0 * 1.25 + 80.0) as f32;
         let x = if right { c.0 + ring } else { c.0 - ring - w as f32 } as i32 + ((1.0 - t) * f.px(if right { -24.0 } else { 24.0 }) as f32) as i32;
-        let x = x.clamp(f.px(10.0), size.0 - w - f.px(10.0));
+        // (never clamp with min > max: that panics on a monitor narrower than the panel)
+        let x = x.clamp(f.px(10.0), (size.0 - w - f.px(10.0)).max(f.px(10.0)));
         let y = ((p.1 - head as f32) as i32).clamp(f.px(10.0), (size.1 - full_h - f.px(10.0)).max(f.px(10.0)));
         let h = ((full_h as f32) * t).max(head as f32 * t) as i32;
         // link from the node to the panel
@@ -1544,7 +1552,15 @@ fn main() {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     let page_of = |s: &str| PAGES.iter().position(|p| p.eq_ignore_ascii_case(s));
     let hub = match a.as_slice() {
-        [] => Hub::new(false, None),
+        // the desktop: supervised (see `supervise`), unless this is the supervised child or a snapshot
+        [] if std::env::var_os("SHADOW_HUB_CHILD").is_none() && std::env::var_os("SHADOW_SNAPSHOT").is_none() => std::process::exit(supervise()),
+        [] => {
+            std::panic::set_hook(Box::new(|p| {
+                eprintln!("shadow-hub panicked: {p}");
+            }));
+            Hub::new(false, None)
+        }
+        ["doctor"] => std::process::exit(doctor()),
         ["--open", p, ..] => {
             let mut h = Hub::new(false, page_of(p));
             h.open = true;
@@ -1578,7 +1594,7 @@ fn main() {
             return;
         }
         _ => {
-            eprintln!("usage: shadow-hub [summon [apps|settings|power|system|network|fix|look|tasks] | reset-layout]");
+            eprintln!("usage: shadow-hub [summon [apps|settings|power|system|network|fix|look|tasks] | reset-layout | doctor]");
             std::process::exit(2);
         }
     };
@@ -1587,6 +1603,185 @@ fn main() {
     if let Err(e) = run(Box::new(hub), Some(rx)) {
         eprintln!("shadow-hub: {e}");
         std::process::exit(1);
+    }
+}
+
+// ── supervision, fallback and diagnostics ──────────────────────────────────────────────────────
+
+fn log_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| shadow_apps::home().join(".local/state"));
+    base.join("shadow-tui/hub.log")
+}
+
+fn log(msg: &str) {
+    let p = log_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    // keep the log small: start over past 256 KB
+    if std::fs::metadata(&p).map(|m| m.len() > 256 * 1024).unwrap_or(false) {
+        let _ = std::fs::rename(&p, p.with_extension("log.old"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        use std::io::Write;
+        let _ = writeln!(f, "{} {msg}", cmd_out(&["date", "-Is"]).1.trim());
+    }
+}
+
+/// niri (the session) still answers; when it doesn't, the session is over and nothing restarts
+fn session_alive() -> bool {
+    std::env::var_os("NIRI_SOCKET").is_some_and(|p| std::path::Path::new(&p).exists()) && cmd_out(&["niri", "msg", "version"]).0 == 0
+}
+
+extern "C" fn ignore_signal(_: libc::c_int) {}
+
+/// Run the desktop hub as a child and look after it. Returns the exit code for this process.
+fn supervise() -> i32 {
+    // SIGUSR1 (reload) is meant for the child; a handler (not SIG_IGN, which the child would
+    // inherit) keeps the supervisor alive when `pkill -USR1 -f shadow-hub` reaches it too
+    // SAFETY: installing a signal handler that does nothing
+    unsafe {
+        libc::signal(libc::SIGUSR1, ignore_signal as *const () as libc::sighandler_t);
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| "shadow-hub".into());
+    let mut crashes: Vec<Instant> = vec![];
+    loop {
+        let errf = std::fs::OpenOptions::new().create(true).append(true).open(log_path());
+        let mut cmd = std::process::Command::new(&exe);
+        // same argv as the supervisor, so `pkill -f '^…shadow-hub$'` reaches both
+        cmd.arg0("shadow-hub").env("SHADOW_HUB_CHILD", "1").stdin(std::process::Stdio::null());
+        if let Ok(f) = errf {
+            cmd.stderr(f);
+        }
+        let started = Instant::now();
+        let status = match cmd.status() {
+            Ok(s) => s,
+            Err(e) => {
+                log(&format!("cannot start the hub: {e}"));
+                fallback(&format!("could not start: {e}"));
+                return 1;
+            }
+        };
+        use std::os::unix::process::ExitStatusExt;
+        if status.success() {
+            return 0;
+        }
+        // stopped by a signal (logout, `pkill shadow-hub`, the updater restarting it): not a crash
+        if let Some(sig) = status.signal() {
+            if sig == libc::SIGTERM || sig == libc::SIGKILL || sig == libc::SIGINT || sig == libc::SIGHUP {
+                return 0;
+            }
+        }
+        if !session_alive() {
+            return 0;
+        }
+        log(&format!("the hub exited ({status}) after {:.0} s", started.elapsed().as_secs_f32()));
+        crashes.retain(|t| t.elapsed().as_secs() < 120);
+        crashes.push(Instant::now());
+        if crashes.len() >= 3 {
+            fallback(&format!("it stopped {} times in 2 minutes ({status})", crashes.len()));
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(800));
+    }
+}
+
+/// The hub can't run: bring back the 7.x desktop (side bar + wallpaper) and say why.
+fn fallback(why: &str) {
+    log(&format!("falling back to the side bar and the wallpaper: {why}"));
+    for (prog, pattern) in [("shadow-wallpaper", "^(/[^ ]*/)?shadow-wallpaper$"), ("shadow-bar", "^(/[^ ]*/)?shadow-bar$")] {
+        if cmd_out(&["pgrep", "-f", pattern]).0 != 0 {
+            spawn(prog);
+        }
+    }
+    let _ = cmd_out(&[
+        "notify-send",
+        "-a",
+        "Shadow",
+        "Shadow hub stopped",
+        &format!("Switched to the side bar so your desktop keeps working ({why}). Details: shadow-hub doctor, ~/.local/state/shadow-tui/hub.log"),
+    ]);
+}
+
+/// `shadow-hub doctor`: what the hub needs, checked on this machine
+fn doctor() -> i32 {
+    let mut bad = 0;
+    let mut line = |ok: Option<bool>, what: &str, detail: String| {
+        let mark = match ok {
+            Some(true) => "ok  ",
+            Some(false) => {
+                bad += 1;
+                "FAIL"
+            }
+            None => "note",
+        };
+        println!("[{mark}] {what}: {detail}");
+    };
+    let text = conf();
+    let enabled = get_in(&text, "hub", "enabled").map(|v| v.trim() != "false").unwrap_or(true);
+    line(Some(enabled), "[hub] enabled", if enabled { "yes".into() } else { "no — the side bar and wallpaper are used (set enabled = true)".into() });
+    let (c, v) = cmd_out(&["niri", "--version"]);
+    line(Some(c == 0), "niri", if c == 0 { v.trim().to_string() } else { "not found".into() });
+    line(Some(session_alive()), "niri session", if session_alive() { "running, answers niri msg".into() } else { "not reachable from here (NIRI_SOCKET unset or niri not running)".into() });
+    let kdl = shadow_niri::config::path();
+    let cfg = std::fs::read_to_string(&kdl).unwrap_or_default();
+    let spawns = cfg.contains("spawn-at-startup \"shadow-hub\"");
+    line(Some(spawns || !enabled), "niri config starts the hub", if spawns { format!("yes ({})", kdl.display()) } else { format!("no — {} still has the old startup programs; run: shadow setup niri  (then log out and in)", kdl.display()) });
+    if cfg.contains("spawn-at-startup") && !cfg.contains("overview {") && spawns {
+        line(None, "niri compatibility mode", "on (this niri is older; cosmetic lines left out)".into());
+    }
+    let (_, pids) = cmd_out(&["pgrep", "-f", "^(/[^ ]*/)?shadow-hub$"]);
+    let n = pids.split_whitespace().count();
+    line(Some(n >= 1 || !enabled), "hub running", match n {
+        0 => "no — start it with: shadow-hub &   (or log out and in)".into(),
+        1 => "yes (no supervisor: started by hand?)".into(),
+        _ => format!("yes ({n} processes: supervisor + hub)"),
+    });
+    let others: Vec<&str> = ["shadow-bar", "shadow-wallpaper"].into_iter().filter(|p| cmd_out(&["pgrep", "-f", &format!("^(/[^ ]*/)?{p}$")]).0 == 0).collect();
+    if !others.is_empty() {
+        line(None, "also running", format!("{} (left over from 7.x or the fallback; Mod+Shift+B toggles the bar)", others.join(", ")));
+    }
+    let (wall, _) = wall::choice(&text, None);
+    line(None, "background", if wall == "vertices" { "the 3D vertex field".into() } else { format!("{wall} — an image is set, so the 3D field is not shown (LOOK → Vertices, or: shadow-wallpaper set vertices)") });
+    let reactive = get_in(&text, "hub", "reactive").map(|v| v.trim() != "false").unwrap_or(true);
+    if !reactive {
+        line(None, "[hub] reactive", "false — the field does not follow the cursor".into());
+    }
+    // a keyboard layout switch on Super+Space would swallow the hub's Mod+Space
+    let xkb = get_in(&text, "input", "xkb_options").unwrap_or_default();
+    if xkb.contains("win_space") {
+        line(Some(false), "Mod+Space", format!("taken by the keyboard layout switch ({}) — remove win_space_toggle from [input] xkb_options, or use Mod+A", xkb.trim_matches('"')));
+    }
+    let wd = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    line(Some(!wd.is_empty()), "Wayland display", if wd.is_empty() { "WAYLAND_DISPLAY unset (run this inside the session)".into() } else { wd });
+    // frame cost at this machine's speed, for the laptop panel size
+    let th = shadow_ui::Theme::load();
+    let (w, h) = (2560usize, 1600usize);
+    let mut buf = vec![0u8; w * h * 4];
+    let mut fld = Field::new();
+    fld.draw(&mut shadow_ui::Canvas { buf: &mut buf, w, h }, &th);
+    let t = Instant::now();
+    for i in 0..10 {
+        fld.pointer(0.3 + i as f32 * 0.02, 0.6);
+        fld.step();
+        fld.draw(&mut shadow_ui::Canvas { buf: &mut buf, w, h }, &th);
+    }
+    let ms = t.elapsed().as_secs_f64() * 100.0;
+    line(Some(ms < 25.0), "field frame at 2560×1600", format!("{ms:.1} ms{}", if ms >= 25.0 { " — slow here; [hub] reactive = false keeps it still" } else { "" }));
+    let lp = log_path();
+    let tail: Vec<String> = std::fs::read_to_string(&lp).unwrap_or_default().lines().rev().take(8).map(String::from).collect();
+    if tail.is_empty() {
+        line(None, "hub log", format!("{} (empty)", lp.display()));
+    } else {
+        println!("--- last lines of {} ---", lp.display());
+        for l in tail.iter().rev() {
+            println!("{l}");
+        }
+    }
+    if bad == 0 {
+        0
+    } else {
+        1
     }
 }
 
