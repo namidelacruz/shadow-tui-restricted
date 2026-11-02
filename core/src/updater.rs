@@ -1103,13 +1103,12 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
     let hub_running = sys::run(&["pgrep", "-x", "shadow-hub"]).0 == 0;
     let mut switched = false;
     if hub_wanted && !hub_running && sys::run(&["niri", "msg", "version"]).0 == 0 {
-        let _ = std::process::Command::new("sh")
-            .args(["-c", "setsid -f shadow-hub >/dev/null 2>&1"])
-            .status();
-        sh_quiet(&["pkill", "-x", "shadow-bar"]);
-        sh_quiet(&["pkill", "-f", "^(/[^ ]*/)?shadow-wallpaper$"]);
-        switched = true;
-        out(porcelain, "log", "started the hub (the side bar is still there: Mod+Shift+B)");
+        // the same steps as `shadow-hub switch` (tested on its own), run by the new binary
+        let (rc, o, e) = sys::run(&["shadow-hub", "switch"]);
+        for l in format!("{o}{e}").lines().filter(|l| !l.trim().is_empty()) {
+            out(porcelain, "log", l);
+        }
+        switched = rc == 0;
     }
     for prog in ["shadow-bar", "shadow-hub", "shadow-sessiond", "shadow-displayd"] {
         let f = format!("/opt/shadow-tui/bin/{prog}");

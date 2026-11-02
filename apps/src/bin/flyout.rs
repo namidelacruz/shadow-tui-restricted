@@ -122,7 +122,7 @@ impl Flyout {
                     .iter()
                     .filter_map(|e| {
                         let base = if e.tag == "shadow" { 6 } else { 0 };
-                        desktop::score(&q, &format!("{} {} {}", e.name, e.keywords, e.detail)).map(|s| (s * 4 + self.hist.get(&e.id).copied().unwrap_or(0).min(50) + base, e))
+                        desktop::score(&q, &format!("{} {} {}", e.name, e.keywords, e.detail)).map(|s| (s * 4 + desktop::name_bonus(&q, &e.name) + self.hist.get(&e.id).copied().unwrap_or(0).min(50) + base, e))
                     })
                     .collect();
                 v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase())));

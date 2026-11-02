@@ -140,18 +140,22 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (110);
+- unit tests in every crate (112);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 8.0.2 (the 8.0.1 fixes checked end to end in nested niri 25.08, plus what was still untested):
+  - `shadow-hub switch` from a 7.x session (side bar + wallpaper running, the 7.x niri config) gives: hub and supervisor running, bar and wallpaper stopped, `Mod+Space` bound to the hub in the rewritten config. niri reloaded the new config live without errors (its log shows one more config load). `shadow-hub use-bar` switches back. The updater now runs that same command, so its switch is the tested one.
+  - Keyboard on the desktop works: one click on the empty desktop, then typing "foot", opens APPS with the search filled in. That gives background-layer `on-demand` focus under niri.
+  - This found a ranking bug: "Yazi (foot)" came before Foot. The app's own name now outweighs a match elsewhere, in the hub, the flyout and the launcher.
+  - Dragging a widget is a unit test: grab, move, release, saved to `[hub.widgets]`, read back. It is not a compositor test, because wlrctl can't hold a button down.
 - 8.0.1 (real-device failure paths, checked in nested niri 25.08):
   - Crashes: a crash of the hub is restarted, and 3 crashes switch to the side bar + wallpaper with a notification and a log entry. Logging out or `pkill` is not treated as a crash.
   - Older niri: a stand-in niri that rejects `overview {}` now gets a compatibility config that still starts the hub. Before, the whole new config was kept out and the 7.x desktop stayed.
   - Wallpaper: with niri's opaque workspace colour, the wallpaper program (placed in the backdrop) was invisible outside the overview. Measured: the screen was obsidian before the fix and showed the wallpaper after it. Workspaces are now transparent, and the obsidian moves to the overview backdrop.
   - A panel clamp that panicked on monitors narrower than the panel.
-  - The updater starting the hub mid-session is a code path not run here.
 - 8.0 (vertex wireframe UI, shadow-hub):
   - real niri 25.08, nested at 1600×1000 with the generated config (`niri validate` passes, including `overview { backdrop-color }`):
     - the hub starts from `spawn-at-startup`;
@@ -165,8 +169,7 @@ Tested in the container:
   - CPU, measured in the container: a frame while the field moves takes about 5 ms at 1600×1000 and about 12 ms at 2560×1600. A full hub redraw takes about 25 ms and 60 ms. Idle in nested niri, the hub uses about 0.5 % of one core.
   - Not run here:
     - real hardware;
-    - dragging a widget in a compositor (wlrctl can't hold a button; the drag code path is untested outside the hit logic);
-    - keyboard focus on the background layer under niri (`on-demand`). Typing goes through `Mod+Space` summon, which takes the keyboard exclusively.
+    - dragging a widget with a real pointer (covered by a unit test since 8.0.2).
 - 7.5:
   - smart-charging guard (unit tests): only firmware-listed modes, no-op detection, read-back, 6-writes-per-day budget, 7-day AC history, smart choice;
   - side-bar POWER dropdown, wallpaper picker, generated default wallpaper and fix center, all rendered headless and checked visually;

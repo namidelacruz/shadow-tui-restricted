@@ -130,6 +130,24 @@ pub fn load_apps() -> Vec<Entry> {
     out
 }
 
+/// Extra weight when the query matches the app's own name: exactly, at its start, or at the start
+/// of one of its words. Without it a long description that happens to contain the letters
+/// ("Yazi (foot)", a file manager that runs in foot) can outrank the app you typed ("Foot").
+pub fn name_bonus(q: &str, name: &str) -> i32 {
+    let (q, n) = (q.trim().to_lowercase(), name.to_lowercase());
+    if q.is_empty() {
+        0
+    } else if n == q {
+        400
+    } else if n.starts_with(&q) {
+        200
+    } else if n.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&q)) {
+        100
+    } else {
+        0
+    }
+}
+
 /// Subsequence fuzzy score; higher is better. None = no match.
 pub fn score(q: &str, hay: &str) -> Option<i32> {
     if q.is_empty() {
@@ -315,6 +333,17 @@ pub fn estimate(e: &Entry, ram: &HashMap<String, u32>, cpu: &HashMap<u32, f64>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_named_wins() {
+        // the case seen in niri: "foot" put "Yazi (foot)" (a file manager run in foot) above Foot
+        let yazi = score("foot", "Yazi (foot) shell;prompt; Terminal file manager").unwrap() * 4 + name_bonus("foot", "Yazi (foot)");
+        let foot = score("foot", "Foot foot;terminal; Terminal").unwrap() * 4 + name_bonus("foot", "Foot");
+        assert!(foot > yazi + 6, "Foot {foot} vs Yazi {yazi}");
+        assert_eq!(name_bonus("fire", "Firefox"), 200);
+        assert_eq!(name_bonus("code", "Visual Studio Code"), 100);
+        assert_eq!(name_bonus("", "Foot"), 0);
+    }
 
     #[test]
     fn fuzzy_and_markov() {

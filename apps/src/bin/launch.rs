@@ -104,7 +104,7 @@ impl Launch {
                 }
                 let hay = format!("{} {} {}", e.name, e.keywords, e.detail);
                 if let Some(s) = desktop::score(&q, &hay) {
-                    let rank = if q.is_empty() { self.intent(e) } else { s * 4 + self.intent(e) / 4 };
+                    let rank = if q.is_empty() { self.intent(e) } else { s * 4 + desktop::name_bonus(&q, &e.name) + self.intent(e) / 4 };
                     v.push((i, rank));
                 }
             }

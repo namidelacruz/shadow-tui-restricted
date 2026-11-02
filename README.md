@@ -448,7 +448,8 @@ The desktop has four parts:
 
 - **Crashes.** A small supervisor (the same program) runs the hub. It restarts the hub after a crash. After 3 crashes within 2 minutes it starts the side bar and the wallpaper instead, and shows a notification. The details go to `~/.local/state/shadow-tui/hub.log`.
 - **Older niri.** If niri rejects one of the newer config lines, `shadow setup niri` drops the optional ones (overview backdrop colour, layer shadow rules) instead of keeping the whole old config. The old config would mean no hub and the 7.x keys.
-- **Updating mid-session.** An update that brings the hub starts it right away and retires the side bar and wallpaper. Before 8.0.1 that only happened at the next login.
+- **Updating mid-session.** An update that brings the hub starts it right away and retires the side bar and wallpaper, using `shadow-hub switch`. niri already reloaded its config (keys included) live; before 8.0.1 the hub itself only started at the next login.
+- **Switching by hand.** `shadow-hub switch` turns the hub on, rewrites niri's config, starts the hub and stops the side bar and wallpaper, all in the running session. `shadow-hub use-bar` does the reverse. Both last across logins.
 
 `shadow-hub doctor` checks, on your machine:
 - that niri is reachable;

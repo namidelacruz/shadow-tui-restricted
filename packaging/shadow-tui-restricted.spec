@@ -8,7 +8,7 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        8.0.1
+Version:        8.0.2
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -128,6 +128,11 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.0.2-1
+- shadow-hub switch / use-bar: change desktop in the running session and for later logins;
+  the updater uses the same command
+- app search: the app's own name outweighs matches in other apps' descriptions (hub, flyout,
+  launcher)
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.0.1-1
 - shadow-hub runs under a supervisor: restarts after a crash, falls back to the side bar and
   wallpaper after 3 crashes (notification + ~/.local/state/shadow-tui/hub.log); shadow-hub doctor

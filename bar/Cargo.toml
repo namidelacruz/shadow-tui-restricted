@@ -1,6 +1,6 @@
 [package]
 name = "shadow-bar"
-version = "8.0.1"
+version = "8.0.2"
 edition = "2021"
 description = "Shadow TUI Restricted floating side bar (layer-shell, right edge): workspace, focus, NPU, sync, power, panel, thermals, audio, Wi-Fi"
 license = "MIT"

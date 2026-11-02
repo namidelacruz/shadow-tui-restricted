@@ -9,6 +9,10 @@
 //!                               keyboard. Esc, or a click on empty space, closes it.
 //!   shadow-hub reset-layout     puts the widgets back where they started.
 //!   shadow-hub doctor           checks what the hub needs on this machine and prints what it finds.
+//!   shadow-hub switch           makes the running session use the hub now: turns [hub] on, writes
+//!                               the niri config, starts the hub, stops the side bar and wallpaper
+//!                               (the updater runs this too).
+//!   shadow-hub use-bar          the reverse: [hub] off, side bar + wallpaper now and at login.
 //!
 //! The desktop instance runs under a small supervisor (the same program). If the hub crashes, the
 //! supervisor restarts it. After 3 crashes within 2 minutes it starts the side bar and the wallpaper
@@ -411,7 +415,7 @@ impl Hub {
                     .iter()
                     .filter_map(|e| {
                         let base = if e.tag == "shadow" { 6 } else { 0 };
-                        desktop::score(&q, &format!("{} {} {}", e.name, e.keywords, e.detail)).map(|sc| (sc * 4 + self.hist.get(&e.id).copied().unwrap_or(0).min(50) + base, e))
+                        desktop::score(&q, &format!("{} {} {}", e.name, e.keywords, e.detail)).map(|sc| (sc * 4 + desktop::name_bonus(&q, &e.name) + self.hist.get(&e.id).copied().unwrap_or(0).min(50) + base, e))
                     })
                     .collect();
                 v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase())));
@@ -1561,6 +1565,8 @@ fn main() {
             Hub::new(false, None)
         }
         ["doctor"] => std::process::exit(doctor()),
+        ["switch"] => std::process::exit(switch_desktop(true)),
+        ["use-bar"] => std::process::exit(switch_desktop(false)),
         ["--open", p, ..] => {
             let mut h = Hub::new(false, page_of(p));
             h.open = true;
@@ -1594,7 +1600,7 @@ fn main() {
             return;
         }
         _ => {
-            eprintln!("usage: shadow-hub [summon [apps|settings|power|system|network|fix|look|tasks] | reset-layout | doctor]");
+            eprintln!("usage: shadow-hub [summon [apps|settings|power|system|network|fix|look|tasks] | reset-layout | doctor | switch | use-bar]");
             std::process::exit(2);
         }
     };
@@ -1689,8 +1695,8 @@ fn supervise() -> i32 {
 /// The hub can't run: bring back the 7.x desktop (side bar + wallpaper) and say why.
 fn fallback(why: &str) {
     log(&format!("falling back to the side bar and the wallpaper: {why}"));
-    for (prog, pattern) in [("shadow-wallpaper", "^(/[^ ]*/)?shadow-wallpaper$"), ("shadow-bar", "^(/[^ ]*/)?shadow-bar$")] {
-        if cmd_out(&["pgrep", "-f", pattern]).0 != 0 {
+    for (prog, pattern) in [("shadow-wallpaper", WALL_RE), ("shadow-bar", BAR_RE)] {
+        if !running(pattern) {
             spawn(prog);
         }
     }
@@ -1701,6 +1707,67 @@ fn fallback(why: &str) {
         "Shadow hub stopped",
         &format!("Switched to the side bar so your desktop keeps working ({why}). Details: shadow-hub doctor, ~/.local/state/shadow-tui/hub.log"),
     ]);
+}
+
+fn running(pattern: &str) -> bool {
+    cmd_out(&["pgrep", "-f", pattern]).0 == 0
+}
+
+const HUB_RE: &str = "^(/[^ ]*/)?shadow-hub$";
+const BAR_RE: &str = "^(/[^ ]*/)?shadow-bar$";
+const WALL_RE: &str = "^(/[^ ]*/)?shadow-wallpaper$";
+
+/// Switch the running session between the hub and the 7.x side bar + wallpaper, and make it stick
+/// for the next login ([hub] enabled + niri config). Prints each step; 0 = the wanted desktop runs.
+fn switch_desktop(hub: bool) -> i32 {
+    let t = set_in(&conf(), "hub", "enabled", if hub { "true" } else { "false" });
+    if let Err(e) = atomic_write(&config_path(), &t) {
+        eprintln!("cannot write {}: {e}", config_path().display());
+        return 1;
+    }
+    println!("[hub] enabled = {hub}");
+    let (c, o) = cmd_out(&["shadow", "setup", "niri"]);
+    for l in o.lines().filter(|l| !l.trim().is_empty()) {
+        println!("  {l}");
+    }
+    if c != 0 {
+        println!("the niri config was not changed (see above); the session is switched anyway, the next login may not be");
+    }
+    let live = session_alive();
+    if !live {
+        println!("no niri session reachable from here — it takes effect at the next login");
+        return 0;
+    }
+    let wait = |pat: &str, want: bool| {
+        for _ in 0..30 {
+            if running(pat) == want {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    };
+    if hub {
+        if !running(HUB_RE) {
+            spawn("shadow-hub");
+        }
+        let ok = wait(HUB_RE, true);
+        let _ = cmd_out(&["pkill", "-f", BAR_RE]);
+        let _ = cmd_out(&["pkill", "-f", WALL_RE]);
+        println!("{}", if ok { "hub running; side bar and wallpaper stopped (Mod+Shift+B brings the bar back)" } else { "the hub did not start — run: shadow-hub doctor" });
+        i32::from(!ok)
+    } else {
+        let _ = cmd_out(&["pkill", "-f", HUB_RE]);
+        wait(HUB_RE, false);
+        for (prog, pat) in [("shadow-wallpaper", WALL_RE), ("shadow-bar", BAR_RE)] {
+            if !running(pat) {
+                spawn(prog);
+            }
+        }
+        let ok = wait(BAR_RE, true);
+        println!("{}", if ok { "side bar and wallpaper running; hub stopped" } else { "the side bar did not start" });
+        i32::from(!ok)
+    }
 }
 
 /// `shadow-hub doctor`: what the hub needs, checked on this machine
@@ -1726,14 +1793,14 @@ fn doctor() -> i32 {
     let kdl = shadow_niri::config::path();
     let cfg = std::fs::read_to_string(&kdl).unwrap_or_default();
     let spawns = cfg.contains("spawn-at-startup \"shadow-hub\"");
-    line(Some(spawns || !enabled), "niri config starts the hub", if spawns { format!("yes ({})", kdl.display()) } else { format!("no — {} still has the old startup programs; run: shadow setup niri  (then log out and in)", kdl.display()) });
+    line(Some(spawns || !enabled), "niri config starts the hub", if spawns { format!("yes ({})", kdl.display()) } else { format!("no — {} still has the old startup programs; run: shadow-hub switch", kdl.display()) });
     if cfg.contains("spawn-at-startup") && !cfg.contains("overview {") && spawns {
         line(None, "niri compatibility mode", "on (this niri is older; cosmetic lines left out)".into());
     }
     let (_, pids) = cmd_out(&["pgrep", "-f", "^(/[^ ]*/)?shadow-hub$"]);
     let n = pids.split_whitespace().count();
     line(Some(n >= 1 || !enabled), "hub running", match n {
-        0 => "no — start it with: shadow-hub &   (or log out and in)".into(),
+        0 => "no — run: shadow-hub switch".into(),
         1 => "yes (no supervisor: started by hand?)".into(),
         _ => format!("yes ({n} processes: supervisor + hub)"),
     });
@@ -1797,6 +1864,32 @@ mod tests {
         assert!(!w[1].on);
         assert_eq!(w[2].pos, (0.98, 0.02), "out-of-range values are pulled back on screen");
         assert_eq!(w[3].pos, (0.85, 0.74), "missing = default");
+    }
+
+    #[test]
+    fn dragging_a_widget_moves_it_and_saves_the_place() {
+        let d = std::env::temp_dir().join(format!("hubdrag-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::env::set_var("SHADOW_STATE", &d);
+        let mut h = Hub::new(false, None);
+        h.sizes.insert(0, (1600, 1000));
+        h.hub_surface = 0;
+        // the clock widget drawn at 100,100 200×100 (centre 200,150)
+        h.hits.insert(0, vec![(Hit::Widget(0), Rect { x: 100, y: 100, w: 200, h: 100 })]);
+        let mut ctx = Ctx::default();
+        h.pointer(Ptr::Down, 150, 120, 0, &mut ctx);
+        h.click(150, 120, &mut ctx);
+        assert!(h.drag.is_some(), "grabbed");
+        h.pointer(Ptr::Move, 950, 520, 0, &mut ctx);
+        // the point you grabbed stays under the pointer: centre = pointer + (50, 30)
+        assert_eq!(h.widgets[0].pos, (1000.0 / 1600.0, 550.0 / 1000.0));
+        h.pointer(Ptr::Up, 950, 520, 0, &mut ctx);
+        assert!(h.drag.is_none(), "released");
+        let t = std::fs::read_to_string(d.join("config.toml")).unwrap();
+        assert!(t.contains("clock = \"0.625,0.550\""), "saved: {t}");
+        // and read back on the next start
+        assert_eq!(load_widgets(&t)[0].pos, (0.625, 0.55));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
