@@ -18,7 +18,7 @@ if [ "$part" = sec ]; then
 fi
 
 install -d "$o/bin" "$o/lib" "$o/share" "$dest/usr/bin"
-for b in shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-greet \
+for b in shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-hub shadow-greet \
          shadow-sessiond shadow-displayd shadow-term shadow-powerd shadow; do
   inst -m755 "$target/release/$b" "$o/bin/$b"
 done
@@ -50,7 +50,7 @@ inst -m644 "$src/system/shadow-sync.timer"   "$dest/$u/shadow-sync.timer"
 inst -m755 "$src/system/shadow-tui.sleep"    "$dest/usr/lib/systemd/system-sleep/shadow-tui"
 inst -m644 "$src/system/org.shadownetwork.wifi.policy" "$dest/usr/share/polkit-1/actions/org.shadownetwork.wifi.policy"
 inst -m644 "$src/system/shadow-tui.desktop"  "$dest/usr/share/wayland-sessions/shadow-tui.desktop"
-for d in shadow-term shadow-config shadow-files shadow-net shadow-launch shadow-update shadow-tasks shadow-fix shadow-wallpaper; do
+for d in shadow-term shadow-config shadow-files shadow-net shadow-launch shadow-update shadow-tasks shadow-fix shadow-wallpaper shadow-hub; do
   inst -m644 "$src/system/$d.desktop" "$dest/usr/share/applications/$d.desktop"
 done
 

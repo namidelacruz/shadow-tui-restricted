@@ -8,9 +8,9 @@
 %global __brp_check_rpaths %{nil}
 
 Name:           shadow-tui-restricted
-Version:        7.5.0
+Version:        8.0.0
 Release:        1%{?dist}
-Summary:        Keyboard-first tactical desktop on niri: side bar, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
+Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
 URL:            https://github.com/namidelacruz/shadow-tui-restricted
 ExclusiveArch:  x86_64 aarch64
@@ -34,7 +34,8 @@ Provides:       shadow-network = %{version}-%{release}
 Obsoletes:      shadow-network < 7
 
 %description
-Shadow TUI Restricted (CR-SPEC-SHADOW-001) on niri: a floating side bar, dedicated Rust 2D
+Shadow TUI Restricted (CR-SPEC-SHADOW-001) on niri: a vertex wireframe hub (3D field that follows the cursor, central hub,
+floating widgets; the side bar stays optional), dedicated Rust 2D
 applications (launcher, network, settings, files, lock, terminal), self-resolving per-monitor
 scaling with text-size correction, a static console login for greetd, a power daemon with a
 weekly learning schedule, Wi-Fi self-repair for 802.1X campus networks, a sandboxed
@@ -127,6 +128,12 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.0.0-1
+- vertex wireframe UI: chamfered translucent glass ([look] window_opacity, chamfer), wire edges,
+  vertex nodes, segmented meters; launcher and updater stay opaque
+- shadow-hub: 3D vertex field that follows the cursor, central hub with radial nodes and
+  slide-open panels, draggable widgets wired to the core, Mod+Space summon overlay
+- the side bar and the wallpaper program stay available ([hub] enabled = false, Mod+Shift+B)
 * Sun Nov 01 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 7.5.0-1
 - fix center (shadow-fix, shadow fix): app repairs + tasks, triage after updates, update console
 - shadow-passfix: password / login repair with a lockout-free password test (shadow-passtest PAM)

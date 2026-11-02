@@ -1,6 +1,6 @@
 [package]
 name = "shadow-lua"
-version = "7.5.0"
+version = "8.0.0"
 edition = "2021"
 description = "Shadow TUI Restricted adaptive layer: sandboxed LuaJIT runtime, capability policy (AST) and input sanitiser"
 license = "MIT"

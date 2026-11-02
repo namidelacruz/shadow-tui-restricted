@@ -294,6 +294,9 @@ pub fn niri_gen(text: &str) -> shadow_niri::config::Gen {
     if let Some(v) = get("input", "natural_scroll") {
         g.natural_scroll = v != "false";
     }
+    if let Some(v) = get("hub", "enabled") {
+        g.hub = v != "false";
+    }
     g.pinned_scales = pinned_scales(text);
     g.macros = std::fs::read_to_string(st::state_dir().join("macros.list")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '_')).collect();
     g

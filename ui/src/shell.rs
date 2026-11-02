@@ -43,6 +43,15 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 use wayland_protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 
 // ====================================================================== public API
+/// Pointer events passed to `App::pointer`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Ptr {
+    Move,
+    Down,
+    Up,
+    Leave,
+}
+
 /// Keyboard focus for a layer surface: none (the bar), on demand, or exclusive (a flyout you
 /// type into straight away).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -61,7 +70,7 @@ pub enum SurfaceKind {
     Lock,
     /// Desktop background: one surface per monitor on the background layer, behind everything,
     /// following monitors as they come and go (`Frame::output` says which one is drawn).
-    Background { namespace: String },
+    Background { namespace: String, keyboard: LayerKeyboard },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -115,6 +124,7 @@ pub struct Ctx {
     unlock: bool,
     title: Option<String>,
     visible: Option<bool>,
+    wake: bool,
 }
 
 impl Ctx {
@@ -140,6 +150,11 @@ impl Ctx {
     /// Layer surfaces: unmap (false) or map again (true).
     pub fn set_visible(&mut self, v: bool) {
         self.visible = Some(v);
+    }
+    /// Re-read `App::tick_ms` now and restart the timer from it (start an animation at once,
+    /// instead of waiting out a long idle tick).
+    pub fn wake(&mut self) {
+        self.wake = true;
     }
     pub fn set_title(&mut self, t: &str) {
         self.title = Some(t.to_string());
@@ -216,6 +231,9 @@ pub trait App {
     fn key(&mut self, _k: &Key, _ctx: &mut Ctx) {}
     /// Left click at (x, y) in device pixels of the drawn frame (same units as `Frame` drawing).
     fn click(&mut self, _x: i32, _y: i32, _ctx: &mut Ctx) {}
+    /// Every pointer event (device px of the surface `surface`, its index as in `Frame::index`).
+    /// Left press also calls `click`.
+    fn pointer(&mut self, _ev: Ptr, _x: i32, _y: i32, _surface: usize, _ctx: &mut Ctx) {}
     /// Wheel: positive = down, in lines.
     fn scroll(&mut self, _lines: i32, _ctx: &mut Ctx) {}
     /// Called every `tick_ms` milliseconds. Read at start (0 = no timer); returning 0 later stops it.
@@ -296,6 +314,7 @@ struct Shell {
     outs_cache: Vec<OutputDesc>,
     qh: QueueHandle<Shell>,
     hidden: bool,
+    tick_token: Option<smithay_client_toolkit::reexports::calloop::RegistrationToken>,
 }
 
 /// Run `app` until it quits. `messages`: optional channel whose lines reach `App::message`.
@@ -345,6 +364,7 @@ pub fn run(app: Box<dyn App>, messages: Option<Channel<String>>) -> Result<(), S
         outs_cache: vec![],
         qh: qh.clone(),
         hidden: false,
+        tick_token: None,
     };
     // learn the outputs before placing anything
     queue.roundtrip(&mut sh).map_err(|e| e.to_string())?;
@@ -385,22 +405,7 @@ pub fn run(app: Box<dyn App>, messages: Option<Channel<String>>) -> Result<(), S
             })
             .map_err(|e| e.to_string())?;
     }
-    let tick = sh.app.tick_ms();
-    if tick > 0 {
-        event_loop
-            .handle()
-            .insert_source(Timer::from_duration(Duration::from_millis(tick)), |_, _, sh: &mut Shell| {
-                let mut ctx = Ctx::default();
-                sh.app.tick(&mut ctx);
-                sh.apply(ctx);
-                // 0 = the app no longer wants ticks: stop (never spin at the 16 ms floor)
-                match sh.app.tick_ms() {
-                    0 => TimeoutAction::Drop,
-                    t => TimeoutAction::ToDuration(Duration::from_millis(t.max(16))),
-                }
-            })
-            .map_err(|e| e.to_string())?;
-    }
+    sh.arm_tick();
     while !sh.exit {
         event_loop.dispatch(None, &mut sh).map_err(|e| e.to_string())?;
         sh.render_all(&qh);
@@ -480,7 +485,40 @@ impl Shell {
         Ok(())
     }
 
+    /// (Re)start the tick timer from `App::tick_ms` (0 = none).
+    fn arm_tick(&mut self) {
+        if let Some(t) = self.tick_token.take() {
+            self.loop_handle.remove(t);
+        }
+        let tick = self.app.tick_ms();
+        if tick == 0 {
+            return;
+        }
+        self.tick_token = self
+            .loop_handle
+            .insert_source(Timer::from_duration(Duration::from_millis(tick)), |_, _, sh: &mut Shell| {
+                let mut ctx = Ctx::default();
+                ctx.wake = false;
+                sh.app.tick(&mut ctx);
+                // a wake asked for inside tick is the same timer: just take the new period
+                ctx.wake = false;
+                sh.apply(ctx);
+                // 0 = the app no longer wants ticks: stop (never spin at the 16 ms floor)
+                match sh.app.tick_ms() {
+                    0 => {
+                        sh.tick_token = None;
+                        TimeoutAction::Drop
+                    }
+                    t => TimeoutAction::ToDuration(Duration::from_millis(t.max(16))),
+                }
+            })
+            .ok();
+    }
+
     fn apply(&mut self, ctx: Ctx) {
+        if ctx.wake {
+            self.arm_tick();
+        }
         if ctx.quit {
             self.exit = true;
         }
@@ -617,7 +655,7 @@ impl Shell {
     }
 
     fn cover_background(&mut self, qh: &QueueHandle<Shell>) -> Result<(), String> {
-        let SurfaceKind::Background { namespace } = self.app.kind() else { return Ok(()) };
+        let SurfaceKind::Background { namespace, keyboard } = self.app.kind() else { return Ok(()) };
         let outs: Vec<wl_output::WlOutput> = self.output_state.outputs().filter(|o| !self.surfs.iter().any(|s| s.output.as_ref() == Some(o))).collect();
         let mut made = vec![];
         {
@@ -628,7 +666,11 @@ impl Shell {
                 l.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
                 l.set_size(0, 0);
                 l.set_exclusive_zone(-1);
-                l.set_keyboard_interactivity(KeyboardInteractivity::None);
+                l.set_keyboard_interactivity(match keyboard {
+                    LayerKeyboard::None => KeyboardInteractivity::None,
+                    LayerKeyboard::OnDemand => KeyboardInteractivity::OnDemand,
+                    LayerKeyboard::Exclusive => KeyboardInteractivity::Exclusive,
+                });
                 l.commit();
                 made.push((l, o));
             }
@@ -842,17 +884,23 @@ impl PointerHandler for Shell {
     fn pointer_frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
         for ev in events {
-            let scale = self.surfs.iter().find(|s| s.wl() == &ev.surface).map_or(1.0, |s| s.scale);
+            let idx = self.surfs.iter().position(|s| s.wl() == &ev.surface).unwrap_or(0);
+            let scale = self.surfs.get(idx).map_or(1.0, |s| s.scale);
+            let (x, y) = ((ev.position.0 * scale).round() as i32, (ev.position.1 * scale).round() as i32);
             let mut ctx = Ctx::default();
             match ev.kind {
+                PointerEventKind::Motion { .. } => self.app.pointer(Ptr::Move, x, y, idx, &mut ctx),
+                PointerEventKind::Leave { .. } => self.app.pointer(Ptr::Leave, x, y, idx, &mut ctx),
+                PointerEventKind::Release { button: BTN_LEFT, .. } => self.app.pointer(Ptr::Up, x, y, idx, &mut ctx),
                 // without this the compositor shows no cursor (or a stale one) over our windows
                 PointerEventKind::Enter { serial } => {
                     if let Some(d) = &self.cursor_dev {
                         d.set_shape(serial, Shape::Default);
                     }
+                    self.app.pointer(Ptr::Move, x, y, idx, &mut ctx);
                 }
                 PointerEventKind::Press { button: BTN_LEFT, .. } => {
-                    let (x, y) = ((ev.position.0 * scale).round() as i32, (ev.position.1 * scale).round() as i32);
+                    self.app.pointer(Ptr::Down, x, y, idx, &mut ctx);
                     self.app.click(x, y, &mut ctx);
                 }
                 PointerEventKind::Axis { vertical, .. } => {
@@ -912,7 +960,7 @@ fn snapshot(mut app: Box<dyn App>, messages: Option<Channel<String>>, path: &str
     let scale: f64 = std::env::var("SHADOW_SNAPSHOT_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
     let (lw, lh) = match app.kind() {
         SurfaceKind::Window { size, .. } => size,
-        SurfaceKind::Layer { size, .. } => (size.0.max(1), if size.1 == 0 { 600 } else { size.1 }),
+        SurfaceKind::Layer { size, .. } => (if size.0 == 0 { 1280 } else { size.0 }, if size.1 == 0 { if size.0 == 0 { 800 } else { 600 } } else { size.1 }),
         SurfaceKind::Lock | SurfaceKind::Background { .. } => (1280, 800),
     };
     let lh = std::env::var("SHADOW_SNAPSHOT_H").ok().and_then(|v| v.parse().ok()).unwrap_or(lh);
@@ -939,6 +987,12 @@ fn snapshot(mut app: Box<dyn App>, messages: Option<Channel<String>>, path: &str
             app = st.0;
         }
     }
+    // SHADOW_SNAPSHOT_POINTER=X,Y (logical px): the pointer rests there (reactive backgrounds)
+    if let Some((x, y)) = std::env::var("SHADOW_SNAPSHOT_POINTER").ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f64>().ok()?, y.parse::<f64>().ok()?)))) {
+        let (x, y) = ((x * scale) as i32, (y * scale) as i32);
+        app.pointer(Ptr::Move, x - 40, y - 30, 0, &mut Ctx::default());
+        app.pointer(Ptr::Move, x, y, 0, &mut Ctx::default());
+    }
     let ticks: u32 = std::env::var("SHADOW_SNAPSHOT_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     for _ in 0..ticks {
         std::thread::sleep(Duration::from_millis(app.tick_ms().clamp(1, 1000)));
@@ -953,6 +1007,17 @@ fn snapshot(mut app: Box<dyn App>, messages: Option<Channel<String>>, path: &str
             let mut f = Frame { cv: Canvas { buf: &mut buf, w, h }, scale: scale as f32, text: scale as f32, fonts: &mut fonts, theme: &theme, output: None, index: 0, focused: true, want_size: None, logical: size };
             app.draw(&mut f);
             want = f.want_size;
+        }
+        // SHADOW_SNAPSHOT_BENCH=N: draw N more frames and report the average (performance checks)
+        if let Some(n) = std::env::var("SHADOW_SNAPSHOT_BENCH").ok().and_then(|v| v.parse::<u32>().ok()).filter(|n| *n > 0) {
+            let t = std::time::Instant::now();
+            for i in 0..n {
+                let mut f = Frame { cv: Canvas { buf: &mut buf, w, h }, scale: scale as f32, text: scale as f32, fonts: &mut fonts, theme: &theme, output: None, index: 0, focused: true, want_size: None, logical: size };
+                app.pointer(Ptr::Move, (w as i32 / 3) + i as i32 * 3, (h as i32 / 2) + i as i32, 0, &mut Ctx::default());
+                app.tick(&mut Ctx::default());
+                app.draw(&mut f);
+            }
+            eprintln!("{w}x{h}: {:.2} ms / frame over {n} frames", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
         }
         if let Some(ws) = want.filter(|ws| *ws != size) {
             size = ws;

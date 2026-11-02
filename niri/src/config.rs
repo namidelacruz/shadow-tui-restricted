@@ -25,6 +25,8 @@ pub struct Gen {
     /// Lua key macros: (key, name) -> bind that runs `shadow-sessiond macro <key>`
     pub macros: Vec<String>,
     pub natural_scroll: bool,
+    /// 8.0 desktop: shadow-hub (vertex field + central hub) instead of the side bar + wallpaper
+    pub hub: bool,
 }
 
 impl Default for Gen {
@@ -44,6 +46,7 @@ impl Default for Gen {
             pinned_scales: vec![],
             macros: vec![],
             natural_scroll: true,
+            hub: true,
         }
     }
 }
@@ -208,15 +211,19 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, "    default-column-width { proportion 0.5; }");
     p(&mut o, &format!("    focus-ring {{ active-color {}; }}", q(&g.amber)));
     p(&mut o, "}");
-    // the wallpaper also shows behind the workspaces in the overview
+    // the wallpaper also shows behind the workspaces in the overview. The hub is not placed there:
+    // niri gives backdrop layers no input, and the hub must react to the cursor and to clicks
     p(&mut o, "layer-rule {");
     p(&mut o, r#"    match namespace="^shadow-wallpaper$""#);
     p(&mut o, "    place-within-backdrop true");
     p(&mut o, "}");
     p(&mut o, "layer-rule {");
-    p(&mut o, r#"    match namespace="^shadow-(bar|flyout)$""#);
+    p(&mut o, r#"    match namespace="^shadow-(bar|flyout|hub|hub-summon)$""#);
     p(&mut o, "    shadow { off; }");
     p(&mut o, "}");
+    if g.hub {
+        p(&mut o, &format!("overview {{ backdrop-color {}; }}", q(&g.obsidian)));
+    }
     p(&mut o, "");
     p(&mut o, "// dock mode: lid closed with an external monitor on turns the panel off instead of locking");
     p(&mut o, "switch-events {");
@@ -225,12 +232,21 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, "}");
     p(&mut o, "");
     p(&mut o, "// every Shadow feature is its own application; these start with the session");
-    for app in ["shadow-sessiond", "shadow-displayd", "shadow-bar", "shadow-wallpaper"] {
+    let desktop: &[&str] = if g.hub { &["shadow-hub"] } else { &["shadow-bar", "shadow-wallpaper"] };
+    for app in ["shadow-sessiond", "shadow-displayd"].iter().chain(desktop) {
         p(&mut o, &format!("spawn-at-startup {}", q(app)));
     }
     p(&mut o, "");
     p(&mut o, "binds {");
     for (k, a) in BINDS {
+        // with the hub, Mod+Space summons it over the windows and Mod+A opens its APPS panel;
+        // Mod+Shift+B starts / stops the optional 7.x side bar next to it
+        let a = match (*k, g.hub) {
+            ("Mod+Space", true) => r#"spawn "shadow-hub" "summon";"#,
+            ("Mod+A", true) => r#"spawn "shadow-hub" "summon" "apps";"#,
+            ("Mod+Shift+B", true) => r#"spawn "sh" "-c" "pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar";"#,
+            _ => a,
+        };
         p(&mut o, &format!("    {k} {{ {a} }}"));
     }
     for (k, a) in MEDIA_BINDS {
@@ -287,5 +303,18 @@ mod tests {
         assert_eq!(tail, "output \"DP-1\" { position x=0 y=0; }\n");
         let b = generate(&g, &tail);
         assert_eq!(a, b, "regeneration is stable");
+    }
+
+    #[test]
+    fn hub_replaces_bar_and_wallpaper() {
+        let a = generate(&Gen::default(), "");
+        assert!(a.contains("spawn-at-startup \"shadow-hub\""));
+        assert!(!a.contains("spawn-at-startup \"shadow-bar\"") && !a.contains("spawn-at-startup \"shadow-wallpaper\""));
+        assert!(a.contains("Mod+Space { spawn \"shadow-hub\" \"summon\"; }"));
+        assert!(a.contains("Mod+D { spawn \"shadow-launch\"; }"), "the launcher keeps a key");
+        assert!(a.contains("overview { backdrop-color"));
+        let old = generate(&Gen { hub: false, ..Gen::default() }, "");
+        assert!(old.contains("spawn-at-startup \"shadow-bar\"") && old.contains("spawn-at-startup \"shadow-wallpaper\""));
+        assert!(old.contains("Mod+Space { spawn \"shadow-launch\"; }") && !old.contains("shadow-hub"));
     }
 }

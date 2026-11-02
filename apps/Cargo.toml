@@ -1,6 +1,6 @@
 [package]
 name = "shadow-apps"
-version = "7.5.0"
+version = "8.0.0"
 edition = "2021"
 description = "Shadow TUI Restricted applications, each its own 2D Wayland app: launcher, network, config, files, lock, updater"
 license = "MIT"
@@ -44,6 +44,10 @@ path = "src/bin/fix.rs"
 [[bin]]
 name = "shadow-passfix"
 path = "src/bin/passfix.rs"
+
+[[bin]]
+name = "shadow-hub"
+path = "src/bin/hub.rs"
 
 [[bin]]
 name = "shadow-wallpaper"

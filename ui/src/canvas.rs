@@ -11,7 +11,7 @@ pub struct Canvas<'a> {
 
 #[inline]
 fn premul(c: Rgb, a: f32) -> [u8; 4] {
-    let a8 = (a.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let a8 = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
     let m = |v: u8| ((v as u32 * a8 + 127) / 255) as u8;
     [m(c.2), m(c.1), m(c.0), a8 as u8] // BGRA in memory = ARGB8888 little-endian
 }
@@ -39,17 +39,29 @@ impl Canvas<'_> {
         }
     }
 
+    /// Premultiplied "over" of one pixel, in integers (no float rounding calls: this is the hot
+    /// path of every shape).
     #[inline]
     fn blend_px(&mut self, x: usize, y: usize, c: Rgb, a: f32) {
         if x >= self.w || y >= self.h || a <= 0.0 {
             return;
         }
-        let i = (y * self.w + x) * 4;
-        let s = premul(c, a);
-        let ia = 1.0 - a.min(1.0);
-        for k in 0..4 {
-            self.buf[i + k] = (s[k] as f32 + self.buf[i + k] as f32 * ia).round().min(255.0) as u8;
+        let a8 = (a.min(1.0) * 255.0 + 0.5) as u32;
+        if a8 == 0 {
+            return;
         }
+        let i = (y * self.w + x) * 4;
+        let p = &mut self.buf[i..i + 4];
+        if a8 >= 255 {
+            p.copy_from_slice(&[c.2, c.1, c.0, 255]);
+            return;
+        }
+        let ia = 255 - a8;
+        let m = |s: u8, d: u8| ((s as u32 * a8 + d as u32 * ia + 127) / 255) as u8;
+        p[0] = m(c.2, p[0]);
+        p[1] = m(c.1, p[1]);
+        p[2] = m(c.0, p[2]);
+        p[3] = ((255 * a8 + p[3] as u32 * ia + 127) / 255) as u8;
     }
 
     pub fn blend(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgb, a: f32) {
@@ -231,6 +243,173 @@ impl Canvas<'_> {
         }
     }
 
+    // ── wireframe: lines, convex polygons, vertex nodes ────────────────────────────────────────
+
+    /// 1-px anti-aliased line (Xiaolin Wu): cheap enough for meshes with thousands of edges.
+    pub fn wline(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, c: Rgb, a: f32) {
+        if a <= 0.0 || !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+            return;
+        }
+        let (w, h) = (self.w as f32, self.h as f32);
+        // trivially outside
+        if (x0 < -1.0 && x1 < -1.0) || (y0 < -1.0 && y1 < -1.0) || (x0 > w && x1 > w) || (y0 > h && y1 > h) {
+            return;
+        }
+        let steep = (y1 - y0).abs() > (x1 - x0).abs();
+        let (mut x0, mut y0, mut x1, mut y1) = if steep { (y0, x0, y1, x1) } else { (x0, y0, x1, y1) };
+        if x0 > x1 {
+            std::mem::swap(&mut x0, &mut x1);
+            std::mem::swap(&mut y0, &mut y1);
+        }
+        let dx = x1 - x0;
+        let g = if dx.abs() < 1e-6 { 1.0 } else { (y1 - y0) / dx };
+        let lim = if steep { h } else { w };
+        let xs = x0.round().max(0.0) as i32;
+        let xe = x1.round().min(lim - 1.0) as i32;
+        let mut y = y0 + g * (xs as f32 - x0);
+        for x in xs..=xe {
+            let fy = y.floor();
+            let f = y - fy;
+            let (p0, p1) = (fy as i32, fy as i32 + 1);
+            if steep {
+                if p0 >= 0 { self.blend_px(p0 as usize, x as usize, c, a * (1.0 - f)); }
+                if p1 >= 0 { self.blend_px(p1 as usize, x as usize, c, a * f); }
+            } else {
+                if p0 >= 0 { self.blend_px(x as usize, p0 as usize, c, a * (1.0 - f)); }
+                if p1 >= 0 { self.blend_px(x as usize, p1 as usize, c, a * f); }
+            }
+            y += g;
+        }
+    }
+
+    /// Thick anti-aliased segment (distance field over its bounding box) — for connectors and edges.
+    pub fn tline(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, c: Rgb, a: f32) {
+        let r = width / 2.0;
+        let (minx, maxx) = ((x0.min(x1) - r - 1.0).floor().max(0.0) as i32, (x0.max(x1) + r + 1.0).ceil().min(self.w as f32 - 1.0) as i32);
+        let (miny, maxy) = ((y0.min(y1) - r - 1.0).floor().max(0.0) as i32, (y0.max(y1) + r + 1.0).ceil().min(self.h as f32 - 1.0) as i32);
+        let (vx, vy) = (x1 - x0, y1 - y0);
+        let len2 = (vx * vx + vy * vy).max(1e-6);
+        for py in miny..=maxy {
+            for px in minx..=maxx {
+                let (qx, qy) = (px as f32 + 0.5 - x0, py as f32 + 0.5 - y0);
+                let t = ((qx * vx + qy * vy) / len2).clamp(0.0, 1.0);
+                let (dx, dy) = (qx - vx * t, qy - vy * t);
+                let d = (dx * dx + dy * dy).sqrt() - r;
+                let cov = (0.5 - d).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    self.blend_px(px as usize, py as usize, c, a * cov);
+                }
+            }
+        }
+    }
+
+    /// Filled convex polygon (clockwise or not), anti-aliased; colour per (x, y) fraction of its box.
+    pub fn poly(&mut self, pts: &[(f32, f32)], a: f32, col: &dyn Fn(f32, f32) -> Rgb) {
+        self.poly_ga(pts, &|fx, fy| (col(fx, fy), a));
+    }
+
+    /// Like `poly`, but the closure returns colour and alpha (for gloss highlights that fade out).
+    pub fn poly_ga(&mut self, pts: &[(f32, f32)], col: &dyn Fn(f32, f32) -> (Rgb, f32)) {
+        if pts.len() < 3 {
+            return;
+        }
+        let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &(x, y) in pts {
+            minx = minx.min(x);
+            miny = miny.min(y);
+            maxx = maxx.max(x);
+            maxy = maxy.max(y);
+        }
+        // edge normals pointing outwards
+        let area: f32 = (0..pts.len()).map(|i| { let (a, b) = (pts[i], pts[(i + 1) % pts.len()]); a.0 * b.1 - b.0 * a.1 }).sum();
+        let s = if area >= 0.0 { 1.0 } else { -1.0 };
+        let edges: Vec<(f32, f32, f32)> = (0..pts.len())
+            .map(|i| {
+                let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+                let (ex, ey) = (q.0 - p.0, q.1 - p.1);
+                let l = (ex * ex + ey * ey).sqrt().max(1e-6);
+                let (nx, ny) = (s * ey / l, -s * ex / l);
+                (nx, ny, -(nx * p.0 + ny * p.1))
+            })
+            .collect();
+        let (bw, bh) = ((maxx - minx).max(1.0), (maxy - miny).max(1.0));
+        let y0 = miny.floor().max(0.0) as i32;
+        let y1 = maxy.ceil().min(self.h as f32) as i32;
+        let x0 = minx.floor().max(0.0) as i32;
+        let x1 = maxx.ceil().min(self.w as f32) as i32;
+        for py in y0..y1 {
+            let fy = py as f32 + 0.5;
+            // per row: the x range that can be touched (every edge distance <= 0.5) and the range
+            // that is fully inside (<= -0.5, coverage 1, no per-edge work)
+            let (mut olo, mut ohi) = (x0 as f32, x1 as f32);
+            let (mut ilo, mut ihi) = (x0 as f32, x1 as f32);
+            for (nx, ny, c) in &edges {
+                let k = ny * fy + c;
+                if nx.abs() < 1e-6 {
+                    if k > 0.5 {
+                        olo = f32::MAX;
+                    }
+                    if k > -0.5 {
+                        ilo = f32::MAX;
+                    }
+                    continue;
+                }
+                let (xo, xi) = ((0.5 - k) / nx, (-0.5 - k) / nx);
+                if *nx > 0.0 {
+                    ohi = ohi.min(xo);
+                    ihi = ihi.min(xi);
+                } else {
+                    olo = olo.max(xo);
+                    ilo = ilo.max(xi);
+                }
+            }
+            if olo > ohi {
+                continue;
+            }
+            let ps = ((olo - 0.5).ceil() as i32).max(x0);
+            let pe = ((ohi - 0.5).floor() as i32).min(x1 - 1);
+            for px in ps..=pe {
+                let fx = px as f32 + 0.5;
+                let cov = if fx >= ilo && fx <= ihi {
+                    1.0
+                } else {
+                    let d = edges.iter().map(|(nx, ny, c)| nx * fx + ny * fy + c).fold(f32::MIN, f32::max);
+                    (0.5 - d).clamp(0.0, 1.0)
+                };
+                if cov > 0.0 {
+                    let (c, a) = col((fx - minx) / bw, (fy - miny) / bh);
+                    self.blend_px(px as usize, py as usize, c, a * cov);
+                }
+            }
+        }
+    }
+
+    /// Outline of a polygon (closed), 1 px anti-aliased
+    pub fn poly_line(&mut self, pts: &[(f32, f32)], c: Rgb, a: f32) {
+        for i in 0..pts.len() {
+            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+            self.wline(p.0, p.1, q.0, q.1, c, a);
+        }
+    }
+
+    /// A vertex node: a bright dot with a soft halo.
+    pub fn node(&mut self, x: f32, y: f32, r: f32, c: Rgb, a: f32) {
+        let halo = r * 3.5;
+        let (x0, x1) = ((x - halo).floor().max(0.0) as i32, (x + halo).ceil().min(self.w as f32 - 1.0) as i32);
+        let (y0, y1) = ((y - halo).floor().max(0.0) as i32, (y + halo).ceil().min(self.h as f32 - 1.0) as i32);
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let d = ((px as f32 + 0.5 - x).powi(2) + (py as f32 + 0.5 - y).powi(2)).sqrt();
+                let core = (r + 0.5 - d).clamp(0.0, 1.0);
+                let glow = if d < halo { (1.0 - d / halo).powi(2) * 0.35 } else { 0.0 };
+                let v = core.max(glow);
+                if v > 0.0 {
+                    self.blend_px(px as usize, py as usize, if core > 0.5 { lerp(c, (255, 255, 255), 0.4) } else { c }, a * v);
+                }
+            }
+        }
+    }
+
     pub fn glyph(&mut self, g: &Glyph, x: i32, baseline: i32, c: Rgb, alpha: f32) {
         let gx = x + g.left;
         let gy = baseline + g.top;
@@ -256,7 +435,7 @@ impl Canvas<'_> {
 
 pub fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let t = t.clamp(0.0, 1.0);
-    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t + 0.5) as u8;
     (m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
 }
 
@@ -283,6 +462,26 @@ mod tests {
         c.rstroke(0, 0, 40, 40, 10.0, 2, (255, 255, 255), 1.0);
         assert_eq!(px(&c, 20, 20)[3], 0, "an outline is hollow");
         assert!(px(&c, 20, 0)[3] > 200);
+    }
+
+    #[test]
+    fn wireframe_primitives() {
+        let mut b = vec![0u8; 40 * 40 * 4];
+        let mut c = Canvas { buf: &mut b, w: 40, h: 40 };
+        c.wline(0.0, 20.0, 39.0, 20.0, (255, 255, 255), 1.0);
+        assert!(px(&c, 10, 20)[3] > 200, "horizontal line drawn");
+        c.wline(-100.0, -100.0, -50.0, -50.0, (255, 255, 255), 1.0); // off-screen: no panic
+        c.clear((0, 0, 0), 0.0);
+        // a chamfered square
+        c.poly(&[(5.0, 0.0), (40.0, 0.0), (40.0, 35.0), (35.0, 40.0), (0.0, 40.0), (0.0, 5.0)], 1.0, &|_, _| (0, 200, 255));
+        assert_eq!(px(&c, 20, 20)[3], 255);
+        assert_eq!(px(&c, 0, 0)[3], 0, "the cut corner stays empty");
+        c.clear((0, 0, 0), 0.0);
+        c.node(20.0, 20.0, 2.0, (0, 229, 255), 1.0);
+        assert!(px(&c, 20, 20)[3] > 200 && px(&c, 25, 20)[3] > 0 && px(&c, 39, 39)[3] == 0);
+        c.clear((0, 0, 0), 0.0);
+        c.tline(5.0, 5.0, 35.0, 35.0, 3.0, (255, 0, 0), 1.0);
+        assert!(px(&c, 20, 20)[3] > 200);
     }
 
     #[test]

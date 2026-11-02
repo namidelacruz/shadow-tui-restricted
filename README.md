@@ -2,9 +2,10 @@
 
 A keyboard-first tactical desktop for Arch Linux, Fedora and RHEL-family systems, built to the clean-room specification CR-SPEC-SHADOW-001 and tuned for the Dell 14 Plus (2560×1600 panel, Lunar Lake, Arc 140V, Intel NPU).
 
-Version 7 runs on **niri** as the compositor. Shadow talks to niri only through its public interfaces (`niri msg --json` and its config file), so niri comes from your distribution and updates on its own. On top sit:
+Shadow runs on **niri** as the compositor. Fedora 44 ships niri in its own repositories. Shadow talks to niri only through its public interfaces (`niri msg --json` and its config file), so niri comes from your distribution and updates on its own. On top sit:
 
-- a floating information bar on the right edge;
+- **8.0:** a vertex wireframe desktop. A 3D wireframe field reacts to the mouse cursor, a static hub sits in the middle of the screen, and floating widgets are wired to it. App windows are glossy translucent glass. See [The hub](#the-hub-80);
+- the 7.x floating side bar, still available on request (`Mod+Shift+B`, or `[hub] enabled = false`);
 - every feature as its own Rust application with a 2D interface;
 - scaling that sets itself per monitor and corrects the text size when it can't;
 - a static console login in the style of ly;
@@ -18,12 +19,13 @@ Version 6, with its own Smithay compositor and orbital ring, stays on the `v6` b
 
 | Component | What it is |
 |---|---|
+| `shadow-hub` | **8.0 desktop.** One background-layer surface per monitor, holding:<br>• **Field:** the 3D vertex field, or your wallpaper image.<br>• **Hub:** a static core in the middle of the screen; click it (or press Space) and eight option nodes slide out — APPS, SETTINGS, POWER, SYSTEM, NETWORK, FIX, LOOK, TASKS — each opening a glass panel.<br>• **Widgets:** clock, power, system (CPU/RAM/NPU), network and workspaces, each wired to the core and draggable.<br>`Mod+Space` summons the hub over your windows. See [The hub](#the-hub-80). |
 | `shadow-bar` | The floating side bar (layer-shell, right edge), with **APPS · SETTINGS · SYSTEM** buttons at the top. It shows battery % with time left or time to full (smoothed), and the monitor and scale, workspace, focused app, NPU state, sync, battery and watts, panel Hz, package °C and profile, audio DSP, Wi-Fi SSID/dBm/EAP, Lua widgets and the time. It sits on the laptop panel; when docked it follows the monitor that has focus. `Mod+Shift+B` hides it. |
 | `shadow-flyout` | The panels behind the side bar's **APPS**, **SETTINGS** and **SYSTEM** buttons. Each opens beside its button; the same button closes it again.<br>• **Apps:** search and launch.<br>• **Settings:** brightness, volume, power mode, Wi-Fi, displays, all settings.<br>• **System:** task manager, update, security console, lock, log out, suspend, reboot, shut down; log out, reboot and shut down need a second press.<br>`Mod+A` opens Apps. Tab switches page; Esc, or moving focus away, closes it. |
 | `shadow-tasks` | Task manager (`Ctrl+Shift+Esc`).<br>• **Cards:** CPU (total, per core, frequency), memory (RAM, swap, memory pressure), NPU (busy % from the Intel NPU driver, frequency, learning state), GPU (busy % from xe/i915 idle residency, frequency), power (battery draw, package power, time left, temperature), I/O (network, disk, pressure).<br>• **Processes:** sort with c/m/p, filter with /, end with k (SIGTERM) or K (SIGKILL), each confirmed first. |
 | `shadow-fix` | Fix center (`Mod+Shift+H`), with four pages:<br>• **Issues:** known problems of your apps under niri, with repairs.<br>• **Tasks:** clear caches, unlock a Firefox profile, force quit, restart portals or PipeWire.<br>• **Login:** password and login problems.<br>• **Update:** update the system and Flatpaks, then triage. Repairs come after updates, never during them.<br>On a text console the same is `shadow fix …`. |
 | `shadow-passfix` | Password repair, a plain text console that works on Ctrl+Alt+F2. See [Fix center](#fix-center-and-password-repair). |
-| `shadow-wallpaper` | Wallpaper on every monitor (background layer, also behind the overview) and a picker (`Mod+W`). With no image chosen it uses the generated Shadow wallpaper. |
+| `shadow-wallpaper` | The wallpaper picker (`Mod+W`). Its first entry is **Vertices**, the reactive 3D field (the default); the second is the generated aurora; then your images. With the hub on, `shadow-hub` draws the wallpaper. With `[hub] enabled = false`, this program draws it instead: on every monitor, also behind the overview, with Vertices as a still frame. |
 | `shadow-launch` | Launcher, opened as its own normal window (tiled, opaque), not an overlay over what's on screen. Click or press Enter to launch. Its ranking learns what usually follows the app you're in, what you open at this hour, and how often. Each app shows ~RAM and ~W from what it cost before. |
 | `shadow-net` | Wi-Fi: networks, UC-Secure and eduroam setup, self-repair, with a live EAP/TLS log. |
 | `shadow-config` | Live settings matrix over `config.toml`. Changes apply immediately; if niri rejects one, it is rolled back. |
@@ -113,16 +115,19 @@ Shadow's niri config is generated into `~/.config/shadow-state/niri.kdl`, and th
 | `Mod+Tab` / `Mod+J` · `Mod+Shift+Tab` / `Mod+K` | focus the next / previous window; the focused window is always centered (120 ms) |
 | `Mod+[` / `Mod+]` | width preset 45 / 65 / 85 % |
 | `Mod+F` · `Mod+Shift+F` | full width (the bar stays visible) · true fullscreen |
-| `Mod+Return` `Mod+Space` `Mod+E` `Mod+N` `Mod+Comma` `Mod+U` | terminal, launcher, files, network, settings, updates |
-| `Mod+A` · `Ctrl+Shift+Esc` | apps flyout beside the bar · task manager |
+| `Mod+Space` · `Mod+A` | summon the hub over your windows (press again or Esc to close) · the hub's APPS panel |
+| `Mod+Return` `Mod+D` `Mod+E` `Mod+N` `Mod+Comma` `Mod+U` | terminal, launcher, files, network, settings, updates |
+| `Ctrl+Shift+Esc` | task manager |
 | `Mod+Shift+H` · `Mod+W` | fix center · wallpaper picker |
 | `Mod+Ctrl+arrows` · `Mod+Shift+Ctrl+arrows` | focus another monitor · move the window there |
 | `Mod+1…9` · `Mod+Shift+1…9` | workspace · move the window to a workspace |
 | `Mod+O` | overview |
-| `Mod+Shift+B` | hide / show the side bar |
+| `Mod+Shift+B` | the optional side bar: start it, then hide / show it |
 | `Mod+Alt+L` | lock |
 | `Mod+Shift+Backspace` | revert the healer's last automated fix |
 | `Mod+Q` · `Mod+Shift+E` | close · quit the session |
+
+With `[hub] enabled = false`, the 7.x keys come back: `Mod+Space` opens the launcher and `Mod+A` the side bar's apps flyout.
 
 Media and brightness keys also work on the lock screen. Lua modules can add key macros; the core binds always take precedence. The pointer hides while you type and after 3 s idle.
 
@@ -226,6 +231,7 @@ The sections:
 - `[layout]`: presets, default width, gaps, transition time.
 - `[look]`: colours, opacity, font, text size.
 - `[display]`: refresh policy, refresh rates and `[display.scale]` pins.
+- `[hub]`: `enabled` (default true; false brings back the side bar and the wallpaper program), `output` (the monitor that shows the hub), `reactive` (false keeps the field still), and `[hub.widgets]` positions.
 - `[bar]`: width.
 - `[input]`: XKB layout and options, key repeat.
 - `[session]`: lock and monitor-off timeouts.
@@ -406,21 +412,66 @@ Two things make these prompts work:
 - **A polkit authentication agent.** niri has none, and without one polkit can't ask for a password, so pkexec and logind just fail. `shadow-sessiond` starts the first agent installed (mate-polkit, lxqt-policykit, polkit-gnome, lxpolkit, xfce-polkit or polkit-kde), and `./install.sh` installs one. Check it with `shadow-sessiond polkit`.
 - **Membership of `wheel`.** On Fedora, RHEL and Arch, sudo and polkit treat that group as administrators. `./install.sh` and `./install.sh --check` warn if your account isn't in it. Fix: `sudo usermod -aG wheel $USER`, then log in again.
 
-## Look
+## The hub (8.0)
 
-The 2D apps share a "fluid HUD" style:
-- deep gradient backdrops with faint scan lines;
-- rounded glass panels with soft glows;
-- angled amber→violet title tags and light-beam dividers;
-- pill buttons, gradient meters and sparklines.
+![hub](docs/screenshots/8.0-hub-desktop.png)
 
-Everything is drawn on the CPU with anti-aliased shapes, and app windows stay fully opaque.
+The desktop has four parts:
 
-`[look]` options: `radius` (corner radius, 0–24), `violet`, `amber`, `cyan`, `obsidian`, `opacity` (side bar only), `font`, `font_pt`.
+- **The field.** A 3D wireframe terrain sits under a slowly turning icosphere. It is drawn on the CPU like everything else.
+  - The camera leans towards the mouse cursor.
+  - The mesh lifts and ripples around the cursor, and its vertices light up from cyan to amber there.
+  - A frame is drawn only while the pointer moves over the desktop, plus about 1.5 s of easing.
+  - Choose an image instead with LOOK → Wallpaper image… (`Mod+W`). `[hub] reactive = false` keeps the field still.
+- **The core.** It sits in the middle of the screen. Click it, or press Space when the desktop has focus, and eight option nodes slide out of it: APPS, SETTINGS, POWER, SYSTEM, NETWORK, FIX, LOOK and TASKS. Clicking a node drops its glass panel open beside the ring.
+  - APPS: search as you type.
+  - SETTINGS: brightness and volume with − / +, displays, input, all settings.
+  - POWER: the power-mode chips and charging chips (below), battery and time left.
+  - SYSTEM: lock, suspend, log out, reboot and shut down; log out, reboot and shut down need a second press.
+  - NETWORK: Wi-Fi status, traffic, the network manager, the Wi-Fi radio.
+  - FIX: fix center, update, password repair.
+  - LOOK: Vertices / Aurora / an image, window glass opacity, reset the widget layout.
+  - TASKS: CPU, memory and NPU, and the task manager.
+- **Keys.** Tab and Shift+Tab walk the panels, and 1–8 jump to one. ↑↓ and Enter work the rows, ← → adjust a value, Esc closes. Typing on the desktop opens APPS with what you typed.
+- **Widgets.** CLOCK, POWER (battery, time left, mode, watts), SYSTEM (CPU / RAM / NPU with a CPU trace), NETWORK and WORKSPACES (a chain of vertex nodes from niri).
+  - Each floats in glass and is wired to the core by an elbow connector with vertex nodes at the joints, in the Ghost in the Shell hologram style.
+  - Drag a widget to move it. Positions are saved in `[hub.widgets]` as fractions of the screen, and `name = "off"` hides one.
+  - `shadow-hub reset-layout` puts them back.
+
+![power panel](docs/screenshots/8.0-hub-power.png)
+
+**Summon (`Mod+Space`).** The desktop is usually covered by windows, because niri tiles them. So `Mod+Space` opens the hub over everything: an overlay layer with tinted glass on the monitor you are using, the keyboard taken, the ring already open. Esc, the same key again, or a click on empty space closes it. `Mod+A` summons it straight onto APPS.
+
+![summon](docs/screenshots/8.0-hub-summon-apps.png)
+
+### Look
+
+Every 2D app shares the vertex wireframe style:
+
+- chamfered (angle-cut) glass panels with a gloss highlight;
+- thin cyan wire edges with glowing vertex nodes at the cut corners;
+- a faint dot lattice behind the content;
+- angled amber→violet tags;
+- segmented meters and wire sparklines that end in a node.
+
+App windows are translucent glass. `[look] window_opacity` sets how much (default 0.86; 1.0 makes them opaque again), and LOOK → Window glass changes it from the hub. The launcher and the updater always stay fully opaque, as asked for in 7.2.
+
+The other `[look]` options are `chamfer` (cut size, 0–32), `radius`, `violet`, `amber`, `cyan`, `obsidian`, `opacity` (the side bar), `font` and `font_pt`.
+
+**Cost.** Everything is drawn on the CPU, as before. The hub draws into its own layer, and that layer is redrawn only when something in it changes: menus, drags, or the widgets' numbers every 3 s. Frames where only the field moves just put that layer back over the field. The figures below are from the container, at about 60 Hz:
+
+| | 1600×1000 | 2560×1600 |
+|---|---|---|
+| A frame while the field moves | about 5 ms | about 12 ms |
+| A full hub redraw (menu animation) | about 25 ms | about 60 ms |
+| Idle, nested in niri | about 0.5 % of one core | |
+
+`SHADOW_SNAPSHOT=out.ppm <app>` renders one frame of any app without a compositor, for screenshots. Optional variables:
+
+- `SHADOW_SNAPSHOT_POINTER=x,y` rests the pointer at a point.
+- `SHADOW_SNAPSHOT_BENCH=N` times N frames.
 
 The login console uses rounded box-drawing and a gradient beam.
-
-`SHADOW_SNAPSHOT=out.ppm <app>` renders one frame of any app without a compositor, for screenshots.
 
 ## Optional security subsystem
 

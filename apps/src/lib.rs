@@ -3,6 +3,8 @@ pub mod cfg;
 pub mod desktop;
 pub mod fsops;
 pub mod pam;
+pub mod vertex;
+pub mod wall;
 
 use std::path::{Path, PathBuf};
 

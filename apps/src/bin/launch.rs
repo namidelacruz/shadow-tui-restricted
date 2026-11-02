@@ -10,7 +10,7 @@
 //!   ↑ ↓    select       Enter launch             Esc close        click a row to launch it
 use shadow_apps::desktop::{self, Entry};
 use shadow_apps::{focused_app, spawn};
-use shadow_ui::widgets::{chrome, field, footer, selection, Input, ListNav};
+use shadow_ui::widgets::{chrome_solid, field, footer, selection, Input, ListNav};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 use std::collections::HashMap;
 
@@ -46,7 +46,8 @@ fn actions() -> Vec<Entry> {
         action("config", "Settings", "shadow-config · live settings matrix", "shadow-config"),
         action("files", "Files", "shadow-files", "shadow-files"),
         action("lock", "Lock screen", "", "shadow-lock"),
-        action("bar", "Show / hide side bar", "Mod+Shift+B", "pkill -USR1 -x shadow-bar"),
+        action("hub", "Hub", "Mod+Space · apps, settings, power, system, look", "shadow-hub summon"),
+        action("bar", "Show / hide side bar", "Mod+Shift+B · optional next to the hub", "sh -c 'pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar'"),
         action("overview", "Overview", "all workspaces", "niri msg action toggle-overview"),
         action("power", "Power + learning", "shadow-powerd status and schedule", &hold("shadow-powerd status; echo; shadow-powerd learn")),
         action("sync", "Sync state to GitHub", "shadow-sync push", &hold("shadow-sync push")),
@@ -190,7 +191,7 @@ impl App for Launch {
     fn draw(&mut self, f: &mut Frame) {
         let th = f.theme.clone();
         let ctxline = if self.from.is_empty() { String::new() } else { format!("after {}", self.from) };
-        let (top, pad) = chrome(f, "LAUNCH", &ctxline);
+        let (top, pad) = chrome_solid(f, "LAUNCH", &ctxline);
         let (w, h) = (f.cv.w as i32, f.cv.h as i32);
         let pt = th.font_pt;
         let lh = f.line_h(pt);

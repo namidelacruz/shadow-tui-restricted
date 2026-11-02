@@ -24,6 +24,10 @@ pub struct Theme {
     pub font: String,
     /// body text size in points (96 dpi reference, before scaling)
     pub font_pt: f32,
+    /// opacity of app windows (glass); 1.0 = fully opaque ([look] window_opacity)
+    pub window_opacity: f32,
+    /// chamfer (cut corner) size in logical px ([look] chamfer)
+    pub chamfer: f32,
 }
 
 pub fn state_dir() -> PathBuf {
@@ -65,6 +69,8 @@ impl Default for Theme {
             radius: 12.0,
             font: crate::font::DEFAULT_FAMILY.into(),
             font_pt: 11.0,
+            window_opacity: 0.86,
+            chamfer: 14.0,
         }
     }
 }
@@ -85,6 +91,9 @@ impl Theme {
             }
             if let Some(c) = col("violet") { t.violet = c; }
             if let Some(r) = look.get("radius").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))) { t.radius = (r as f32).clamp(0.0, 24.0); }
+            let num = |k: &str| look.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+            if let Some(o) = num("window_opacity") { t.window_opacity = (o as f32).clamp(0.4, 1.0); }
+            if let Some(c) = num("chamfer") { t.chamfer = (c as f32).clamp(0.0, 32.0); }
             if let Some(o) = look.get("opacity").and_then(|v| v.as_float()) { t.bg_alpha = (o as f32).clamp(0.3, 1.0); }
         }
         t

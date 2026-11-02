@@ -14,7 +14,7 @@
 //!
 //!   s  source     c  check      u  update      z  undo / recover      Esc  close      (or click)
 use shadow_ui::calloop::channel::{self, Sender};
-use shadow_ui::widgets::{button, chrome, footer, panel, Input, Rect};
+use shadow_ui::widgets::{button, chrome_solid, footer, panel, Input, Rect};
 use shadow_ui::{run, App, Ctx, Frame, Key, Keysym, SurfaceKind};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -361,7 +361,7 @@ impl App for Upd {
             Some(Job::Undo) => "undoing…",
             None => "",
         };
-        let (top, pad) = chrome(f, "UPDATE", busy);
+        let (top, pad) = chrome_solid(f, "UPDATE", busy);
         let (w, h) = (f.cv.w as i32, f.cv.h as i32);
         let pt = th.font_pt;
         let small = pt * 0.9;

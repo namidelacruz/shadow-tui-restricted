@@ -45,9 +45,9 @@ Everything was built and tested in a Linux container, including niri 25.08 runni
 | Mod+Tab / Mod+J/K cycle focus, 120 ms cubic-bezier | ✅ | `focus-column-right-or-first` / `left-or-last`; animations are `cubic-bezier 0.2 0 0 1`, 120 ms | config validated |
 | Mod+[ / ] presets 45/65/85 %, vertically centered | ✅ | `preset-column-widths` 0.45/0.65/0.85 with `switch-preset-column-width(-back)`. Configurable in `[layout] presets`. | validated |
 | Mod+F full area minus the bars, again restores the preset | ✅ | `maximize-column`, which respects the bar's reserved space; pressed again it returns to the previous width. `Mod+Shift+F` is true fullscreen. | validated |
-| wgpu / WGSL tactical shaders, blur, floor grid | ⇄ | niri draws windows; the Shadow apps draw their own tactical styling on the CPU (obsidian panels, 1 px amber borders, corner brackets). There is no 3D floor grid or blur: no GPU API in the apps, as you asked (no Vulkan). | screenshots |
-| Inactive windows paused, wireframe + sparkline | ⇄ | niri throttles off-screen windows' frame callbacks; there are no wireframe nodes | — |
-| Persistent bezel HUD, top and bottom 28 px | ⇄ | `shadow-bar`: one floating bar on the right edge, by your instruction. It reserves its space and stays visible in maximize; `Mod+Shift+B` hides it. Top-bar fields: monitor, workspace, focused app, NPU state, sync. Bottom-bar fields: battery % and W, panel Hz, package °C and profile, DSP, SSID/dBm/EAP. Plus Lua widgets and the time. | screenshots, fake sysfs test |
+| wgpu / WGSL tactical shaders, blur, floor grid | ◐ | 8.0: `shadow-hub` draws a 3D vertex floor grid and an icosphere on the CPU (perspective projection, depth fog). They follow the cursor. The apps use vertex-wireframe glass: chamfered translucent panels, gloss, wire edges, vertex nodes. Still no GPU API in the apps, as you asked (no Vulkan), so no shaders and no blur. | screenshots, nested niri, frame timings |
+| Inactive windows paused, wireframe + sparkline | ◐ | niri throttles off-screen windows' frame callbacks. Wireframe nodes and sparklines are on the hub's widgets, not on paused windows. | — |
+| Persistent bezel HUD, top and bottom 28 px | ⇄ | 8.0: `shadow-hub`, by your instruction. A static core sits in the middle with radial option nodes and slide-open panels, and draggable floating widgets are wired to it (clock, power, system, network, workspaces). `Mod+Space` summons it over windows. Before 8.0: `shadow-bar`, which is still optional: one floating bar on the right edge, by your instruction. It reserves its space and stays visible in maximize; `Mod+Shift+B` hides it. Top-bar fields: monitor, workspace, focused app, NPU state, sync. Bottom-bar fields: battery % and W, panel Hz, package °C and profile, DSP, SSID/dBm/EAP. Plus Lua widgets and the time. | screenshots, fake sysfs test |
 | Multi-monitor | ✅ (new) | niri handles any number of monitors. `shadow-displayd` scales each one as it appears. The bar sits on the laptop panel and, when docked, follows the focused monitor. Lid close while docked turns the panel off. | nested (one monitor) + unit tests |
 | Scaling resolves itself; text corrected if not | ✅ (new) | `ui/src/scale.rs` turns EDID density into a quarter-step scale (internal panel 144 dpi, desk monitors 110 dpi reference); `shadow-displayd` applies it through niri. Each app renders at the exact fractional scale (`wp_fractional_scale_v1` + viewporter). If the scale it gets is a quarter step or more off the ideal, it multiplies text sizes to compensate; GTK gets `text-scaling-factor`. | yes: niri moved 1.0 → 1.5 on its own for a 2560×1600 / 301 mm panel; unit tests for Dell and desk monitors |
 
@@ -106,7 +106,8 @@ Everything was built and tested in a Linux container, including niri 25.08 runni
 | shadow-files | ◐ | 2D three-column file manager in the style of yazi (not a yazi build) |
 | shadow-launch | ✅ | Intent-ranked (Markov + time of day + frequency), with ~RAM / ~W per app |
 | shadow-lock | ✅ | ext-session-lock on every monitor, PAM on a worker thread |
-| shadow-bar | ✅ (new) | See §2 |
+| shadow-bar | ✅ (new) | See §2. Optional from 8.0 |
+| shadow-hub | ✅ (new, 8.0) | The desktop: reactive vertex field, central hub, widgets, summon overlay. See §2 and the README |
 
 ## 8–9. Security and compliance (optional `shadow-tui-sec` package)
 
@@ -139,12 +140,27 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (101);
+- unit tests in every crate (109);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 8.0 (vertex wireframe UI, shadow-hub):
+  - real niri 25.08, nested at 1600×1000 with the generated config (`niri validate` passes, including `overview { backdrop-color }`):
+    - the hub starts from `spawn-at-startup`;
+    - the field follows a virtual pointer (wlr-virtual-pointer);
+    - clicking the core opens the ring, and clicking POWER opens its panel;
+    - `shadow-hub summon settings` shows over a terminal window;
+    - the overview keeps the hub out of the backdrop.
+  - Testing in the nested niri found and fixed a hang: a panel whose chips didn't fit yet, mid-animation, looped forever. Every page is now rendered at seven animation stages as a check.
+  - Unit tests: icosphere shape, easing settles, the field draws, widget positions parse and clamp, polygon fill and the wire primitives, and the hub binds and startup in the niri config.
+  - Headless snapshots of the hub (desktop, POWER, LOOK, summon APPS), the wallpaper picker and a glass app window.
+  - CPU, measured in the container: a frame while the field moves takes about 5 ms at 1600×1000 and about 12 ms at 2560×1600. A full hub redraw takes about 25 ms and 60 ms. Idle in nested niri, the hub uses about 0.5 % of one core.
+  - Not run here:
+    - real hardware;
+    - dragging a widget in a compositor (wlrctl can't hold a button; the drag code path is untested outside the hit logic);
+    - keyboard focus on the background layer under niri (`on-demand`). Typing goes through `Mod+Space` summon, which takes the keyboard exclusively.
 - 7.5:
   - smart-charging guard (unit tests): only firmware-listed modes, no-op detection, read-back, 6-writes-per-day budget, 7-day AC history, smart choice;
   - side-bar POWER dropdown, wallpaper picker, generated default wallpaper and fix center, all rendered headless and checked visually;

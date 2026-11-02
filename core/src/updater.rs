@@ -610,7 +610,7 @@ fn component(path: &str) -> &'static str {
         "ui" => "every 2D app (shared toolkit)",
         "niri" => "niri integration (bar, apps, session services, config generator)",
         "bar" => "shadow-bar",
-        "apps" => "shadow-launch / -net / -config / -files / -lock / -update",
+        "apps" => "shadow-hub / -launch / -net / -config / -files / -lock / -update / -wallpaper",
         "desktop" => "shadow-sessiond / shadow-displayd",
         "greet" => "shadow-greet (login screen)",
         "term" => "shadow-term",
@@ -1095,7 +1095,7 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
     // session side: niri config, Lua modules, restart the session programs that changed
     sh_quiet(&["shadow", "setup", "niri"]);
     sh_quiet(&["shadow-sessiond", "reload"]);
-    for prog in ["shadow-bar", "shadow-sessiond", "shadow-displayd"] {
+    for prog in ["shadow-bar", "shadow-hub", "shadow-sessiond", "shadow-displayd"] {
         let f = format!("/opt/shadow-tui/bin/{prog}");
         if pl.iter().any(|(k, x)| k == "replace" && *x == f)
             && sys::run(&["pgrep", "-x", prog]).0 == 0
