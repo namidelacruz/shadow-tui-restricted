@@ -9,7 +9,7 @@
 # 10.0: Shadow's own compositor is the desktop (niri is gone), so it is always built.
 
 Name:           shadow-tui-restricted
-Version:        9.0.0
+Version:        10.0.0
 Release:        1%{?dist}
 Summary:        Glyph desktop on its own Wayland compositor: web shell panels, Rust apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -20,14 +20,14 @@ BuildRequires:  gcc gcc-c++ make git pkgconf-pkg-config pam-devel libxkbcommon-d
 # shadow-compositor (Shadow's own compositor): DRM/KMS, input, seat
 BuildRequires:  systemd-devel libinput-devel libseat-devel libdrm-devel mesa-libgbm-devel mesa-libEGL-devel wayland-devel
 # shadow-panel: the shell's web pages in frameless WebKitGTK windows
-BuildRequires:  webkit2gtk4.1-devel gtk3-devel libsoup3-devel
+BuildRequires:  webkit2gtk4.1-devel gtk3-devel libsoup3-devel gtk-layer-shell-devel
 # cargo/rustc >= 1.89: the distribution's or rustup's (install.sh checks and provides one)
 
 Requires:       mesa-dri-drivers mesa-libEGL mesa-libgbm libinput libseat libxkbcommon pam systemd fontconfig
 # the apps draw all text themselves: a monospace font must exist
 Requires:       dejavu-sans-mono-fonts
 Requires:       NetworkManager wpa_supplicant iproute util-linux kmod git-core openssh-clients wireplumber polkit
-Requires:       webkit2gtk4.1 gtk3 libsoup3
+Requires:       webkit2gtk4.1 gtk3 libsoup3 gtk-layer-shell
 # a polkit authentication agent: without one, actions that need a password fail instead of asking
 Recommends:     (mate-polkit or lxqt-policykit or polkit-gnome or lxpolkit)
 # X11 apps (older AppImages, Electron, Steam, Wine): the compositor starts xwayland-satellite
@@ -147,6 +147,18 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Thu Nov 05 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 10.0.0-1
+- niri removed: the session runs only shadow-compositor (shadow_niri stays as its IPC client;
+  `shadow setup niri` is now a reload alias); the niri session entry and config generator are gone
+- Windows 11-style web shell: taskbar on every screen, start menu, widgets and quick settings —
+  shadow-webd pages in frameless WebKitGTK layer-shell windows (shadow-panel), started by
+  shadow-shell with a fallback to the glyph columns; shadow-bar / shadow-flyout removed
+- title bars with minimise / maximise / close; Mod+Up maximise, Mod+Down restore down
+- every connected monitor (hotplug), apps open on the second screen, nine workspaces per screen
+- bilingual Japanese labels; CJK fallback font loaded on demand
+- automatic updates from the public repository: anonymous HTTPS, background download + build +
+  test at idle priority (not on battery), "Update ready — install?" one-click install
+- idle: no periodic redraws; per-screen damage; clients exit on a dead compositor connection
 * Thu Nov 05 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 9.0.0-1
 - the glyph desktop on Shadow's own compositor (now the default session; niri stays selectable):
   gold line work on Vitruvian proportions, edge widget columns (shadow-glyph) with the side bar's

@@ -377,7 +377,7 @@ arch_install() {
   say "Compositor and runtime"
   # the compositor is Shadow's own; the side panels are web pages in WebKitGTK windows
   need=()
-  for p in webkit2gtk-4.1 gtk3 libsoup3; do pacman -Qq $p &>/dev/null || need+=("$p"); done
+  for p in webkit2gtk-4.1 gtk3 libsoup3 gtk-layer-shell; do pacman -Qq $p &>/dev/null || need+=("$p"); done
   if ((${#need[@]})); then run sudo pacman -S --needed --noconfirm "${need[@]}"; fi
   ensure_polkit_agent pacman -S --needed --noconfirm
   # X11 apps (older AppImages, Electron, Steam, Wine): the compositor starts xwayland-satellite for them
@@ -538,7 +538,7 @@ rpm_install() {
   say "Runtime dependencies"
   dnf_require mesa-dri-drivers mesa-libEGL libxkbcommon pam systemd fontconfig dejavu-sans-mono-fonts \
     NetworkManager wpa_supplicant iproute util-linux kmod git-core openssh-clients wireplumber pipewire \
-    webkit2gtk4.1 gtk3 libsoup3
+    webkit2gtk4.1 gtk3 libsoup3 gtk-layer-shell
   # shellcheck disable=SC2086  # $DNF is "dnf" or "dnf5"
   ensure_polkit_agent $DNF install -y
   dnf_install_available brightnessctl xdg-desktop-portal-gnome libnotify alsa-sof-firmware alsa-ucm \

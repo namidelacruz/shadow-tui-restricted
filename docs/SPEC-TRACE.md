@@ -1,8 +1,8 @@
-# CR-SPEC-SHADOW-001: implementation trace (version 7)
+# CR-SPEC-SHADOW-001: implementation trace (version 7, updated for 10.0)
 
 This file traces each requirement of the clean-room functional specification to the code that implements it.
 
-Target platforms: the spec names Arch Linux. Since 7.1, `install.sh` also installs on Fedora 41+ and RHEL-family 9/10 (RPM packaging, dnf dependencies, niri from Fedora, a COPR or source).
+Target platforms: the spec names Arch Linux. Since 7.1, `install.sh` also installs on Fedora 41+ and RHEL-family 9/10 (RPM packaging, dnf dependencies). Since 10.0 the compositor is Shadow's own only; niri is no longer used.
 
 Status:
 
@@ -48,7 +48,7 @@ Everything was built and tested in a Linux container, including niri 25.08 runni
 | wgpu / WGSL tactical shaders, blur, floor grid | ◐ | 8.0: `shadow-hub` draws a 3D vertex floor grid and an icosphere on the CPU (perspective projection, depth fog). They follow the cursor. The apps use vertex-wireframe glass: chamfered translucent panels, gloss, wire edges, vertex nodes. Still no GPU API in the apps, as you asked (no Vulkan), so no shaders and no blur. | screenshots, nested niri, frame timings |
 | Inactive windows paused, wireframe + sparkline | ◐ | niri throttles off-screen windows' frame callbacks. Wireframe nodes and sparklines are on the hub's widgets, not on paused windows. | — |
 | Persistent bezel HUD, top and bottom 28 px | ⇄ | 8.0: `shadow-hub`, by your instruction. A static core sits in the middle with radial option nodes and slide-open panels, and draggable floating widgets are wired to it (clock, power, system, network, workspaces). `Mod+Space` summons it over windows. Before 8.0: `shadow-bar`, which is still optional: one floating bar on the right edge, by your instruction. It reserves its space and stays visible in maximize; `Mod+Shift+B` hides it. Top-bar fields: monitor, workspace, focused app, NPU state, sync. Bottom-bar fields: battery % and W, panel Hz, package °C and profile, DSP, SSID/dBm/EAP. Plus Lua widgets and the time. | screenshots, fake sysfs test |
-| Multi-monitor | ✅ (new) | niri handles any number of monitors. `shadow-displayd` scales each one as it appears. The bar sits on the laptop panel and, when docked, follows the focused monitor. Lid close while docked turns the panel off. | nested (one monitor) + unit tests |
+| Multi-monitor | ✅ (new, 10.0) | `shadow-compositor` lights every connected monitor and picks up hotplug (`compositor/src/udev.rs`); `compositor/src/desk.rs` keeps each screen's nine workspaces. New apps open on the second screen, dialogs next to their parent, an unplugged screen's windows move to the panel. Each screen gets its own taskbar. Lid close while docked turns the panel off. | nested split into two screens (`SHADOW_SPLIT_OUTPUTS=2`) + unit tests; not on real monitors |
 | Scaling resolves itself; text corrected if not | ✅ (new) | `ui/src/scale.rs` turns EDID density into a quarter-step scale (internal panel 144 dpi, desk monitors 110 dpi reference); `shadow-displayd` applies it through niri. Each app renders at the exact fractional scale (`wp_fractional_scale_v1` + viewporter). If the scale it gets is a quarter step or more off the ideal, it multiplies text sizes to compensate; GTK gets `text-scaling-factor`. | yes: niri moved 1.0 → 1.5 on its own for a 2560×1600 / 301 mm panel; unit tests for Dell and desk monitors |
 
 ## 3. Power daemon (`shadow-powerd`)
@@ -140,8 +140,14 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (139);
-- niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
+- unit tests in every crate (138 in 10.0: the niri config generator's and the side bar's went with them, the screens / workspaces / title bar / shell API / updater ones are new);
+- 10.0.0 (nested in headless sway, the window split into two screens):
+  - **Two screens:** two terminals opened on the second screen and tiled there, with bilingual title bars; the first screen stayed free. Screenshots: `docs/screenshots/10.0-*`.
+  - **Shell:** a WebKitGTK taskbar on each screen; start, widgets and quick settings flyouts opened on the focused screen and closed with the same key. Clicking the pinned terminal on the second screen's taskbar started it there. Clicking that screen's workspace pill switched only that screen (the terminal stayed on workspace 1, its taskbar button still marked running).
+  - **Title bars:** □ maximized the window (the other tile hidden under it); ✕ folded it shut and closed it.
+  - **Automatic update pipeline:** a local mirror staged with `shadow update stage --low` (fetch, verify, idle-priority build, tests). The first run hit a failing test and refused to install, as it should.
+  - **Not tested:** real monitors and hotplug, the DRM path with two CRTCs, the notification's Install button (needs a notification daemon), and WebKitGTK on Fedora/Arch.
+- (9.x and earlier) niri 25.08 nested at 2560×1600, with the generated config;
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);

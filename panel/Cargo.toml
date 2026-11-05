@@ -1,6 +1,6 @@
 [package]
 name = "shadow-panel"
-version = "9.0.0"
+version = "10.0.0"
 edition = "2021"
 description = "Shadow TUI Restricted: the shell's taskbar, start menu, widgets and quick settings — local web pages in frameless WebKitGTK layer-shell windows"
 license = "MIT"

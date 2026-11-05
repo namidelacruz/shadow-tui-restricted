@@ -60,6 +60,7 @@ pub fn pkg(arch_name: &str) -> Option<&'static str> {
         ("webkit2gtk-4.1", Some("webkit2gtk4.1")),
         ("gtk3", Some("gtk3")),
         ("libsoup3", Some("libsoup3")),
+        ("gtk-layer-shell", Some("gtk-layer-shell")),
         ("pipewire", Some("pipewire")),
         ("wireplumber", Some("wireplumber")),
         ("pipewire-pulse", Some("pipewire-pulseaudio")),

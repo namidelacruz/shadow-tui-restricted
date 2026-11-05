@@ -14,13 +14,13 @@
 # WebKitGTK. Mesa, libdrm, glibc, PAM and WebKitGTK stay the system's.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
-pkgver=9.0.0
+pkgver=10.0.0
 pkgrel=1
 pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on its own Wayland compositor — Vitruvian glyph desktop, Windows 11-style web shell, multi-monitor workspaces, automatic updates, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')
 url="https://github.com/namidelacruz/shadow-tui-restricted"
 license=('MIT')
-makedepends=(cargo clang git pkgconf libinput libdrm seatd wayland webkit2gtk-4.1 gtk3 libsoup3)
+makedepends=(cargo clang git pkgconf libinput libdrm seatd wayland webkit2gtk-4.1 gtk3 libsoup3 gtk-layer-shell)
 options=(!debug !lto)
 _src="$startdir"
 _bundle=${SHADOW_BUNDLE:-1}
@@ -65,7 +65,7 @@ _bundle_libs() {
 package_shadow-tui-restricted() {
   depends=(mesa libinput libdrm seatd libxkbcommon pam systemd fontconfig ttf-jetbrains-mono-nerd
            networkmanager wpa_supplicant iproute2 util-linux kmod git openssh polkit wireplumber brightnessctl
-           webkit2gtk-4.1 gtk3 libsoup3)
+           webkit2gtk-4.1 gtk3 libsoup3 gtk-layer-shell)
   optdepends=('xwayland-satellite: X11 apps (the compositor starts it)' 'xorg-xwayland: X11 apps'
     
     'mate-polkit: password prompts for privileged actions (any polkit agent works; ./install.sh installs one)'

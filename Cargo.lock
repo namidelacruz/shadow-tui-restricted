@@ -2823,7 +2823,7 @@ dependencies = [
 
 [[package]]
 name = "shadow"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "shadow-lua",
  "shadow-niri",
@@ -2831,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-apps"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "libc",
  "png",
@@ -2843,7 +2843,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-compositor"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "fontdue",
  "libc",
@@ -2858,7 +2858,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-desktop"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "libc",
  "shadow-lua",
@@ -2870,11 +2870,11 @@ dependencies = [
 
 [[package]]
 name = "shadow-greet"
-version = "9.0.0"
+version = "10.0.0"
 
 [[package]]
 name = "shadow-lua"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "full_moon",
  "mlua",
@@ -2882,14 +2882,14 @@ dependencies = [
 
 [[package]]
 name = "shadow-niri"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "shadow-panel"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "gtk",
  "gtk-layer-shell",
@@ -2901,11 +2901,11 @@ dependencies = [
 
 [[package]]
 name = "shadow-powerd"
-version = "9.0.0"
+version = "10.0.0"
 
 [[package]]
 name = "shadow-sec"
-version = "9.0.0"
+version = "10.0.0"
 
 [[package]]
 name = "shadow-term"
@@ -2922,7 +2922,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-ui"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "ab_glyph",
  "libc",

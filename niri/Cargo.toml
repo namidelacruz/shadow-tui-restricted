@@ -1,6 +1,6 @@
 [package]
 name = "shadow-niri"
-version = "9.0.0"
+version = "10.0.0"
 edition = "2021"
 description = "Shadow TUI Restricted: client for shadow-compositor's control socket (niri-compatible IPC shapes, event-stream model)"
 license = "MIT"
