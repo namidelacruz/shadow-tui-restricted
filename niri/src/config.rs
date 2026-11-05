@@ -25,7 +25,7 @@ pub struct Gen {
     /// Lua key macros: (key, name) -> bind that runs `shadow-sessiond macro <key>`
     pub macros: Vec<String>,
     pub natural_scroll: bool,
-    /// 8.0 desktop: shadow-hub (vertex field + central hub) instead of the side bar + wallpaper
+    /// the glyph shell (9.0: edge columns + hidden hub) instead of the 7.x side bar
     pub hub: bool,
     /// compatibility mode: leave out the optional lines older niri releases don't know
     /// (overview backdrop colour, place-within-backdrop, layer shadows). Used when niri rejects
@@ -271,7 +271,7 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
         p(&mut o, "}");
         if g.hub {
             p(&mut o, "layer-rule {");
-            p(&mut o, r#"    match namespace="^shadow-hub-summon$""#);
+            p(&mut o, r#"    match namespace="^shadow-glyph-hub$""#);
             p(&mut o, "    background-effect { blur true; xray false; }");
             p(&mut o, "}");
         }
@@ -284,7 +284,9 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
     p(&mut o, "}");
     p(&mut o, "");
     p(&mut o, "// every Shadow feature is its own application; these start with the session");
-    let desktop: &[&str] = if g.hub { &["shadow-hub"] } else { &["shadow-bar", "shadow-wallpaper"] };
+    // 9.0: the glyph shell's edge columns (+ the wallpaper, niri draws no background) and the
+    // settings service; with the hub off, the 7.x side bar
+    let desktop: &[&str] = if g.hub { &["shadow-glyph", "shadow-wallpaper", "shadow-webd"] } else { &["shadow-bar", "shadow-wallpaper", "shadow-webd"] };
     for app in ["shadow-sessiond", "shadow-displayd"].iter().chain(desktop) {
         p(&mut o, &format!("spawn-at-startup {}", q(app)));
     }
@@ -298,9 +300,11 @@ pub fn generate(g: &Gen, user_tail: &str) -> String {
         let a: &str = match (*k, g.hub) {
             ("Mod+Return", _) => &term,
             ("Mod+E", _) => &files,
-            ("Mod+Space", true) => r#"spawn "shadow-hub" "summon";"#,
-            ("Mod+A", true) => r#"spawn "shadow-hub" "summon" "apps";"#,
-            ("Mod+Shift+B", true) => r#"spawn "sh" "-c" "pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar";"#,
+            ("Mod+Space", true) => r#"spawn "shadow-glyph" "summon";"#,
+            ("Mod+A", true) => r#"spawn "shadow-launch";"#,
+            ("Mod+Shift+B", true) => r#"spawn "shadow-glyph" "toggle";"#,
+            ("Mod+Comma", _) => r#"spawn "shadow-settings" "settings";"#,
+            ("Mod+Shift+H", _) => r#"spawn "shadow-settings" "fix";"#,
             _ => a,
         };
         p(&mut o, &format!("    {k} {{ {a} }}"));
@@ -362,16 +366,18 @@ mod tests {
     }
 
     #[test]
-    fn hub_replaces_bar_and_wallpaper() {
+    fn glyph_shell_replaces_the_side_bar() {
         let a = generate(&Gen::default(), "");
-        assert!(a.contains("spawn-at-startup \"shadow-hub\""));
-        assert!(!a.contains("spawn-at-startup \"shadow-bar\"") && !a.contains("spawn-at-startup \"shadow-wallpaper\""));
-        assert!(a.contains("Mod+Space { spawn \"shadow-hub\" \"summon\"; }"));
+        assert!(a.contains("spawn-at-startup \"shadow-glyph\"") && a.contains("spawn-at-startup \"shadow-webd\""));
+        // niri draws no background of its own: the wallpaper stays under the glyph columns
+        assert!(!a.contains("spawn-at-startup \"shadow-bar\"") && a.contains("spawn-at-startup \"shadow-wallpaper\""));
+        assert!(a.contains("Mod+Comma { spawn \"shadow-settings\" \"settings\"; }"));
+        assert!(a.contains("Mod+Space { spawn \"shadow-glyph\" \"summon\"; }"));
         assert!(a.contains("Mod+D { spawn \"shadow-launch\"; }"), "the launcher keeps a key");
         assert!(a.contains("overview { backdrop-color"));
         let old = generate(&Gen { hub: false, ..Gen::default() }, "");
         assert!(old.contains("spawn-at-startup \"shadow-bar\"") && old.contains("spawn-at-startup \"shadow-wallpaper\""));
-        assert!(old.contains("Mod+Space { spawn \"shadow-launch\"; }") && !old.contains("shadow-hub"));
+        assert!(old.contains("Mod+Space { spawn \"shadow-launch\"; }") && !old.contains("shadow-glyph"));
         // the wallpaper sits in the backdrop: workspaces must let it through
         assert!(a.contains("background-color \"transparent\"") && old.contains("background-color \"transparent\""));
     }
@@ -379,7 +385,7 @@ mod tests {
     #[test]
     fn compat_mode_keeps_the_hub_and_drops_only_optional_lines() {
         let a = generate(&Gen { compat: true, ..Gen::default() }, "");
-        assert!(a.contains("spawn-at-startup \"shadow-hub\"") && a.contains("Mod+Space { spawn \"shadow-hub\" \"summon\"; }"));
+        assert!(a.contains("spawn-at-startup \"shadow-glyph\"") && a.contains("Mod+Space { spawn \"shadow-glyph\" \"summon\"; }"));
         assert!(!a.contains("overview {") && !a.contains("place-within-backdrop") && !a.contains("shadow { off; }"));
     }
 

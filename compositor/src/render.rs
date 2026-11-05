@@ -152,37 +152,13 @@ impl State {
         let (ow, oh) = self.output_size();
         let (pw, ph) = ((ow * scale).round() as i32, (oh * scale).round() as i32);
         let amber = rgb(&self.cfg.look.amber);
-        let crimson = rgb(&self.cfg.look.crimson);
         let cyan = rgb(&self.cfg.look.cyan);
         let fpx = self.cfg.look.font_px * scale as f32;
         let boot = self.boot.map(|b| (b.elapsed().as_secs_f64() / BOOT_S).min(1.0)).unwrap_or(1.0) as f32;
 
         // ---------------------------------------------------------- greeter / lock screen
         if self.ui.is_some() {
-            let (globe, rot) = { let u = self.ui.as_ref().unwrap(); (u.globe(), u.rot) };
-            let lines = self.ui.as_ref().unwrap().lines();
-            let mut y = (ph as f64 * 0.66) as i32;
-            // glass backing behind the text block (same plate shader as centre stage)
-            let block_w = lines.iter().map(|(s, _)| self.text.width(s, fpx * 1.35)).max().unwrap_or(0) as f64 + 48.0 * scale;
-            let block_h = lines.len() as f64 * fpx as f64 * 1.7 + fpx as f64 * 1.6;
-            let back = R { x: (pw as f64 - block_w) / 2.0 / scale, y: (y as f64 - fpx as f64 * 0.8) / scale, w: block_w / scale, h: block_h / scale };
-            let ta = self.ui.as_ref().unwrap().text_alpha();
-            for (i, (s, kind)) in lines.iter().enumerate() {
-                let col = match kind { 1 => amber, 2 => crimson, 3 => cyan, _ => [0.75, 0.72, 0.62] };
-                let px = if i == 0 { fpx * 1.35 } else { fpx };
-                let w = self.text.width(s, px);
-                let a = self.ui.as_ref().unwrap().text_alpha();
-                self.text_el(r, &mut out, &format!("ui-{i}"), s, px, col, ((pw - w) / 2, y), a);
-                y += (px * 1.7) as i32;
-            }
-            if ta > 0.0 {
-                let mut u = self.colors();
-                u.extend([("u_opacity", vec![0.8]), ("u_blur", vec![1.0]), ("u_screen", vec![(back.x * scale) as f32, (back.y * scale) as f32, pw as f32, ph as f32])]);
-                out.push(El::Shader(self.render.shader("ui-back", &p_plate, lrect(back), ta, u)));
-            }
-            let mut u = self.colors();
-            u.extend([("u_grid", vec![1.0]), ("u_globe", vec![globe]), ("u_rot", vec![rot]), ("u_phase", vec![1.0])]);
-            out.push(El::Shader(self.render.shader("backdrop", &p_back, lrect(R { x: 0.0, y: 0.0, w: ow, h: oh }), 1.0, u)));
+            self.ui_elements(r, &mut out, &p_frame, &p_bg, &p_glint);
             return out;
         }
 
@@ -370,6 +346,138 @@ impl State {
         }
         let _ = (&p_back, &p_bar, bar_px_unused());
         out
+    }
+
+    /// The login / lock card under the Vitruvian figure: SHADOW in Shadow Glyph, the fields, the
+    /// desktop switch and the power row, each a gold-framed box the mouse can click.
+    fn ui_elements(&mut self, r: &mut GlesRenderer, out: &mut Vec<El>, p_frame: &GlesPixelProgram, p_bg: &GlesPixelProgram, p_glint: &GlesPixelProgram) {
+        let scale = self.scale();
+        let (ow, oh) = self.output_size();
+        let amber = rgb(&self.cfg.look.amber);
+        let hi = rgb(&self.cfg.look.cyan);
+        let crimson = rgb(&self.cfg.look.crimson);
+        let text = [0.92, 0.88, 0.77];
+        let dim = [0.56, 0.5, 0.38];
+        let fpx = self.cfg.look.font_px * scale as f32;
+        let (a, reveal, greeter, lines, sess, field, user, npass, status, busy) = {
+            let u = self.ui.as_ref().unwrap();
+            (u.text_alpha(), u.reveal(), u.mode == crate::ui::Mode::Greeter, u.lines(), u.session_name(), u.field, u.user.clone(), u.pass.chars().count(), u.status.clone(), u.busy)
+        };
+        let ptr = self.pointer_loc;
+        let mut buttons: Vec<(&'static str, R)> = vec![];
+        let mut extra: Vec<(&'static str, R)> = vec![];
+        // cursor on top
+        if a > 0.0 {
+            self.ui_cursor(r, out);
+        }
+        let px = |v: f64| (v * scale) as i32;
+        // the card: centred, under the figure's middle
+        let cw = (ow * 0.34).clamp(360.0, 560.0);
+        let cx = (ow - cw) / 2.0;
+        let mut y = oh * 0.52;
+        let lh = fpx as f64 / scale * 1.9;
+        let mut boxed = |out: &mut Vec<El>, this: &mut State, key: &'static str, rr: R, focus: bool| {
+            let hover = rr.contains(ptr.x, ptr.y);
+            let mut u = this.colors();
+            u.extend([("u_hi", hi.to_vec()), ("u_focus", vec![if focus { 1.0 } else { 0.0 }]), ("u_fill", vec![0.9]), ("u_hover", vec![if hover { 1.0 } else { 0.0 }])]);
+            out.push(El::Shader(this.render.shader(&format!("ui-box-{key}"), p_frame, lrect(rr), a, u)));
+            buttons.push((key, rr));
+        };
+        // title
+        let tpx = fpx * 2.6;
+        let title = "SHADOW";
+        let tw = self.text.width_d(title, tpx);
+        self.text_el(r, out, "d:ui-title", title, tpx, amber, ((px(ow) - tw) / 2, px(y)), a);
+        y += tpx as f64 / scale * 1.25;
+        let sub = if greeter { lines.get(1).map(|l| l.0.clone()).unwrap_or_default() } else { lines.get(1).map(|l| l.0.clone()).unwrap_or_default() };
+        let spx = fpx * 0.78;
+        let sw = self.text.width(&sub, spx);
+        self.text_el(r, out, "ui-sub", &sub, spx, if greeter { crimson } else { dim }, ((px(ow) - sw) / 2, px(y)), a * 0.9);
+        y += lh * 1.1;
+        // fields
+        let fh = lh * 1.25;
+        if greeter {
+            let rr = R { x: cx, y, w: cw, h: fh };
+            let caret = if field == 0 { "_" } else { "" };
+            self.text_el(r, out, "d:ui-user-l", "USER", fpx * 0.8, dim, (px(cx + 14.0), px(y + fh * 0.28)), a);
+            self.text_el(r, out, "ui-user", &format!("{user}{caret}"), fpx, text, (px(cx + 110.0), px(y + fh * 0.22)), a);
+            boxed(out, self, "user", rr, field == 0);
+            y += fh + 10.0;
+        }
+        let rr = R { x: cx, y, w: cw, h: fh };
+        let caret = if field == 1 { "_" } else { "" };
+        self.text_el(r, out, "d:ui-pass-l", "PASS", fpx * 0.8, dim, (px(cx + 14.0), px(y + fh * 0.28)), a);
+        self.text_el(r, out, "ui-pass", &format!("{}{caret}", "◆".repeat(npass.min(32))), fpx * 0.8, hi, (px(cx + 110.0), px(y + fh * 0.3)), a);
+        boxed(out, self, "pass", rr, field == 1);
+        y += fh + 10.0;
+        if greeter {
+            // the desktop switch
+            let rr = R { x: cx, y, w: cw, h: fh };
+            let name = sess.to_uppercase();
+            let nw = self.text.width_d(&name, fpx * 0.9);
+            self.text_el(r, out, "d:ui-sess", &name, fpx * 0.9, hi, ((px(ow) - nw) / 2, px(y + fh * 0.26)), a);
+            self.text_el(r, out, "d:ui-sess-l", "<", fpx, amber, (px(cx + 14.0), px(y + fh * 0.22)), a);
+            let aw = self.text.width_d(">", fpx);
+            self.text_el(r, out, "d:ui-sess-r", ">", fpx, amber, (px(cx + cw - 14.0) - aw, px(y + fh * 0.22)), a);
+            boxed(out, self, "sess", rr, false);
+            extra.push(("sess-prev", R { x: cx, y, w: cw * 0.25, h: fh }));
+            extra.push(("sess-next", R { x: cx + cw * 0.75, y, w: cw * 0.25, h: fh }));
+            y += fh + 6.0;
+        }
+        // status
+        let st = if busy { "AUTHENTICATING…".to_string() } else { status.0.clone() };
+        if !st.is_empty() {
+            let sw = self.text.width(&st, fpx * 0.8);
+            self.text_el(r, out, "ui-status", &st, fpx * 0.8, if status.1 == 2 { crimson } else { hi }, ((px(ow) - sw) / 2, px(y + 4.0)), a);
+        }
+        y += lh;
+        // the power row (login only): glyph buttons
+        if greeter {
+            let row = [("emergency", crate::glyphs::G::Emergency, "TERMINAL UI"), ("suspend", crate::glyphs::G::Suspend, "SUSPEND"), ("reboot", crate::glyphs::G::Restart, "RESTART"), ("poweroff", crate::glyphs::G::Power, "SHUT DOWN")];
+            let bw = (cw - 3.0 * 10.0) / 4.0;
+            let bh = fh * 1.6;
+            for (i, (key, g, label)) in row.iter().enumerate() {
+                let rr = R { x: cx + i as f64 * (bw + 10.0), y, w: bw, h: bh };
+                let hover = rr.contains(ptr.x, ptr.y);
+                let col = if *key == "emergency" { if hover { [1.0, 0.55, 0.4] } else { crimson } } else if hover { hi } else { amber };
+                let gpx = (bh * 0.42 * scale) as i32;
+                let gb = self.glyph_buf(*g, gpx, col);
+                let at = Point::<f64, Physical>::from(((rr.x + rr.w / 2.0) * scale - gpx as f64 / 2.0, (rr.y + 6.0) * scale));
+                if let Ok(el) = MemoryRenderBufferRenderElement::from_buffer(r, at, &gb, Some(a), None, None, Kind::Unspecified) {
+                    out.push(El::Mem(RescaleRenderElement::from_element(el, at.to_i32_round(), Scale::from(1.0))));
+                }
+                let lw = self.text.width_d(label, fpx * 0.62);
+                self.text_el(r, out, &format!("d:ui-b-{key}"), label, fpx * 0.62, col, (px(rr.x + rr.w / 2.0) - lw / 2, px(rr.y + bh - fpx as f64 / scale * 1.2)), a);
+                boxed(out, self, key, rr, false);
+            }
+            y += bh + 10.0;
+        }
+        // hint line
+        let hint = lines.last().map(|l| l.0.clone()).unwrap_or_default();
+        let hw = self.text.width(&hint, fpx * 0.66);
+        self.text_el(r, out, "ui-hint", &hint, fpx * 0.66, dim, ((px(ow) - hw) / 2, px(y + 6.0)), a * 0.8);
+        drop(boxed);
+        // the arrows of the switch first (they sit inside its box)
+        extra.extend(buttons);
+        if let Some(u) = self.ui.as_mut() {
+            u.buttons = extra;
+        }
+        self.background_elements(out, p_bg, p_glint, reveal, false);
+    }
+
+    /// the arrow cursor on the login / lock screen
+    fn ui_cursor(&mut self, r: &mut GlesRenderer, out: &mut Vec<El>) {
+        if self.cursor_typing_hidden {
+            return;
+        }
+        let scale = self.scale();
+        let (amber, cyan, crimson) = (rgb(&self.cfg.look.amber), rgb(&self.cfg.look.cyan), rgb(&self.cfg.look.crimson));
+        let (buf, _) = self.cursors.get(crate::cursor::Shape::Arrow, scale, amber, cyan, crimson);
+        let p = self.pointer_loc.to_physical(Scale::from(scale));
+        let at = Point::<f64, Physical>::from((p.x - scale, p.y - scale));
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(r, at, &buf, None, None, None, Kind::Cursor) {
+            out.push(El::Mem(RescaleRenderElement::from_element(e, at.to_i32_round(), Scale::from(1.0))));
+        }
     }
 
     /// the contour background and the lights travelling its trail lines (none while an app is

@@ -1,6 +1,10 @@
-//! Login screen (greeter mode, run by greetd) and lock screen — both drawn by the compositor itself
-//! with the same backdrop shader, so the greeter's last frame (globe collapsed into the floor grid)
-//! is the session's first frame: the login blends into the desktop instead of cutting to it.
+//! Login screen (greeter mode, run by greetd) and lock screen, drawn by the compositor itself (9.0).
+//! The login boots in: the contour lines draw out from the centre, the Vitruvian figure is
+//! constructed, the light starts travelling, then the card unfolds. Signing in folds everything
+//! back into the star; the session starts from the same background, so it continues the picture.
+//! The card: user, password, the desktop switch (Shadow and every other installed desktop), the
+//! Terminal UI emergency button (the text login with its rescue shell), suspend, restart and
+//! shut down — by keys or the mouse.
 use smithay::input::keyboard::Keysym;
 use std::time::{Duration, Instant};
 
@@ -21,6 +25,7 @@ pub enum UiAction {
     None,
     Submit,
     Rescue,
+    Suspend,
     Reboot,
     Poweroff,
 }
@@ -41,26 +46,46 @@ pub struct Ui {
     pub warning: Option<String>,
     confirm: Option<(Keysym, Instant)>,
     pub host: String,
+    pub opened: Instant,
+    /// clickable parts, set while drawing: (name, logical rect)
+    pub buttons: Vec<(&'static str, crate::orbit::R)>,
 }
 
-pub const HANDOFF: Duration = Duration::from_millis(450);
+pub const HANDOFF: Duration = Duration::from_millis(900);
+/// the boot-in animation of the login screen
+pub const BOOT: f32 = 2.4;
 
 fn conf(key: &str) -> Option<String> {
     let p = std::env::var("SHADOW_GREETER_CONF").unwrap_or_else(|_| "/etc/shadow-tui/greeter.conf".into());
     std::fs::read_to_string(p).ok()?.lines().find_map(|l| l.strip_prefix(&format!("{key}=")).map(|v| v.to_string()))
 }
 
+/// Every installed desktop: wayland-sessions, and X11 sessions through startx when it exists.
+/// Shadow's own come first.
 pub fn sessions() -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = vec![];
-    let dir = std::env::var("SHADOW_SESSIONS_DIR").unwrap_or_else(|_| "/usr/share/wayland-sessions".into());
-    if let Ok(rd) = std::fs::read_dir(dir) {
+    let wl = std::env::var("SHADOW_SESSIONS_DIR").unwrap_or_else(|_| "/usr/share/wayland-sessions".into());
+    let x11 = std::env::var("SHADOW_XSESSIONS_DIR").unwrap_or_else(|_| "/usr/share/xsessions".into());
+    let startx = ["/usr/bin/startx", "/bin/startx"].iter().any(|p| std::path::Path::new(p).exists()) || std::env::var_os("SHADOW_XSESSIONS_DIR").is_some();
+    for (dir, x) in [(wl, false), (x11, true)] {
+        if x && !startx {
+            continue;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else { continue };
         let mut files: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |e| e == "desktop")).collect();
         files.sort();
         for f in files {
             let t = std::fs::read_to_string(&f).unwrap_or_default();
             let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}=")).map(String::from));
+            if get("Hidden").as_deref() == Some("true") || get("NoDisplay").as_deref() == Some("true") {
+                continue;
+            }
             if let (Some(n), Some(e)) = (get("Name"), get("Exec")) {
-                v.push((n, e));
+                if x {
+                    v.push((format!("{n} (X11)"), format!("startx /usr/bin/env {e}")));
+                } else if !v.iter().any(|(m, _)| *m == n) {
+                    v.push((n, e));
+                }
             }
         }
     }
@@ -91,34 +116,60 @@ impl Ui {
             field: if mode == Mode::Lock || !user.is_empty() { 1 } else { 0 },
             mode, user, pass: String::new(), sessions, sess, status: (String::new(), 0), busy: false, rot: 0.0,
             last_tick: Instant::now(), active_until: Instant::now() + Duration::from_secs(8), handoff: None, warning, confirm: None, host,
+            opened: Instant::now(), buttons: vec![],
         }
     }
 
-    pub fn globe(&self) -> f32 {
+    /// 0..1: the lines drawing in at boot, and back into the star when signing in
+    pub fn reveal(&self) -> f32 {
+        let b = smooth(self.opened.elapsed().as_secs_f32() / (BOOT * 0.6));
         match self.handoff {
-            Some(t) => (1.0 - t.elapsed().as_secs_f32() / HANDOFF.as_secs_f32()).max(0.0).powf(1.6),
-            None => 1.0,
+            Some(t) => b * (1.0 - smooth(t.elapsed().as_secs_f32() / HANDOFF.as_secs_f32())),
+            None => b,
         }
     }
+    /// 0..1: the card, unfolding after the figure (lock screen: at once)
     pub fn text_alpha(&self) -> f32 {
+        let delay = if self.mode == Mode::Lock { 0.0 } else { BOOT * 0.5 };
+        let c = smooth((self.opened.elapsed().as_secs_f32() - delay) / 0.7);
         match self.handoff {
-            Some(t) => (1.0 - t.elapsed().as_secs_f32() / (HANDOFF.as_secs_f32() * 0.6)).max(0.0),
-            None => 1.0,
+            Some(t) => c * (1.0 - smooth(t.elapsed().as_secs_f32() / (HANDOFF.as_secs_f32() * 0.45))),
+            None => c,
         }
     }
-    /// the globe spins for a few seconds after input, then holds still (no redraws while idle)
+    /// redraw while booting, signing in or busy (the light has its own timer)
     pub fn moving(&self) -> bool {
-        self.handoff.is_some() || self.busy || Instant::now() < self.active_until
+        self.handoff.is_some() || self.busy || self.opened.elapsed().as_secs_f32() < BOOT + 0.2 || Instant::now() < self.active_until
     }
     pub fn tick(&mut self) {
-        let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
-        if self.moving() {
-            self.rot = (self.rot + dt * 0.6) % std::f32::consts::TAU;
-        }
     }
     pub fn handoff_done(&self) -> bool {
         self.handoff.map(|t| t.elapsed() >= HANDOFF).unwrap_or(false)
+    }
+    pub fn session_name(&self) -> String {
+        self.sessions.get(self.sess).map(|s| s.0.clone()).unwrap_or_default()
+    }
+    /// a click on a drawn part
+    pub fn click(&mut self, name: &str) -> UiAction {
+        self.active_until = Instant::now() + Duration::from_secs(6);
+        if self.busy || self.handoff.is_some() {
+            return UiAction::None;
+        }
+        let n = self.sessions.len().max(1);
+        match name {
+            "user" => self.field = 0,
+            "pass" => self.field = 1,
+            "sess-prev" => self.sess = (self.sess + n - 1) % n,
+            "sess-next" => self.sess = (self.sess + 1) % n,
+            "submit" => return self.key(Keysym::Return, None),
+            "emergency" => return self.key(Keysym::F2, None),
+            "suspend" => return self.key(Keysym::F3, None),
+            "reboot" => return self.key(Keysym::F11, None),
+            "poweroff" => return self.key(Keysym::F12, None),
+            _ => {}
+        }
+        UiAction::None
     }
 
     pub fn lines(&self) -> Vec<(String, u8)> {
@@ -139,7 +190,7 @@ impl Ui {
         let st = if self.busy { ("AUTHENTICATING…".to_string(), 3) } else { self.status.clone() };
         v.push((st.0, st.1.max(if st.1 == 0 { 0 } else { st.1 })));
         v.push((match self.mode {
-            Mode::Greeter => "Enter sign in · Tab field · ←→ session · F2 rescue shell · F11/F12 reboot/power off (press twice)".into(),
+            Mode::Greeter => "ENTER sign in · TAB field · ←→ desktop · F2 terminal UI · F3 suspend · F11 / F12 restart / shut down (twice)".into(),
             Mode::Lock => "Enter unlock".into(),
         }, 0));
         v
@@ -174,6 +225,7 @@ impl Ui {
                 self.status = (String::new(), 0);
             }
             Keysym::F2 if greeter => return UiAction::Rescue,
+            Keysym::F3 if greeter => return UiAction::Suspend,
             Keysym::F11 | Keysym::F12 if greeter => {
                 if let Some((k, t)) = self.confirm {
                     if k == sym && t.elapsed() < Duration::from_secs(3) {
@@ -271,4 +323,9 @@ mod t {
         l.key(Keysym::a, Some('s'));
         assert_eq!(l.key(Keysym::Return, None), UiAction::Submit);
     }
+}
+
+fn smooth(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }

@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Application
+Name=Shadow Settings
+GenericName=Settings
+Comment=Settings, fix center, default apps, config and crash log (web app)
+Exec=shadow-settings settings
+Icon=preferences-system
+Terminal=false
+Categories=System;Settings;
+Actions=fix;defaults;config;crash;
+
+[Desktop Action fix]
+Name=Fix center
+Exec=shadow-settings fix
+
+[Desktop Action defaults]
+Name=Default apps
+Exec=shadow-settings defaults
+
+[Desktop Action config]
+Name=Config
+Exec=shadow-settings config
+
+[Desktop Action crash]
+Name=Crash log
+Exec=shadow-settings crash

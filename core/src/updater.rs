@@ -610,7 +610,7 @@ fn component(path: &str) -> &'static str {
         "ui" => "every 2D app (shared toolkit)",
         "niri" => "niri integration (bar, apps, session services, config generator)",
         "bar" => "shadow-bar",
-        "apps" => "shadow-hub / -launch / -net / -config / -files / -lock / -update / -wallpaper",
+        "apps" => "shadow-glyph / -webd / -settings / -launch / -net / -files / -lock / -update",
         "desktop" => "shadow-sessiond / shadow-displayd",
         "greet" => "shadow-greet (login screen)",
         "term" => "shadow-term",
@@ -1095,24 +1095,19 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
     // session side: niri config, Lua modules, restart the session programs that changed
     sh_quiet(&["shadow", "setup", "niri"]);
     sh_quiet(&["shadow-sessiond", "reload"]);
-    // the desktop switching to the hub (an update that brings shadow-hub, or turns it on) takes
-    // effect now, not at the next login: start the hub and retire the side bar and the wallpaper
-    let hub_wanted = std::fs::read_to_string(shadow_niri::config::path())
-        .map(|c| c.contains("spawn-at-startup \"shadow-hub\""))
-        .unwrap_or(false);
-    let hub_running = sys::run(&["pgrep", "-x", "shadow-hub"]).0 == 0;
+    // 9.0: the glyph shell replaced the hub — a session still running the 8.x hub switches now
     let mut switched = false;
-    if hub_wanted && !hub_running && sys::run(&["niri", "msg", "version"]).0 == 0 {
-        // the same steps as `shadow-hub switch` (tested on its own), run by the new binary
-        let (rc, o, e) = sys::run(&["shadow-hub", "switch"]);
-        for l in format!("{o}{e}").lines().filter(|l| !l.trim().is_empty()) {
-            out(porcelain, "log", l);
+    if sys::run(&["pgrep", "-x", "shadow-hub"]).0 == 0 {
+        sh_quiet(&["pkill", "-x", "shadow-hub"]);
+        for p in ["shadow-glyph", "shadow-webd"] {
+            let _ = std::process::Command::new("sh").args(["-c", &format!("setsid -f {p} >/dev/null 2>&1")]).status();
         }
-        switched = rc == 0;
+        out(porcelain, "log", "the 8.x hub is replaced by the glyph shell");
+        switched = true;
     }
-    for prog in ["shadow-bar", "shadow-hub", "shadow-sessiond", "shadow-displayd"] {
+    for prog in ["shadow-bar", "shadow-glyph", "shadow-webd", "shadow-sessiond", "shadow-displayd"] {
         let f = format!("/opt/shadow-tui/bin/{prog}");
-        if (prog == "shadow-bar" || prog == "shadow-hub") && switched {
+        if (prog == "shadow-glyph" || prog == "shadow-webd") && switched {
             continue;
         }
         if pl.iter().any(|(k, x)| k == "replace" && *x == f)

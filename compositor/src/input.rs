@@ -140,7 +140,24 @@ pub fn on_key(state: &mut State, code: smithay::input::keyboard::Keycode, ks: Ke
 pub fn ui_key(state: &mut State, sym: Keysym, ch: Option<char>) {
     let Some(ui) = state.ui.as_mut() else { return };
     let action = ui.key(sym, ch);
+    ui_do(state, action);
+}
+
+/// a click on the login / lock card
+fn ui_click(state: &mut State) {
+    let p = state.pointer_loc;
+    let Some(ui) = state.ui.as_mut() else { return };
+    let hit = ui.buttons.iter().find(|(_, r)| r.contains(p.x, p.y)).map(|(n, _)| *n);
+    let action = match hit {
+        Some(n) => ui.click(n),
+        None => UiAction::None,
+    };
+    ui_do(state, action);
+}
+
+fn ui_do(state: &mut State, action: UiAction) {
     state.dirty = true;
+    let Some(ui) = state.ui.as_mut() else { return };
     match action {
         UiAction::Submit => {
             ui.busy = true;
@@ -160,6 +177,7 @@ pub fn ui_key(state: &mut State, sym: Keysym, ch: Option<char>) {
             state.exit_code = 3; // greeter-wrapper switches to the text greeter, which offers a rescue shell
             state.signal.stop();
         }
+        UiAction::Suspend => spawn_raw("systemctl suspend"),
         UiAction::Reboot => spawn_raw("systemctl reboot"),
         UiAction::Poweroff => spawn_raw("systemctl poweroff"),
         UiAction::None => {}
@@ -445,11 +463,22 @@ pub fn on_input<B: InputBackend>(state: &mut State, event: InputEvent<B>) {
             if !state.pointer_live {
                 return;
             }
-            // Mod + scroll (or scrolling over a ring node) turns the ring
+            // over the minimised squares: the grid scrolls (wheel or two fingers, either axis)
+            let in_band = state.grid().2.map(|b| b.contains(state.pointer_loc.x, state.pointer_loc.y)).unwrap_or(false);
+            if in_band {
+                let px = |ax| event.amount(ax).or(event.amount_v120(ax).map(|d| d / 120.0 * 48.0)).unwrap_or(0.0);
+                let d = px(Axis::Vertical) + px(Axis::Horizontal);
+                if d != 0.0 {
+                    let (_, max, _) = state.grid();
+                    state.grid_scroll = (state.grid_scroll + d).clamp(0.0, max);
+                    state.dirty = true;
+                }
+                return;
+            }
+            // Mod + scroll: the keyboard moves between the open apps
             let mods = state.seat.get_keyboard().map(|k| k.modifier_state()).unwrap_or_default();
             let modkey = if state.cfg.input.modifier == "alt" { mods.alt } else { mods.logo };
-            let over_node = matches!(under(state, state.pointer_loc), Under::Node(_));
-            if modkey || over_node {
+            if modkey {
                 let v = event.amount_v120(Axis::Vertical).map(|d| d / 120.0).or(event.amount(Axis::Vertical).map(|d| d / 15.0)).unwrap_or(0.0);
                 state.ring_scroll += v;
                 while state.ring_scroll.abs() >= 1.0 {
@@ -487,8 +516,14 @@ pub fn on_input<B: InputBackend>(state: &mut State, event: InputEvent<B>) {
 pub fn pointer_button(state: &mut State, button: u32, bs: ButtonState, time: u32) {
     state.last_input = Instant::now();
     activity(state);
+    if state.ui.is_some() {
+        if bs == ButtonState::Pressed {
+            ui_click(state);
+        }
+        return; // the login / lock card: nothing else sees the click
+    }
     if !state.pointer_live {
-        return; // lock / greeter screen: keyboard only
+        return;
     }
     if state.cursor_typing_hidden {
         state.cursor_typing_hidden = false;
@@ -557,8 +592,13 @@ fn pointer_to(state: &mut State, p: Point<f64, Logical>, time: u32) {
     let (w, h) = state.output_size();
     state.pointer_loc = (p.x.clamp(0.0, w - 1.0), p.y.clamp(0.0, h - 1.0)).into();
     activity(state);
+    if state.ui.is_some() {
+        state.cursor_typing_hidden = false;
+        state.dirty = true; // the card's hover and its cursor
+        return;
+    }
     if !state.pointer_live {
-        return; // lock / greeter screen: nothing sees the motion and nothing is redrawn
+        return;
     }
     state.last_input = Instant::now();
     state.cursor_typing_hidden = false;

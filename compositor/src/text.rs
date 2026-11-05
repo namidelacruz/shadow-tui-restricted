@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 pub struct Text {
     font: Option<fontdue::Font>,
+    /// Shadow Glyph, for lines whose key starts with "d:" (titles, the login screen)
+    display: Option<fontdue::Font>,
     cache: HashMap<String, (String, u32, MemoryRenderBuffer, (i32, i32))>,
 }
 
@@ -35,13 +37,19 @@ impl Text {
         if font.is_none() {
             tracing::warn!("no font found: HUD text disabled");
         }
-        Text { font, cache: HashMap::new() }
+        let display = ["/opt/shadow-tui/share/fonts/ShadowGlyph-Regular.ttf".to_string(), format!("{}/.local/share/fonts/ShadowGlyph-Regular.ttf", std::env::var("HOME").unwrap_or_default()), "/usr/share/fonts/shadow/ShadowGlyph-Regular.ttf".into()]
+            .iter()
+            .chain(std::env::var("SHADOW_DISPLAY_FONT").ok().iter())
+            .find_map(|p| std::fs::read(p).ok())
+            .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok());
+        Text { font, display, cache: HashMap::new() }
     }
 
     /// Rasterise `text` at `px` (physical) in `rgb`; returns the buffer and its physical size.
     /// `key` identifies the slot (e.g. "hud-top"), so a changed string reuses the slot.
+    /// A line of text as a buffer, cached under `key`. Keys starting with "d:" use the display face.
     pub fn line(&mut self, key: &str, text: &str, px: f32, rgb: [f32; 3]) -> Option<(MemoryRenderBuffer, (i32, i32))> {
-        let font = self.font.as_ref()?;
+        let font = if key.starts_with("d:") { self.display.as_ref().or(self.font.as_ref())? } else { self.font.as_ref()? };
         let col = ((rgb[0] * 255.0) as u32) << 16 | ((rgb[1] * 255.0) as u32) << 8 | (rgb[2] * 255.0) as u32;
         if let Some((t, c, b, s)) = self.cache.get(key) {
             if t == text && *c == col {
@@ -80,6 +88,10 @@ impl Text {
         Some((b, (w, h)))
     }
 
+    /// width in the display face
+    pub fn width_d(&self, text: &str, px: f32) -> i32 {
+        self.display.as_ref().or(self.font.as_ref()).map(|f| text.chars().map(|c| f.metrics(c, px).advance_width.round() as i32).sum::<i32>() + 2).unwrap_or(0)
+    }
     pub fn width(&self, text: &str, px: f32) -> i32 {
         self.font.as_ref().map(|f| text.chars().map(|c| f.metrics(c, px).advance_width.round() as i32).sum::<i32>() + 2).unwrap_or(0)
     }

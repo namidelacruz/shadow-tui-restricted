@@ -1,7 +1,17 @@
 #!/bin/sh
 # Shadow TUI Restricted login screen, run by greetd as the "greeter" user on its VT.
-#  1. shadow-greet: the static console login (ly-style), console font sized to the panel
-#  2. agreety: greetd's own prompt — you can always log in
+#  1. shadow-compositor --greeter: the graphical login (9.0) — boot animation, the desktop switch,
+#     power buttons. Its TERMINAL UI button (F2) exits with 3 and lands in:
+#  2. shadow-greet: the console login (ly-style) with the rescue shell — also used when the
+#     graphical login can't start (no GPU / DRM)
+#  3. agreety: greetd's own prompt — you can always log in
+C=/opt/shadow-tui/bin/shadow-compositor
+if [ -x "$C" ] && [ "${SHADOW_GREETER:-graphical}" != console ] && ! grep -q '^greeter *= *console' /etc/shadow-tui/greeter.conf 2>/dev/null; then
+    "$C" --greeter 2>>/var/cache/shadow-tui-greeter/greeter.log
+    rc=$?
+    [ "$rc" -eq 0 ] && exit 0
+    printf '\033c'
+fi
 G=/opt/shadow-tui/bin/shadow-greet
 if [ -x "$G" ]; then
     "$G" "$@" 2>>/var/cache/shadow-tui-greeter/greeter.log

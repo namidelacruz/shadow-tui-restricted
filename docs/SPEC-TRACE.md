@@ -140,12 +140,33 @@ Following your instruction, the security and compliance parts are a separate, op
 
 Tested in the container:
 
-- unit tests in every crate (135);
+- unit tests in every crate (139);
 - niri 25.08 nested at 2560×1600, with the generated config (`niri validate` passes);
 - `shadow-displayd` setting scale 1.5 on its own;
 - the side bar following niri's events;
 - launcher, settings, files, network, lock and terminal all rendering at 1.5 (screenshots);
 - the login screen previewed in a terminal;
+- 9.0.0 (the glyph desktop, nested in headless sway, 1600×1000 and 1920×1200):
+  - **Desktop:** screenshots in `docs/screenshots/9.0-*`.
+    - The edge columns reserve their width, and apps tile between them (1–3 apps checked).
+    - Minimizing moves an app into the grid (strip or full grid) with its last frame, glyph and name; the grid scrolling was moved with the `grid-scroll` action.
+    - The hidden hub draws and closes.
+    - The contour background and travelling lights render.
+  - **Kinetic unfolding:** checked frame by frame at 2.4 s for open (from a corner origin) and for minimize. Unit tests: the wave starts at the origin and completes, closing folds toward it, the cells tile the rect exactly, and hinges face the origin. Not run on hardware.
+  - **Shadow Glyph** (font) and the glyph icons: rendered sheets. Unit tests: every glyph has ink, none touches the edge, and apps map to glyphs.
+  - **Settings service:** checked over HTTP:
+    - no key or a wrong key → 401;
+    - a foreign Host → 403;
+    - a cross-site Origin → 403;
+    - a form post → 400;
+    - out-of-schema values and invalid TOML refused;
+    - a valid setting written;
+    - the cookie is HttpOnly and SameSite=Strict;
+    - the key file is mode 600.
+
+    The web app ran in headless Chromium: it unlocked from the fragment and removed the key from the address bar, and its settings page and tessellated page change render.
+  - **Login screen:** in the nested compositor, it boots in and shows the card, the desktop switch (four fake Wayland sessions and an X11 one) and the power row. Not tested: a real greetd login, and suspend, restart or shut down.
+  - **Not tested here:** the touchpad on hardware, a real browser installing the PWA, and the niri session with the glyph shell.
 - 8.3.0 (Shadow's own compositor, nested in headless sway at 1600×1000):
   - **Mouse:** hover and click reach the hub, the tutorial panel and windows. A click on a ring node brought the terminal to the centre. The compositor draws its own cursor (arrow, hand, I-beam, reticle, busy, not-allowed), or the app's cursor surface when it sets one. Clicks were driven through a test-only control command (`test-click`, enabled only by `SHADOW_TEST_INPUT`): wlrctl's virtual pointer disappears after every call, so its clicks never arrive. Motion was also checked with wlrctl. Not tested on hardware: libinput touchpad settings, pointer lock and relative motion.
   - **Default apps:** under the compositor, all eleven app windows open: terminal, launcher, network, settings, files, tasks, fix, prefs, Craft, wallpaper picker and update. So do the summoned hub, its APPS panel and the flyout (screenshots). The DEFAULTS terminal and file manager drive `Mod+Return`/`Mod+E` (unit test). `shadow setup niri` reloads the running compositor.

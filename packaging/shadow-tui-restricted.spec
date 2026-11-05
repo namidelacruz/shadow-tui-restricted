@@ -11,7 +11,7 @@
 %bcond_without compositor
 
 Name:           shadow-tui-restricted
-Version:        8.3.0
+Version:        9.0.0
 Release:        1%{?dist}
 Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
@@ -150,6 +150,22 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/shadow-sec.service
 
 %changelog
+* Thu Nov 05 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 9.0.0-1
+- the glyph desktop on Shadow's own compositor (now the default session; niri stays selectable):
+  gold line work on Vitruvian proportions, edge widget columns (shadow-glyph) with the side bar's
+  quick settings merged in, apps tiling between them, minimised apps as square tiles in a
+  scrollable strip / grid, the hidden hub (Mod+Space)
+- kinetic unfolding / tessellation for windows opening, closing, minimising and restoring, from
+  where they came from (a column row, a grid tile, the hub)
+- contour-line background with travelling light (not mouse-reactive; small redraw regions,
+  slower on battery, none while fullscreen)
+- Shadow Glyph: an original display typeface; an original glyph icon set
+- settings, fix center, default apps, config and crash log as a web app (PWA) over a local API
+  (shadow-webd: 127.0.0.1, per-session key, Host / Origin checks); shadow-settings opens it
+- login screen: boot animation, the desktop switch (other installed desktops too), TERMINAL UI
+  emergency button, suspend / restart / shut down, mouse support; logout animation
+- removed: the 8.x vertex hub (shadow-hub)
+
 * Mon Nov 02 2026 Shadow TUI Restricted <noreply@shadow-tui.local> - 8.3.0-1
 - shadow-compositor: full mouse and touchpad support — the hub, menus, windows and popups, click a
   ring node to bring it forward, Mod+scroll turns the ring; its own cursor shapes (cursor-shape-v1

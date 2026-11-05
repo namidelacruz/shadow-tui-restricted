@@ -1,7 +1,7 @@
 # Shadow TUI Restricted — local PKGBUILD (build from this directory: makepkg -si, or ./install.sh)
 #
 # Split package:
-#   shadow-tui-restricted   the desktop on niri: vertex hub (shadow-hub; side bar optional), dedicated 2D apps
+#   shadow-tui-restricted   the glyph desktop on Shadow's own compositor (niri optional): edge columns, hidden hub, settings web app
 #                           (shadow-launch, -net, -config, -files, -lock, -term), session services
 #                           (shadow-sessiond, shadow-displayd), static console login (shadow-greet),
 #                           shadow-powerd (7-day learning schedule), shadow-netd, shadow-healer, shadow-sync
@@ -15,7 +15,7 @@
 # config file, so a niri update can't break Shadow's binaries.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
-pkgver=8.3.0
+pkgver=9.0.0
 pkgrel=1
 pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on niri — vertex wireframe hub, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')

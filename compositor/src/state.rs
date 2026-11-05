@@ -275,7 +275,20 @@ impl State {
         let Some(band) = band else { return (vec![], 0.0, None) };
         let label = 22.0;
         let inner = R { h: band.h, ..band };
-        let (rects, max) = orbit::grid(R { h: (inner.h - label).max(40.0), ..inner }, self.ring.min.len(), self.cfg.layout.tile_px as f64, self.cfg.layout.gap as f64 + label, self.grid_scroll);
+        let cell = R { h: (inner.h - label).max(40.0), ..inner };
+        let side = (self.cfg.layout.tile_px as f64).min(cell.h).max(24.0);
+        let gap = self.cfg.layout.gap as f64;
+        // one row (apps open): a strip that scrolls sideways; the whole area: a grid scrolling down
+        let (rects, max) = if cell.h < 2.0 * side + gap + label {
+            let n = self.ring.min.len();
+            let content = n as f64 * (side + gap) - gap;
+            let max = (content - cell.w).max(0.0);
+            let s = self.grid_scroll.clamp(0.0, max);
+            let x0 = cell.x + ((cell.w - content) / 2.0).max(0.0);
+            ((0..n).map(|i| R { x: (x0 + i as f64 * (side + gap) - s).round(), y: cell.y, w: side, h: side }).collect(), max)
+        } else {
+            orbit::grid(cell, self.ring.min.len(), self.cfg.layout.tile_px as f64, gap + label, self.grid_scroll)
+        };
         (self.ring.min.iter().copied().zip(rects).collect(), max, Some(band))
     }
     /// where every window is drawn right now, without animation: (id, rect, scale, open?).
@@ -292,8 +305,9 @@ impl State {
         let (grid, _, band) = self.grid();
         if let Some(b) = band {
             for (id, r) in grid {
-                let cy = r.y + r.h / 2.0;
-                if cy >= b.y && cy <= b.y + b.h {
+                // visible while most of it is inside the band
+                let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                if cy >= b.y && cy <= b.y + b.h && cx >= b.x && cx <= b.x + b.w {
                     v.push((id, r, 1.0, false));
                 }
             }

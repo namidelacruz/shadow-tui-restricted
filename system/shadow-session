@@ -57,11 +57,16 @@ run() {
 }
 update_gate
 
-# which compositor: niri (default) or Shadow's own (shadow-compositor): --compositor NAME, or
-# [session] compositor = "niri" | "shadow" in config.toml
+# which compositor: Shadow's own (default since 9.0: the glyph desktop) or niri: --compositor NAME,
+# or [session] compositor = "shadow" | "niri" in config.toml
 COMP=$(sed -n '/^\[session\]/,/^\[/{s/^compositor *= *"\{0,1\}\([a-z]*\)"\{0,1\}.*/\1/p}' "$STATE/config.toml" 2>/dev/null | head -n1)
 [ "$1" = "--compositor" ] && [ -n "$2" ] && COMP=$2
-[ -n "$COMP" ] || COMP=niri
+[ -n "$COMP" ] || COMP=shadow
+# the own compositor left out of this build (RPM --without compositor): niri
+if [ "$COMP" = shadow ] && ! command -v shadow-compositor >/dev/null 2>&1; then
+    echo "$(date -Is) shadow-compositor is not installed — using niri" >>"$LOG"
+    COMP=niri
+fi
 if [ "$COMP" = niri ] && ! command -v niri >/dev/null 2>&1 && command -v shadow-compositor >/dev/null 2>&1; then
     echo "$(date -Is) niri is not installed — using Shadow's own compositor" >>"$LOG"
     COMP=shadow

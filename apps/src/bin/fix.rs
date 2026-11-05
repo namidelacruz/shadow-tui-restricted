@@ -128,9 +128,9 @@ impl Fixc {
                         lvl: '·',
                         text: format!("Desktop: {}", if hub { "the hub" } else { "the side bar + wallpaper" }),
                         detail: format!("Enter switches to {} now and for later logins", if hub { "the side bar + wallpaper" } else { "the hub" }),
-                        act: Act::Work(vec!["shadow-hub".into(), if hub { "use-bar".into() } else { "switch".into() }]),
+                        act: Act::Work(vec!["shadow-glyph".into(), "toggle".into()]),
                     },
-                    Row { lvl: '·', text: "Check the hub".into(), detail: "shadow-hub doctor: niri, config, processes, background, frame time, log".into(), act: Act::Term("shadow-hub doctor".into()) },
+                    Row { lvl: '·', text: "Open the settings web app".into(), detail: "shadow-settings: settings, fix center, default apps, config, crash log".into(), act: Act::Work(vec!["shadow-settings".into()]) },
                     Row { lvl: '·', text: "Crash log".into(), detail: "what crashed or is holding changes back, with the details and a report to save".into(), act: Act::Exec("shadow-prefs crash".into()) },
                     Row { lvl: '·', text: "Default apps".into(), detail: "file manager, terminal and background".into(), act: Act::Exec("shadow-prefs".into()) },
                 ]

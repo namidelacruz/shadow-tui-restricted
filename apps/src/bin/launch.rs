@@ -49,7 +49,7 @@ fn actions() -> Vec<Entry> {
         action("craft", "Craft apps", "shadow-craft · ArtCraft suite: install, update, launch (PhotoCraft, FilmCraft, …)", "shadow-craft"),
         action("prefs", "Default apps", "shadow-prefs · file manager, terminal, background", "shadow-prefs"),
         action("crash", "Crash log", "what crashed, what holds changes back · save a report", "shadow-prefs crash"),
-        action("hub", "Hub", "Mod+Space · apps, settings, power, system, look", "shadow-hub summon"),
+        action("hub", "Hub", "Mod+Space · the hidden hub: apps, settings, fix, lock", "shadow-glyph summon"),
         action("bar", "Show / hide side bar", "Mod+Shift+B · optional next to the hub", "sh -c 'pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar'"),
         action("overview", "Overview", "all workspaces", "niri msg action toggle-overview"),
         action("power", "Power + learning", "shadow-powerd status and schedule", &hold("shadow-powerd status; echo; shadow-powerd learn")),
