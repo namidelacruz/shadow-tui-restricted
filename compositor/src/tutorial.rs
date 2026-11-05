@@ -12,14 +12,14 @@ use std::time::{Duration, Instant};
 
 /// (default key, what it does, extra line: the mouse way or a tip)
 pub const STEPS: &[(&str, &str, &str)] = &[
-    ("Mod+Space", "OPEN THE MENU", "or click the SHADOW core in the middle of the hub"),
-    ("Mod+A", "OPEN THE APPS PANEL", "every installed app, searchable — type to filter"),
+    ("Mod+Space", "OPEN THE HIDDEN HUB", "the glyph star in the middle — or click the centre mark"),
     ("Mod+D", "LAUNCH ANYTHING", "apps, files, actions: + for Craft apps, > for actions"),
-    ("Mod+Return", "OPEN A TERMINAL", "your default terminal (shadow-prefs → DEFAULTS)"),
-    ("Mod+Tab", "CYCLE THE RING", "or click any wireframe node to bring it to the centre"),
-    ("Mod+BracketRight", "WIDEN CENTRE STAGE", "Mod+[ narrows it again; Mod+F goes full screen"),
-    ("Mod+Q", "CLOSE THE CENTRE WINDOW", "the next window in the ring moves up"),
-    ("Mod+Comma", "OPEN SETTINGS", "Mod+P: default apps, background and the crash log"),
+    ("Mod+Return", "OPEN A TERMINAL", "your default terminal (settings → DEFAULTS)"),
+    ("Mod+Tab", "MOVE BETWEEN APPS", "or click an app; Mod+Shift+Return gives it the main tile"),
+    ("Mod+M", "MINIMISE TO THE GRID", "it becomes a square tile at the bottom of the app area"),
+    ("Mod+Shift+M", "BRING IT BACK", "or click its tile; scroll the grid with the wheel"),
+    ("Mod+Q", "CLOSE THE FOCUSED APP", "the others re-tile"),
+    ("Mod+Comma", "OPEN SETTINGS", "a web app: settings, fix center, config — Mod+Shift+H fixes"),
     ("Mod+Alt+L", "LOCK THE SCREEN", "(training only acknowledges it — nothing locks now)"),
     ("Mod+Shift+Slash", "OPEN THIS GUIDE AGAIN", "any time — Mod+F1 works too"),
 ];
@@ -181,8 +181,8 @@ mod t {
         let mut t = Tutorial::new(&b);
         assert_eq!(t.steps.len(), STEPS.len() - 1, "a removed bind drops its step");
         assert!(!t.observe("spawn shadow-launch"), "out of order does nothing");
-        assert!(t.observe("spawn shadow-hub summon"));
-        assert!(!t.observe("spawn shadow-hub summon"), "no double count during the flash");
+        assert!(t.observe("spawn shadow-glyph summon"));
+        assert!(!t.observe("spawn shadow-glyph summon"), "no double count during the flash");
         t.hit = Some(Instant::now() - FLASH);
         assert!(t.tick());
         assert_eq!(t.at, 1);

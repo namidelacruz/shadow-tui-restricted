@@ -157,11 +157,201 @@ void main() {
 }
 "#;
 
+
+/// The 9.0 background: warm obsidian with a stone grain, faint contour lines (iso-lines of a
+/// noise field), five brighter trail lines the light travels along (trails() — the same curves
+/// as glint.rs), and the hidden hub's star: rays and dashed rings around u_star, radius u_starr.
+/// Still: no time uniform, so it costs nothing until something above it changes.
+/// u_reveal (0..1) draws the lines in from the centre (login boot animation).
+pub const BACKGROUND: &str = r#"
+uniform vec3 u_hi;
+uniform float u_seed;
+uniform vec2 u_star;
+uniform float u_starr;
+uniform float u_reveal;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+    vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+    float v = 0.0; float a = 0.5;
+    for (int i = 0; i < 4; i++) { v += a * noise(p); p = p * 2.03 + vec2(1.7, 9.2); a *= 0.5; }
+    return v;
+}
+
+// the five trail lines, in fractions of the screen: y(u) = c + a sin(2π(f u + p)) + b sin(2π(g u + q))
+vec4 trailA(int i) {
+    if (i == 0) return vec4(0.16, 0.050, 0.70, 0.10);
+    if (i == 1) return vec4(0.34, 0.070, 0.45, 0.60);
+    if (i == 2) return vec4(0.53, 0.045, 0.90, 0.30);
+    if (i == 3) return vec4(0.71, 0.065, 0.55, 0.85);
+    return vec4(0.88, 0.040, 0.80, 0.45);
+}
+vec3 trailB(int i) {
+    if (i == 0) return vec3(0.022, 1.9, 0.4);
+    if (i == 1) return vec3(0.028, 2.3, 0.2);
+    if (i == 2) return vec3(0.035, 1.6, 0.7);
+    if (i == 3) return vec3(0.020, 2.8, 0.1);
+    return vec3(0.026, 2.1, 0.9);
+}
+float trailY(int i, float u) { vec4 A = trailA(i); vec3 B = trailB(i); return A.x + A.y * sin(6.28318 * (A.z * u + A.w)) + B.x * sin(6.28318 * (B.y * u + B.z)); }
+float trailDY(int i, float u) { vec4 A = trailA(i); vec3 B = trailB(i); return 6.28318 * (A.y * A.z * cos(6.28318 * (A.z * u + A.w)) + B.x * B.y * cos(6.28318 * (B.y * u + B.z))); }
+
+void main() {
+    vec2 p = v_coords * size;
+    float H = size.y;
+    vec3 c = u_bg;
+    // stone grain and a warm wash
+    float grain = fbm(p / H * 7.0 + u_seed * 13.0);
+    c += u_amber * 0.045 * (grain - 0.45);
+    c += vec3(0.012) * (hash(floor(p * 0.5) + u_seed) - 0.5);
+    // reveal: lines draw in from the centre of the screen
+    float dc = length(p - size * 0.5) / length(size * 0.5);
+    float rev = smoothstep(u_reveal * 1.15, u_reveal * 1.15 - 0.12, dc);
+    // contour lines
+    vec2 q = p / H * 1.7 + vec2(u_seed * 3.1, u_seed * 1.7);
+    float e = 1.7 / H;
+    float n = fbm(q);
+    vec2 gr = vec2(fbm(q + vec2(e, 0.0)) - n, fbm(q + vec2(0.0, e)) - n);
+    float val = n * 16.0;
+    float d = abs(fract(val + 0.5) - 0.5) / max(length(gr) * 16.0, 1e-4);
+    float major = mod(floor(val + 0.5), 4.0) == 0.0 ? 1.0 : 0.0;
+    c += u_amber * lineaa(d, 0.9) * (0.055 + 0.075 * major) * rev;
+    // trail lines (where the light travels)
+    for (int i = 0; i < 5; i++) {
+        float u = p.x / size.x;
+        float y = H * trailY(i, u);
+        float slope = H / size.x * trailDY(i, u);
+        float dd = abs(p.y - y) / sqrt(1.0 + slope * slope);
+        c += u_amber * 0.20 * lineaa(dd, 1.1) * rev;
+        // fine fibre beside each trail
+        c += u_amber * 0.05 * lineaa(abs(dd - 7.0), 0.7) * rev;
+    }
+    // the hidden hub's star: twelve rays, dashed rings and a soft core
+    if (u_starr > 0.0) {
+        vec2 v = p - u_star; float r = length(v);
+        float ang = atan(v.y, v.x);
+        float k = 12.0;
+        float ad = abs(fract(ang / 6.28318 * k + 0.5) - 0.5) * 6.28318 / k * r;
+        float ray = lineaa(ad, 0.9) * smoothstep(u_starr, u_starr * 0.3, r) * smoothstep(10.0, 46.0, r);
+        float ring1 = lineaa(abs(r - u_starr * 0.42), 0.8) * step(0.5, fract(ang / 6.28318 * 48.0));
+        float ring2 = lineaa(abs(r - u_starr * 0.78), 0.8) * step(0.7, fract(ang / 6.28318 * 96.0));
+        c += u_amber * (0.10 * ray + 0.09 * ring1 + 0.06 * ring2) * rev;
+        c += u_hi * 0.30 * exp(-r / (u_starr * 0.035)) * rev;
+    }
+    // vignette
+    c *= mix(1.0, 0.62, smoothstep(0.45, 1.15, length((v_coords - 0.5) * vec2(1.25, 1.0)) * 1.4));
+    gl_FragColor = vec4(c, 1.0) * alpha;
+}
+"#;
+
+/// One travelling light on trail `u_trail`: a bright point at u_head (0..1 across the screen)
+/// with a fading tail behind it along the line. Drawn as a small quad that moves, so only the
+/// quad's old and new places are redrawn. u_screen = (quad x, quad y, screen w, screen h) px.
+pub const GLINT: &str = r#"
+uniform vec3 u_hi;
+uniform float u_trail;
+uniform float u_head;
+uniform float u_tail;
+uniform vec4 u_screen;
+
+// the five trail lines, in fractions of the screen: y(u) = c + a sin(2π(f u + p)) + b sin(2π(g u + q))
+vec4 trailA(int i) {
+    if (i == 0) return vec4(0.16, 0.050, 0.70, 0.10);
+    if (i == 1) return vec4(0.34, 0.070, 0.45, 0.60);
+    if (i == 2) return vec4(0.53, 0.045, 0.90, 0.30);
+    if (i == 3) return vec4(0.71, 0.065, 0.55, 0.85);
+    return vec4(0.88, 0.040, 0.80, 0.45);
+}
+vec3 trailB(int i) {
+    if (i == 0) return vec3(0.022, 1.9, 0.4);
+    if (i == 1) return vec3(0.028, 2.3, 0.2);
+    if (i == 2) return vec3(0.035, 1.6, 0.7);
+    if (i == 3) return vec3(0.020, 2.8, 0.1);
+    return vec3(0.026, 2.1, 0.9);
+}
+float trailY(int i, float u) { vec4 A = trailA(i); vec3 B = trailB(i); return A.x + A.y * sin(6.28318 * (A.z * u + A.w)) + B.x * sin(6.28318 * (B.y * u + B.z)); }
+float trailDY(int i, float u) { vec4 A = trailA(i); vec3 B = trailB(i); return 6.28318 * (A.y * A.z * cos(6.28318 * (A.z * u + A.w)) + B.x * B.y * cos(6.28318 * (B.y * u + B.z))); }
+
+void main() {
+    vec2 p = u_screen.xy + v_coords * size;
+    vec2 S = u_screen.zw;
+    int ti = int(u_trail + 0.5);
+    float u = p.x / S.x;
+    float y = S.y * trailY(ti, u);
+    float slope = S.y / S.x * trailDY(ti, u);
+    float dd = abs(p.y - y) / sqrt(1.0 + slope * slope);
+    float behind = u_head - u;
+    float tail = behind > 0.0 ? pow(clamp(1.0 - behind / u_tail, 0.0, 1.0), 2.2) : 0.0;
+    float line = (1.0 - smoothstep(0.6, 2.2, dd)) * tail * 0.75;
+    vec2 hp = vec2(u_head * S.x, S.y * trailY(ti, u_head));
+    float r = length(p - hp);
+    float glow = exp(-r / 3.0) * 1.2 + exp(-r / 16.0) * 0.35;
+    // a four-point sparkle on the head
+    vec2 dv = abs(p - hp);
+    float spark = (exp(-dv.y / 1.2) * exp(-dv.x / 18.0) + exp(-dv.x / 1.2) * exp(-dv.y / 18.0)) * 0.5;
+    float i = clamp(line + glow + spark, 0.0, 1.6);
+    vec3 col = mix(u_amber, u_hi, clamp(glow + spark, 0.0, 1.0));
+    float a = clamp(i, 0.0, 1.0) * alpha;
+    gl_FragColor = vec4(col * a, a);
+}
+"#;
+
+/// The frame around an app tile or a minimised square: a thin gold line with brighter corner
+/// marks; u_focus (0..1) brightens it and adds a notch mark at the top, u_fill fills it with
+/// obsidian (for minimised tiles), u_hover lifts it under the pointer.
+pub const FRAME: &str = r#"
+uniform vec3 u_hi;
+uniform float u_focus;
+uniform float u_fill;
+uniform float u_hover;
+void main() {
+    vec2 p = v_coords * size;
+    vec2 s = size;
+    float d = min(min(p.x, s.x - p.x), min(p.y, s.y - p.y));
+    float edge = lineaa(abs(d - 1.5), 1.0);
+    // corner marks
+    float m = min(s.x, s.y) * 0.12 + 6.0;
+    vec2 cp = min(p, s - p);
+    float corner = (cp.x < m && cp.y < m) ? lineaa(min(abs(cp.x - 4.0), abs(cp.y - 4.0)), 1.6) * step(min(cp.x, cp.y), m) : 0.0;
+    // top notch (focused): a small diamond on the top edge
+    vec2 nv = abs(p - vec2(s.x * 0.5, 1.5));
+    float notch = u_focus * (1.0 - smoothstep(5.0, 6.5, nv.x + nv.y));
+    float glow = u_focus * 0.18 * exp(-d / 10.0);
+    float lvl = 0.38 + 0.42 * u_focus + 0.25 * u_hover;
+    vec3 col = u_amber * (edge * lvl + glow) + u_hi * (corner * (0.45 + 0.5 * u_focus) + notch);
+    float a = clamp(edge * lvl + corner * 0.9 + notch + glow, 0.0, 1.0);
+    vec4 frame = vec4(col, a);
+    vec4 fill = vec4(u_bg * 0.92, 1.0) * u_fill * 0.88 * step(2.5, d);
+    // frame over fill
+    vec4 o = frame + fill * (1.0 - frame.a);
+    gl_FragColor = o * alpha;
+}
+"#;
+
 pub struct Shaders {
     pub backdrop: GlesPixelProgram,
     pub plate: GlesPixelProgram,
     pub node: GlesPixelProgram,
     pub bar: GlesPixelProgram,
+    pub background: GlesPixelProgram,
+    pub glint: GlesPixelProgram,
+    pub frame: GlesPixelProgram,
+}
+
+/// The trail lines on the CPU, the same constants as the shaders: (c, a, f, p, b, g, q)
+pub const TRAILS: [[f64; 7]; 5] = [
+    [0.16, 0.050, 0.70, 0.10, 0.022, 1.9, 0.4],
+    [0.34, 0.070, 0.45, 0.60, 0.028, 2.3, 0.2],
+    [0.53, 0.045, 0.90, 0.30, 0.035, 1.6, 0.7],
+    [0.71, 0.065, 0.55, 0.85, 0.020, 2.8, 0.1],
+    [0.88, 0.040, 0.80, 0.45, 0.026, 2.1, 0.9],
+];
+pub fn trail_y(i: usize, u: f64) -> f64 {
+    let t = TRAILS[i];
+    let tau = std::f64::consts::TAU;
+    t[0] + t[1] * (tau * (t[2] * u + t[3])).sin() + t[4] * (tau * (t[5] * u + t[6])).sin()
 }
 
 fn base<'a>() -> Vec<UniformName<'a>> {
@@ -181,6 +371,9 @@ pub fn compile(r: &mut GlesRenderer) -> Result<Shaders, GlesError> {
         plate: r.compile_custom_pixel_shader(src(PLATE), &with(&[("u_opacity", UniformType::_1f), ("u_blur", UniformType::_1f), ("u_screen", UniformType::_4f)]))?,
         node: r.compile_custom_pixel_shader(src(NODE), &with(&[("u_opacity", UniformType::_1f), ("u_hl", UniformType::_1f)]))?,
         bar: r.compile_custom_pixel_shader(src(BAR), &with(&[("u_top", UniformType::_1f)]))?,
+        background: r.compile_custom_pixel_shader(src(BACKGROUND), &with(&[("u_hi", UniformType::_3f), ("u_seed", UniformType::_1f), ("u_star", UniformType::_2f), ("u_starr", UniformType::_1f), ("u_reveal", UniformType::_1f)]))?,
+        glint: r.compile_custom_pixel_shader(src(GLINT), &with(&[("u_hi", UniformType::_3f), ("u_trail", UniformType::_1f), ("u_head", UniformType::_1f), ("u_tail", UniformType::_1f), ("u_screen", UniformType::_4f)]))?,
+        frame: r.compile_custom_pixel_shader(src(FRAME), &with(&[("u_hi", UniformType::_3f), ("u_focus", UniformType::_1f), ("u_fill", UniformType::_1f), ("u_hover", UniformType::_1f)]))?,
     })
 }
 

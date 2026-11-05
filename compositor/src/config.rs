@@ -7,24 +7,23 @@ use std::path::PathBuf;
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Layout {
-    /// width presets of the centre window, % of the usable viewport (Mod+[ / Mod+])
+    /// main-tile share of the app area's width with 2–3 apps, % (Mod+[ / Mod+] step through them)
     pub presets: Vec<u32>,
     pub default_preset: usize,
-    /// centre window height, % of the usable height (vertically centred)
+    /// kept for 8.x configs (unused)
     pub height: u32,
-    /// focus rotation time (cubic-bezier)
+    /// window move / resize time (cubic-bezier)
     pub anim_ms: u64,
-    /// ring ellipse, fractions of the viewport width; y offset as a fraction of the height
-    pub ring_rx: f64,
-    pub ring_rz: f64,
-    pub ring_y: f64,
-    /// ring node size at depth 0, logical px
-    pub node_w: i32,
-    pub node_h: i32,
+    /// open apps at most; one more minimises the oldest
+    pub max_open: usize,
+    /// space between tiles and around the app area, logical px
+    pub gap: u32,
+    /// edge of a minimised app's square tile, logical px
+    pub tile_px: u32,
 }
 impl Default for Layout {
     fn default() -> Self {
-        Layout { presets: vec![45, 65, 85], default_preset: 1, height: 84, anim_ms: 120, ring_rx: 0.41, ring_rz: 0.30, ring_y: 0.20, node_w: 250, node_h: 150 }
+        Layout { presets: vec![50, 60, 70], default_preset: 1, height: 84, anim_ms: 160, max_open: 4, gap: 14, tile_px: 128 }
     }
 }
 
@@ -43,12 +42,15 @@ pub struct Look {
     pub scale: f64,
     pub font: String,
     pub font_px: f32,
+    /// the travelling light on the background lines: "on" (30 fps on mains, 12 on battery),
+    /// "low" (12 fps), "off" (still)
+    pub motion: String,
 }
 impl Default for Look {
     fn default() -> Self {
         Look {
-            obsidian: "#0A0B0E".into(), amber: "#FFB000".into(), crimson: "#FF2A00".into(), cyan: "#00E5FF".into(),
-            plate_opacity: 0.85, node_opacity: 0.40, blur: true, grid: true, scale: 1.5, font: String::new(), font_px: 15.0,
+            obsidian: "#0E0C09".into(), amber: "#D4AA5A".into(), crimson: "#C84B31".into(), cyan: "#F0DB9C".into(),
+            plate_opacity: 0.85, node_opacity: 0.40, blur: true, grid: true, scale: 1.5, font: String::new(), font_px: 15.0, motion: "on".into(),
         }
     }
 }
@@ -100,7 +102,7 @@ pub struct Hud {
 }
 impl Default for Hud {
     fn default() -> Self {
-        Hud { enabled: true, height_px: 28 }
+        Hud { enabled: false, height_px: 28 }
     }
 }
 
@@ -143,7 +145,7 @@ pub struct Memory {
 }
 impl Default for Memory {
     fn default() -> Self {
-        Memory { shell_in_slice: false, shadow_apps: ["shadow-hub", "shadow-config", "shadow-net", "shadow-files", "shadow-launch", "shadow-prefs", "shadow-craft", "shadowctl"].map(String::from).to_vec() }
+        Memory { shell_in_slice: false, shadow_apps: ["shadow-glyph", "shadow-webd", "shadow-settings", "shadow-net", "shadow-files", "shadow-launch", "shadow-prefs", "shadow-craft", "shadowctl"].map(String::from).to_vec() }
     }
 }
 
@@ -187,14 +189,14 @@ pub fn default_binds() -> BTreeMap<String, String> {
         ("Mod+Return", "spawn shadow-term"),
         ("Mod+T", "spawn shadow-term"),
         ("Mod+D", "spawn shadow-launch"),
-        ("Mod+Space", "spawn shadow-hub summon"),
-        ("Mod+A", "spawn shadow-hub summon apps"),
+        ("Mod+Space", "spawn shadow-glyph summon"),
+        ("Mod+A", "spawn shadow-glyph summon apps"),
         ("Mod+E", "spawn shadow-files"),
         ("Mod+N", "spawn shadow-net"),
-        ("Mod+Comma", "spawn shadow-config"),
+        ("Mod+Comma", "spawn shadow-settings settings"),
         ("Mod+U", "spawn shadow-update"),
-        ("Mod+W", "spawn shadow-wallpaper pick"),
-        ("Mod+Shift+H", "spawn shadow-fix"),
+        ("Mod+W", "spawn shadow-settings look"),
+        ("Mod+Shift+H", "spawn shadow-settings fix"),
         ("Ctrl+Shift+Escape", "spawn shadow-tasks"),
         ("Mod+Tab", "focus-next"),
         ("Mod+Shift+Tab", "focus-prev"),
@@ -209,8 +211,13 @@ pub fn default_binds() -> BTreeMap<String, String> {
         ("Mod+Alt+L", "lock"),
         ("Mod+Shift+E", "quit"),
         ("Mod+Shift+F", "fullscreen"),
-        ("Mod+Shift+B", "spawn sh -c 'pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar'"),
-        ("Mod+P", "spawn shadow-prefs"),
+        // the widget columns on the screen edges: hide / show
+        ("Mod+Shift+B", "spawn shadow-glyph toggle"),
+        ("Mod+P", "spawn shadow-settings defaults"),
+        // minimise to the grid · bring the last one back · focused app to the main tile
+        ("Mod+M", "minimize"),
+        ("Mod+Shift+M", "restore"),
+        ("Mod+Shift+Return", "promote"),
         // the hotkey tutorial (first login opens it by itself)
         ("Mod+Shift+Slash", "tutorial"),
         ("Mod+F1", "tutorial"),
@@ -225,9 +232,13 @@ pub fn default_binds() -> BTreeMap<String, String> {
     .collect()
 }
 
-/// [hub] enabled in config.toml (default on): the hub is the desktop, so the old bezel HUD stays off
-/// and the hub starts with the session; otherwise the side bar and wallpaper do
+/// 9.0: the glyph shell is the desktop (the 8.x [hub] switch is gone); kept for the HUD default
 pub fn hub_enabled() -> bool {
+    true
+}
+
+#[allow(dead_code)]
+fn hub_enabled_8x() -> bool {
     let t = std::fs::read_to_string(state_dir().join("config.toml")).unwrap_or_default();
     let mut sec = String::new();
     for l in t.lines() {
@@ -242,11 +253,8 @@ pub fn hub_enabled() -> bool {
 }
 
 pub fn default_autostart() -> Vec<String> {
-    if hub_enabled() {
-        vec!["shadow-hub".into()]
-    } else {
-        vec!["shadow-bar".into(), "shadow-wallpaper".into()]
-    }
+    // the widget columns + hidden hub, and the settings service behind the settings web app
+    vec!["shadow-glyph".into(), "shadow-webd".into()]
 }
 
 impl Default for Config {
@@ -299,12 +307,25 @@ pub fn load(path: Option<&std::path::Path>) -> (Config, Option<String>) {
 
 impl Config {
     fn sanitize(&mut self) {
+        // 8.x default colours left in an old config.toml switch to the 9.0 gold theme
+        let d = Look::default();
+        for (v, old, new) in [(&mut self.look.obsidian, "#0a0b0e", &d.obsidian), (&mut self.look.amber, "#ffb000", &d.amber), (&mut self.look.crimson, "#ff2a00", &d.crimson), (&mut self.look.cyan, "#00e5ff", &d.cyan)] {
+            if v.trim().eq_ignore_ascii_case(old) {
+                *v = new.clone();
+            }
+        }
         let l = &mut self.layout;
         l.presets.retain(|p| (20..=100).contains(p));
         if l.presets.is_empty() {
-            l.presets = vec![45, 65, 85];
+            l.presets = vec![50, 60, 70];
         }
         l.default_preset = l.default_preset.min(l.presets.len() - 1);
+        l.max_open = l.max_open.clamp(1, 9);
+        l.gap = l.gap.min(48);
+        l.tile_px = l.tile_px.clamp(64, 256);
+        if !["on", "low", "off"].contains(&self.look.motion.as_str()) {
+            self.look.motion = "on".into();
+        }
         l.height = l.height.clamp(40, 100);
         l.anim_ms = l.anim_ms.min(2000);
         self.look.scale = self.look.scale.clamp(0.5, 4.0);
@@ -340,7 +361,7 @@ mod t {
         std::fs::write(dir.join("c.toml"), "[layout\n").unwrap();
         let (c, e) = super::load(Some(&dir.join("c.toml")));
         assert!(e.is_some());
-        assert_eq!(c.layout.presets, vec![45, 65, 85]);
+        assert_eq!(c.layout.presets, vec![50, 60, 70]);
         assert_eq!(super::rgb("#FFB000"), [1.0, 176.0 / 255.0, 0.0]);
         // Shadow's own config.toml (sections shared with niri's generator) still loads, and the
         // DEFAULTS page's terminal / file manager drive Mod+Return / Mod+E

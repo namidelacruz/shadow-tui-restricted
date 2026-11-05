@@ -1,9 +1,10 @@
-//! Scene assembly, front to back:
-//!   lock/greeter text → pointer → HUD → overlay/top layers → centre window → obsidian plate →
-//!   ring nodes (near to far) → bottom/background layers → backdrop.
-//! Ring windows are not drawn from their buffers at all: a background node is a wireframe box
-//! with the title, PID and a low-frequency CPU sparkline, and its client gets no frame callbacks.
-//! Every element keeps a stable id, so an unchanged scene produces zero damage and no redraw.
+//! Scene assembly, front to back (9.0):
+//!   lock/greeter → cursor → tutorial → overlay/top layers (the widget columns; hidden under a
+//!   fullscreen app) → open apps in gold frames → minimised grid (square tiles: glyph, title,
+//!   a still thumbnail) → bottom/background layers → travelling lights → contour background.
+//! Minimised apps get no frame callbacks; their tile shows their last frame.
+//! Every element keeps a stable id, so an unchanged scene produces zero damage and no redraw;
+//! the travelling lights are small quads, so their motion only redraws where they pass.
 use crate::config::rgb;
 use crate::orbit::R;
 use crate::shaders::{self, Shaders};
@@ -11,7 +12,7 @@ use crate::state::State;
 use smithay::{
     backend::renderer::{
         element::{
-            memory::MemoryRenderBufferRenderElement,
+            memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             utils::RescaleRenderElement,
             solid::SolidColorRenderElement,
             surface::WaylandSurfaceRenderElement,
@@ -47,6 +48,7 @@ pub struct RenderCache {
     pub shaders: Option<Shaders>,
     slots: HashMap<String, Slot>,
     solids: HashMap<String, (Id, CommitCounter, Rectangle<i32, Physical>, [f32; 4])>,
+    pub glyphs: HashMap<(crate::glyphs::G, i32, u8, u8, u8), MemoryRenderBuffer>,
 }
 
 impl RenderCache {
@@ -96,6 +98,13 @@ impl RenderCache {
     }
 }
 
+/// the logout animation (seconds) and the session-start reveal
+pub const LOGOUT_S: f64 = 1.1;
+pub const BOOT_S: f64 = 1.4;
+/// travelling lights: (trail, seconds to cross, phase)
+const GLINTS: [(usize, f64, f64); 3] = [(1, 46.0, 0.10), (3, 61.0, 0.55), (0, 73.0, 0.82)];
+fn bar_px_unused() {}
+
 fn lrect(r: R) -> Rectangle<i32, Logical> {
     Rectangle::new((r.x.round() as i32, r.y.round() as i32).into(), ((r.w.round() as i32).max(1), (r.h.round() as i32).max(1)).into())
 }
@@ -134,8 +143,8 @@ impl State {
     pub fn elements(&mut self, r: &mut GlesRenderer) -> Vec<El> {
         self.ensure_shaders(r);
         let mut out: Vec<El> = vec![];
-        let Some(sh) = self.render.shaders.as_ref().map(|s| (s.backdrop.clone(), s.plate.clone(), s.node.clone(), s.bar.clone())) else { return out };
-        let (p_back, p_plate, p_node, p_bar) = sh;
+        let Some(sh) = self.render.shaders.as_ref().map(|s| (s.backdrop.clone(), s.plate.clone(), s.node.clone(), s.bar.clone(), s.background.clone(), s.glint.clone(), s.frame.clone())) else { return out };
+        let (p_back, p_plate, _p_node, p_bar, p_bg, p_glint, p_frame) = sh;
         let scale = self.scale();
         let sc = Scale::from(scale);
         let (ow, oh) = self.output_size();
@@ -144,7 +153,7 @@ impl State {
         let crimson = rgb(&self.cfg.look.crimson);
         let cyan = rgb(&self.cfg.look.cyan);
         let fpx = self.cfg.look.font_px * scale as f32;
-        let boot = self.boot.map(|b| (b.elapsed().as_secs_f64() / 0.6).min(1.0)).unwrap_or(1.0) as f32;
+        let boot = self.boot.map(|b| (b.elapsed().as_secs_f64() / BOOT_S).min(1.0)).unwrap_or(1.0) as f32;
 
         // ---------------------------------------------------------- greeter / lock screen
         if self.ui.is_some() {
@@ -202,98 +211,186 @@ impl State {
             out.push(El::Shader(self.render.shader("bar-bot", &p_bar, lrect(R { x: 0.0, y: oh - bh, w: ow, h: bh }), boot, u)));
         }
 
+        // ---------------------------------------------------------- logout: everything fades into the star
+        let lo = self.logout.map(|t| (t.elapsed().as_secs_f64() / LOGOUT_S).min(1.0) as f32);
+        let fade = lo.map(|t| (1.0 - t * 1.7).max(0.0)).unwrap_or(1.0);
+        let hi = rgb(&self.cfg.look.cyan);
+
         // ---------------------------------------------------------- overlay + top layers
+        let full = self.fullscreen();
         let layers: Vec<(Layer, smithay::desktop::LayerSurface, Rectangle<i32, Logical>)> = self.output.as_ref().map(|o| {
             let map = layer_map_for_output(o);
             map.layers().filter_map(|l| map.layer_geometry(l).map(|g| (l.layer(), l.clone(), g))).collect()
         }).unwrap_or_default();
         for want in [Layer::Overlay, Layer::Top] {
+            // a fullscreen app covers the widget columns (the overlay stays: menus, the hub)
+            if want == Layer::Top && full.is_some() {
+                continue;
+            }
             for (layer, ls, g) in layers.iter().rev() {
                 if *layer == want {
-                    out.extend(AsRenderElements::<GlesRenderer>::render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(ls, r, g.loc.to_physical_precise_round(sc), sc, 1.0).into_iter().map(El::Surface));
+                    out.extend(AsRenderElements::<GlesRenderer>::render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(ls, r, g.loc.to_physical_precise_round(sc), sc, fade).into_iter().map(El::Surface));
                 }
             }
         }
 
-        // ---------------------------------------------------------- windows
+        // ---------------------------------------------------------- open apps
         let (vis, e) = self.visual();
         let animating = e < 1.0;
-        let center = self.ring.center();
-        if let Some((id, rect, _, _)) = vis.iter().find(|v| v.3).cloned() {
-            let fade = if animating { ((e - 0.6) / 0.4).clamp(0.0, 1.0) as f32 } else { 1.0 };
-            if fade > 0.0 {
-                if let Some(w) = self.win(id) {
-                    let loc = (Point::<f64, Logical>::from((rect.x, rect.y)) - w.window.geometry().loc.to_f64()).to_physical(sc).to_i32_round();
-                    let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = w.window.render_elements(r, loc, sc, fade);
+        let focus = self.ring.center();
+        let ptr = self.pointer_loc;
+        let mut opened: Vec<(u64, R)> = vis.iter().filter(|v| v.3).map(|v| (v.0, v.1)).collect();
+        // the fullscreen app is drawn first (on top of everything else)
+        opened.sort_by_key(|(id, _)| Some(*id) != full);
+        for (id, rect) in &opened {
+            let Some(w) = self.win(*id) else { continue };
+            let is_full = Some(*id) == full;
+            let loc = (Point::<f64, Logical>::from((rect.x, rect.y)) - w.window.geometry().loc.to_f64()).to_physical(sc).to_i32_round();
+            let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = w.window.render_elements(r, loc, sc, fade);
+            out.extend(els.into_iter().map(El::Surface));
+            if !is_full {
+                let f = if Some(*id) == focus { 1.0 } else { 0.0 };
+                let m = 3.0;
+                let fr = R { x: rect.x - m, y: rect.y - m, w: rect.w + 2.0 * m, h: rect.h + 2.0 * m };
+                let mut u = self.colors();
+                u.extend([("u_hi", hi.to_vec()), ("u_focus", vec![f]), ("u_fill", vec![0.0]), ("u_hover", vec![0.0])]);
+                out.push(El::Shader(self.render.shader(&format!("frame-{id}"), &p_frame, lrect(fr), boot * fade, u)));
+            }
+        }
+
+        // ---------------------------------------------------------- minimised grid
+        let gap = self.cfg.layout.gap as f64;
+        let tiles: Vec<(u64, R)> = vis.iter().filter(|v| !v.3).map(|v| (v.0, v.1)).collect();
+        if let (_, max, Some(band)) = self.grid() {
+            if !tiles.is_empty() && max > 0.0 {
+                // scroll hint on the band's right edge
+                let n = self.ring.min.len();
+                let s = format!("{n} MINIMISED · SCROLL");
+                let px = fpx * 0.72;
+                let w = self.text.width(&s, px);
+                self.text_el(r, &mut out, "grid-hint", &s, px, [0.56, 0.5, 0.38], (((band.x + band.w) * scale) as i32 - w, ((band.y - 16.0) * scale) as i32), 0.8 * fade);
+            }
+        }
+        for (id, rect) in tiles {
+            let Some((app, title)) = self.win(id).map(|w| (w.app_id.clone(), if w.title.is_empty() { w.app_id.clone() } else { w.title.clone() })) else { continue };
+            let hover = rect.contains(ptr.x, ptr.y);
+            // title under the tile
+            let px = fpx * 0.74;
+            let mut name: String = title.chars().take(24).collect();
+            while self.text.width(&name, px) as f64 > rect.w * scale && name.pop().is_some() {}
+            let tw = self.text.width(&name, px);
+            let ty = ((rect.y + rect.h + 5.0) * scale) as i32;
+            self.text_el(r, &mut out, &format!("tile-{id}-t"), &name, px, if hover { hi } else { [0.78, 0.71, 0.55] }, ((((rect.x + rect.w / 2.0) * scale) as i32) - tw / 2, ty), fade);
+            // the app's glyph in the corner
+            let gpx = ((rect.w * 0.30).clamp(22.0, 48.0) * scale).round() as i32;
+            let g = crate::glyphs::for_app(&app);
+            let gb = self.glyph_buf(g, gpx, if hover { hi } else { amber });
+            let gat = Point::<f64, Physical>::from((((rect.x + rect.w) * scale) - gpx as f64 - 6.0 * scale, ((rect.y + rect.h) * scale) - gpx as f64 - 6.0 * scale));
+            if let Ok(el) = MemoryRenderBufferRenderElement::from_buffer(r, gat, &gb, Some(fade), None, None, Kind::Unspecified) {
+                out.push(El::Mem(RescaleRenderElement::from_element(el, gat.to_i32_round(), Scale::from(1.0))));
+            }
+            // a still thumbnail of its last frame, fitted inside
+            if let Some(w) = self.win(id) {
+                let geo = w.window.geometry();
+                if geo.size.w > 0 && geo.size.h > 0 {
+                    let pad = 8.0;
+                    let k = ((rect.w - 2.0 * pad) / geo.size.w as f64).min((rect.h - 2.0 * pad) / geo.size.h as f64).min(1.0);
+                    let (tw, th) = (geo.size.w as f64 * k, geo.size.h as f64 * k);
+                    let tl = Point::<f64, Logical>::from((rect.x + (rect.w - tw) / 2.0 - geo.loc.x as f64 * k, rect.y + (rect.h - th) / 2.0 - geo.loc.y as f64 * k));
+                    let tsc = Scale::from(scale * k);
+                    let at = Point::<i32, Physical>::from(((tl.x * scale).round() as i32, (tl.y * scale).round() as i32));
+                    let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = w.window.render_elements(r, at, tsc, 0.55 * fade);
                     out.extend(els.into_iter().map(El::Surface));
                 }
             }
-            let full = self.win(id).map(|w| w.size.full).unwrap_or(false);
-            let m = if full { 0.0 } else { 6.0 };
-            let rect = R { x: rect.x - m, y: rect.y - m, w: rect.w + 2.0 * m, h: rect.h + 2.0 * m };
             let mut u = self.colors();
-            u.extend([
-                ("u_opacity", vec![self.cfg.look.plate_opacity]),
-                ("u_blur", vec![if self.cfg.look.blur { 1.0 } else { 0.0 }]),
-                ("u_screen", vec![(rect.x * scale) as f32, (rect.y * scale) as f32, pw as f32, ph as f32]),
-            ]);
-            if !animating {
-                out.push(El::Shader(self.render.shader("plate", &p_plate, lrect(rect), boot, u)));
-            } else {
-                // the incoming window materialises from its wireframe
-                let mut nu = self.colors();
-                nu.extend([("u_opacity", vec![0.9]), ("u_hl", vec![0.0])]);
-                out.push(El::Shader(self.render.shader(&format!("node-{id}"), &p_node, lrect(rect), 1.0, nu)));
-                if fade > 0.0 {
-                    out.push(El::Shader(self.render.shader("plate", &p_plate, lrect(rect), fade, u)));
-                }
-            }
+            u.extend([("u_hi", hi.to_vec()), ("u_focus", vec![0.0]), ("u_fill", vec![1.0]), ("u_hover", vec![if hover { 1.0 } else { 0.0 }])]);
+            out.push(El::Shader(self.render.shader(&format!("tile-{id}"), &p_frame, lrect(rect), boot * fade, u)));
         }
-        // ring nodes, nearest first (front to back)
-        let mut ring: Vec<(u64, R, f64)> = vis.iter().filter(|v| !v.3).map(|v| (v.0, v.1, v.2)).collect();
-        ring.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        let node_op = self.cfg.look.node_opacity;
-        for (id, rect, depth) in ring {
-            let lines = self.win(id).map(|w| {
-                let name = if w.title.is_empty() { w.app_id.clone() } else { w.title.clone() };
-                let name: String = name.chars().take(34).collect();
-                let pid = w.pid.map(|p| format!("PID {p}")).unwrap_or_else(|| "PID ?".into());
-                let spark: String = w.spark.iter().map(|v| ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][((v / 100.0 * 7.0).round() as usize).min(7)]).collect();
-                (name, format!("{pid} · {}M", w.rss_mb), format!("{spark} {:>3.0}%", w.spark.last().copied().unwrap_or(0.0)))
-            });
-            let a = (boot * if animating { 1.0 } else { (0.55 + 0.45 * depth as f32).min(1.0) }).min(1.0);
-            if let Some((n, p, s)) = lines {
-                let px = fpx * 0.82;
-                let (x0, y0) = (((rect.x + 8.0) * scale) as i32, ((rect.y + 6.0) * scale) as i32);
-                if rect.h * scale > (px * 4.6) as f64 && !(animating && Some(id) == center) {
-                    let lh = (px * 1.45) as i32;
-                    self.text_el(r, &mut out, &format!("node-{id}-t"), &n, px, amber, (x0, y0), a);
-                    self.text_el(r, &mut out, &format!("node-{id}-p"), &p, px, [0.62, 0.6, 0.52], (x0, y0 + lh), a * 0.9);
-                    self.text_el(r, &mut out, &format!("node-{id}-s"), &s, px, cyan, (x0, y0 + 2 * lh), a * 0.9);
-                }
-            }
-            let mut u = self.colors();
-            u.extend([("u_opacity", vec![node_op]), ("u_hl", vec![0.0])]);
-            out.push(El::Shader(self.render.shader(&format!("node-{id}"), &p_node, lrect(rect), a, u)));
-        }
+        let _ = (animating, gap);
 
         // ---------------------------------------------------------- bottom + background layers
         for want in [Layer::Bottom, Layer::Background] {
             for (layer, ls, g) in layers.iter().rev() {
                 if *layer == want {
-                    out.extend(AsRenderElements::<GlesRenderer>::render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(ls, r, g.loc.to_physical_precise_round(sc), sc, 1.0).into_iter().map(El::Surface));
+                    out.extend(AsRenderElements::<GlesRenderer>::render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(ls, r, g.loc.to_physical_precise_round(sc), sc, fade).into_iter().map(El::Surface));
                 }
             }
         }
 
-        // ---------------------------------------------------------- backdrop
-        let mut u = self.colors();
-        u.extend([("u_grid", vec![if self.cfg.look.grid { 1.0 } else { 0.0 }]), ("u_globe", vec![0.0]), ("u_rot", vec![0.0]), ("u_phase", vec![1.0])]);
-        out.push(El::Shader(self.render.shader("backdrop", &p_back, lrect(R { x: 0.0, y: 0.0, w: ow, h: oh }), 1.0, u)));
-        if self.boot.map(|b| b.elapsed().as_secs_f64() > 0.6).unwrap_or(false) {
+        // ---------------------------------------------------------- background + travelling light
+        let reveal = match lo { Some(t) => 1.0 - t, None => boot.max(0.0) };
+        self.background_elements(&mut out, &p_bg, &p_glint, reveal, full.is_some());
+        if self.boot.map(|b| b.elapsed().as_secs_f64() > BOOT_S).unwrap_or(false) {
             self.boot = None;
         }
+        if lo.map(|t| t >= 1.0).unwrap_or(false) {
+            self.signal.stop();
+        }
+        let _ = (&p_back, &p_bar, bar_px_unused());
         out
+    }
+
+    /// the contour background and the lights travelling its trail lines (none while an app is
+    /// fullscreen, or with look.motion = "off")
+    fn background_elements(&mut self, out: &mut Vec<El>, p_bg: &GlesPixelProgram, p_glint: &GlesPixelProgram, reveal: f32, covered: bool) {
+        let (ow, oh) = self.output_size();
+        let scale = self.scale();
+        let (pw, ph) = (ow * scale, oh * scale);
+        let hi = rgb(&self.cfg.look.cyan);
+        if !covered && self.cfg.look.motion != "off" && self.ui.as_ref().map(|u| u.mode != crate::ui::Mode::Lock).unwrap_or(true) {
+            let t = self.start.elapsed().as_secs_f64();
+            for (k, (trail, period, phase)) in GLINTS.iter().enumerate() {
+                let head = ((t / period + phase).fract()) * 1.3 - 0.15;
+                let tail = 0.16;
+                // the quad: from the tail's end to just past the head, around the line
+                let (u0, u1) = ((head - tail).max(-0.05), (head + 0.03).min(1.05));
+                if u1 <= 0.0 || u0 >= 1.0 {
+                    continue;
+                }
+                let (mut y0, mut y1) = (f64::MAX, f64::MIN);
+                for i in 0..=16 {
+                    let u = u0 + (u1 - u0) * i as f64 / 16.0;
+                    let y = crate::shaders::trail_y(*trail, u) * ph;
+                    y0 = y0.min(y);
+                    y1 = y1.max(y);
+                }
+                let m = 30.0 * scale;
+                let (qx, qy) = ((u0 * pw - m).max(0.0), (y0 - m).max(0.0));
+                let (qw, qh) = (((u1 * pw + m).min(pw) - qx).max(1.0), ((y1 + m).min(ph) - qy).max(1.0));
+                let rect = R { x: qx / scale, y: qy / scale, w: qw / scale, h: qh / scale };
+                let mut u = self.colors();
+                u.extend([("u_hi", hi.to_vec()), ("u_trail", vec![*trail as f32]), ("u_head", vec![head as f32]), ("u_tail", vec![tail as f32]),
+                          ("u_screen", vec![(rect.x * scale) as f32, (rect.y * scale) as f32, pw as f32, ph as f32])]);
+                out.push(El::Shader(self.render.shader(&format!("glint-{k}"), p_glint, lrect(rect), reveal.clamp(0.0, 1.0), u)));
+            }
+        }
+        // the hidden hub's star sits in the middle of the app area
+        let a = self.area();
+        let star = if self.ui.is_some() { (pw / 2.0, ph * 0.40, ph.min(pw) * 0.30) } else { ((a.x + a.w / 2.0) * scale, (a.y + a.h / 2.0) * scale, (a.w.min(a.h) * 0.40) * scale) };
+        let mut u = self.colors();
+        u.extend([("u_hi", hi.to_vec()), ("u_seed", vec![0.37]), ("u_star", vec![star.0 as f32, star.1 as f32]), ("u_starr", vec![star.2 as f32]), ("u_reveal", vec![reveal.clamp(0.0, 1.0)])]);
+        out.push(El::Shader(self.render.shader("background", p_bg, lrect(R { x: 0.0, y: 0.0, w: ow, h: oh }), 1.0, u)));
+    }
+
+    /// a glyph icon as a tinted buffer (cached per glyph, size and colour)
+    pub fn glyph_buf(&mut self, g: crate::glyphs::G, px: i32, col: [f32; 3]) -> MemoryRenderBuffer {
+        let key = (g, px, (col[0] * 255.0) as u8, (col[1] * 255.0) as u8, (col[2] * 255.0) as u8);
+        if let Some(b) = self.render.glyphs.get(&key) {
+            return b.clone();
+        }
+        let m = crate::glyphs::raster(g, px as usize, (px as f32 / 24.0).max(1.3));
+        let mut buf = vec![0u8; (px * px * 4) as usize];
+        for (i, v) in m.iter().enumerate() {
+            let a = v.clamp(0.0, 1.0);
+            buf[i * 4] = (col[2] * a * 255.0) as u8;
+            buf[i * 4 + 1] = (col[1] * a * 255.0) as u8;
+            buf[i * 4 + 2] = (col[0] * a * 255.0) as u8;
+            buf[i * 4 + 3] = (a * 255.0) as u8;
+        }
+        let b = MemoryRenderBuffer::from_slice(&buf, smithay::backend::allocator::Fourcc::Argb8888, (px, px), 1, smithay::utils::Transform::Normal, None);
+        self.render.glyphs.insert(key, b.clone());
+        b
     }
 
     fn cursor_elements(&mut self, r: &mut GlesRenderer, out: &mut Vec<El>) {
@@ -426,15 +523,17 @@ impl State {
             }
             None => false,
         };
-        self.anim.is_some() || self.boot.is_some() || tut || self.ui.as_ref().map(|u| u.moving()).unwrap_or(false)
+        self.anim.is_some() || self.boot.is_some() || self.logout.is_some() || tut || self.ui.as_ref().map(|u| u.moving()).unwrap_or(false)
     }
 
-    /// frame callbacks: only the centre window and layer surfaces (ring windows stay paused)
+    /// frame callbacks: open apps and layer surfaces (minimised apps stay paused)
     pub fn send_frames(&self, output: &smithay::output::Output) {
         let t = self.start.elapsed();
-        if let Some(w) = self.ring.center().and_then(|id| self.win(id)) {
-            if self.ui.is_none() {
-                w.window.send_frame(output, t, Some(std::time::Duration::ZERO), |_, _| Some(output.clone()));
+        if self.ui.is_none() {
+            for id in &self.ring.order {
+                if let Some(w) = self.win(*id) {
+                    w.window.send_frame(output, t, Some(std::time::Duration::ZERO), |_, _| Some(output.clone()));
+                }
             }
         }
         let map = layer_map_for_output(output);

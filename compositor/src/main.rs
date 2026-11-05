@@ -5,6 +5,9 @@
 //!   shadow-compositor --winit      force the nested backend      --udev   force DRM/KMS
 mod config;
 mod cursor;
+#[path = "../../ui/src/glyphs.rs"]
+#[allow(dead_code)]
+mod glyphs;
 mod hud;
 mod input;
 mod ipc;

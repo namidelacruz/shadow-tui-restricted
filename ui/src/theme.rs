@@ -1,5 +1,7 @@
-//! Tactical Amber/Cyan theme shared by every app; colours and font come from
-//! ~/.config/shadow-state/config.toml [look] when set.
+//! The glyph theme shared by every app (9.0): gold line work on warm obsidian. The field names keep
+//! their 8.x roles — `amber` is the main gold, `cyan` the bright highlight gold, `violet` bronze —
+//! so every app restyles without changes. Colours and font come from config.toml [look]; the 8.x
+//! default colours there are treated as unset, so an old config switches to gold too.
 use crate::canvas::Rgb;
 use std::path::PathBuf;
 
@@ -70,23 +72,23 @@ pub fn hex(s: &str) -> Option<Rgb> {
 impl Default for Theme {
     fn default() -> Theme {
         Theme {
-            bg: (0x0A, 0x0B, 0x0E),
-            bg_alpha: 0.92,
-            panel: (0x12, 0x14, 0x19),
-            amber: (0xFF, 0xB0, 0x00),
-            cyan: (0x00, 0xE5, 0xFF),
-            crimson: (0xFF, 0x2A, 0x00),
-            green: (0x7C, 0xD9, 0x5A),
-            text: (0xE8, 0xE2, 0xD0),
-            dim: (0x8A, 0x84, 0x74),
-            violet: (0x9B, 0x6B, 0xFF),
-            glass: (0x16, 0x1B, 0x26),
-            glass_lo: (0x0C, 0x0F, 0x16),
-            radius: 12.0,
+            bg: (0x0E, 0x0C, 0x09),
+            bg_alpha: 0.93,
+            panel: (0x16, 0x13, 0x0D),
+            amber: (0xD4, 0xAA, 0x5A),
+            cyan: (0xF0, 0xDB, 0x9C),
+            crimson: (0xC8, 0x4B, 0x31),
+            green: (0x9C, 0xB8, 0x6A),
+            text: (0xEB, 0xE0, 0xC4),
+            dim: (0x8F, 0x80, 0x62),
+            violet: (0x8A, 0x63, 0x2E),
+            glass: (0x1A, 0x16, 0x0F),
+            glass_lo: (0x0F, 0x0D, 0x09),
+            radius: 10.0,
             font: crate::font::DEFAULT_FAMILY.into(),
             font_pt: 11.0,
             window_opacity: 0.86,
-            chamfer: 14.0,
+            chamfer: 12.0,
         }
     }
 }
@@ -96,7 +98,9 @@ impl Theme {
         let mut t = Theme::default();
         let cfg = config();
         if let Some(look) = cfg.get("look").and_then(|v| v.as_table()) {
-            let col = |k: &str| look.get(k).and_then(|v| v.as_str()).and_then(hex);
+            // 8.x defaults written into old configs count as unset: they switch to the gold theme
+            const OLD: &[&str] = &["#ffb000", "#00e5ff", "#ff2a00", "#0a0b0e", "#9b6bff"];
+            let col = |k: &str| look.get(k).and_then(|v| v.as_str()).filter(|v| !OLD.contains(&v.trim().to_ascii_lowercase().as_str())).and_then(hex);
             if let Some(c) = col("obsidian") { t.bg = c; }
             if let Some(c) = col("amber") { t.amber = c; }
             if let Some(c) = col("cyan") { t.cyan = c; }

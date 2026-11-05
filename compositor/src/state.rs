@@ -1,6 +1,6 @@
 //! Compositor state and Wayland protocol handlers.
 use crate::config::{self, Config};
-use crate::orbit::{self, Geo, Ring, Size, R};
+use crate::orbit::{self, Ring, Size, R};
 use crate::ui::Ui;
 use smithay::{
     backend::{
@@ -141,6 +141,14 @@ pub struct State {
     pub tut_buttons: Vec<(&'static str, R)>,
     /// fractional scroll steps toward the next ring turn
     pub ring_scroll: f64,
+    /// scroll offset of the minimised grid, logical px
+    pub grid_scroll: f64,
+    /// index into layout.presets: the main tile's share
+    pub main_preset: usize,
+    /// the logout animation is running; the session ends when it finishes
+    pub logout: Option<Instant>,
+    /// on mains power (the background light runs faster)
+    pub on_ac: bool,
     pub suppressed_keys: Vec<u32>,
     pub key_times: Vec<Instant>,
     pub last_input: Instant,
@@ -203,7 +211,7 @@ impl State {
             ui: None, greeter_mode: greeter, boot: (!greeter).then(Instant::now),
             pointer_loc: (0.0, 0.0).into(), pointer_live: false,
             cursor_status: CursorImageStatus::default_named(), cursors: Default::default(), cursor_typing_hidden: false,
-            layer_kb_focus: None, tutorial: None, tut_buttons: vec![], ring_scroll: 0.0, suppressed_keys: vec![], key_times: vec![], last_input: Instant::now(),
+            layer_kb_focus: None, tutorial: None, tut_buttons: vec![], ring_scroll: 0.0, grid_scroll: 0.0, main_preset: 1, logout: None, on_ac: true, suppressed_keys: vec![], key_times: vec![], last_input: Instant::now(),
             text, render: Default::default(), lua: None, dirty: true, mem_high_seen: 0,
             binds: vec![], ui_tx: None, exit_code: 0,
         }
@@ -224,32 +232,69 @@ impl State {
     pub fn bar_h(&self) -> f64 {
         if self.cfg.hud.enabled && self.hud_visible && !self.greeter_mode { self.cfg.hud.height_px as f64 / self.scale() } else { 0.0 }
     }
-    pub fn geo(&self) -> Geo {
+    /// The app area: the screen minus the widget columns (layer-shell exclusive zones) and a gap.
+    pub fn area(&self) -> R {
         let (w, h) = self.output_size();
+        let z = self.output.as_ref().map(|o| layer_map_for_output(o).non_exclusive_zone());
         let b = self.bar_h();
-        let l = &self.cfg.layout;
-        Geo { area: R { x: 0.0, y: b, w, h: h - 2.0 * b }, rx: l.ring_rx, rz: l.ring_rz, y_off: l.ring_y, node_w: l.node_w as f64, node_h: l.node_h as f64 }
+        let r = match z {
+            Some(z) if z.size.w > 0 && z.size.h > 0 => R { x: z.loc.x as f64, y: z.loc.y as f64 + b, w: z.size.w as f64, h: z.size.h as f64 - 2.0 * b },
+            _ => R { x: 0.0, y: b, w, h: h - 2.0 * b },
+        };
+        r.inset(self.cfg.layout.gap as f64)
+    }
+    /// (tiles area, minimised-grid band): the band runs along the bottom while apps are open
+    /// and takes the whole area when none are
+    pub fn areas(&self) -> (R, Option<R>) {
+        let a = self.area();
+        if self.ring.min.is_empty() {
+            return (a, None);
+        }
+        if self.ring.order.is_empty() {
+            return (a, Some(a));
+        }
+        let g = self.cfg.layout.gap as f64;
+        let bh = (self.cfg.layout.tile_px as f64 + 26.0).min(a.h * 0.4);
+        (R { h: (a.h - bh - g).max(60.0), ..a }, Some(R { y: a.y + a.h - bh, h: bh, ..a }))
     }
     pub fn win(&self, id: u64) -> Option<&Win> {
         self.wins.iter().find(|w| w.id == id)
     }
-    pub fn center_rect(&self, id: u64) -> R {
-        let s = self.win(id).map(|w| w.size).unwrap_or(Size { preset: self.cfg.layout.default_preset, full: false });
-        let pct = self.cfg.layout.presets.get(s.preset).copied().unwrap_or(65);
-        self.geo().center(pct, self.cfg.layout.height, s.full)
+    pub fn main_share(&self) -> f64 {
+        let l = &self.cfg.layout;
+        l.presets.get(self.main_preset.min(l.presets.len().saturating_sub(1))).copied().unwrap_or(60) as f64 / 100.0
     }
-    /// where every window is drawn right now, without animation: (id, rect, depth scale, is_center)
+    /// The minimised grid: every tile and how far it can scroll (tiles outside the band are
+    /// left out of `targets`).
+    pub fn grid(&self) -> (Vec<(u64, R)>, f64, Option<R>) {
+        let (_, band) = self.areas();
+        let Some(band) = band else { return (vec![], 0.0, None) };
+        let label = 22.0;
+        let inner = R { h: band.h, ..band };
+        let (rects, max) = orbit::grid(R { h: (inner.h - label).max(40.0), ..inner }, self.ring.min.len(), self.cfg.layout.tile_px as f64, self.cfg.layout.gap as f64 + label, self.grid_scroll);
+        (self.ring.min.iter().copied().zip(rects).collect(), max, Some(band))
+    }
+    /// where every window is drawn right now, without animation: (id, rect, scale, open?).
+    /// Open apps get their tile (or the whole screen in fullscreen); minimised apps their square
+    /// in the grid, when it is inside the band.
     pub fn targets(&self) -> Vec<(u64, R, f64, bool)> {
-        let g = self.geo();
-        let n = self.ring.order.len().saturating_sub(1);
-        self.ring.order.iter().enumerate().map(|(i, id)| {
-            if i == 0 {
-                (*id, self.center_rect(*id), 1.0, true)
-            } else {
-                let (r, s) = g.node(orbit::slot_angle(i, n));
-                (*id, r, s, false)
+        let (tiles_area, _) = self.areas();
+        let (ow, oh) = self.output_size();
+        let tiles = orbit::tile(tiles_area, self.ring.order.len(), self.cfg.layout.gap as f64, self.main_share());
+        let mut v: Vec<(u64, R, f64, bool)> = self.ring.order.iter().zip(tiles).map(|(id, r)| {
+            let full = self.win(*id).map(|w| w.size.full).unwrap_or(false);
+            (*id, if full { R { x: 0.0, y: 0.0, w: ow, h: oh } } else { r }, 1.0, true)
+        }).collect();
+        let (grid, _, band) = self.grid();
+        if let Some(b) = band {
+            for (id, r) in grid {
+                let cy = r.y + r.h / 2.0;
+                if cy >= b.y && cy <= b.y + b.h {
+                    v.push((id, r, 1.0, false));
+                }
             }
-        }).collect()
+        }
+        v
     }
     /// targets blended with the running animation
     pub fn visual(&self) -> (Vec<(u64, R, f64, bool)>, f64) {
@@ -265,8 +310,12 @@ impl State {
         }
         (t, e)
     }
+    /// the window that is fullscreen right now (it covers the widget columns too)
+    pub fn fullscreen(&self) -> Option<u64> {
+        self.ring.order.iter().copied().find(|id| self.win(*id).map(|w| w.size.full).unwrap_or(false))
+    }
 
-    /// Change the ring order with an animated transition, then reconfigure clients.
+    /// Change the window order with an animated transition, then reconfigure clients.
     pub fn transition(&mut self, f: impl FnOnce(&mut Ring)) {
         let before = self.ring.center();
         let (vis, _) = self.visual();
@@ -280,24 +329,26 @@ impl State {
         }
     }
 
-    /// Send sizes/states to clients and keyboard focus to the centre window.
+    /// Send sizes/states to clients and keyboard focus to the focused app.
     pub fn relayout(&mut self) {
         let center = self.ring.center();
+        let targets = self.targets();
         for w in &self.wins {
             let Some(top) = w.window.toplevel() else { continue };
-            let is_c = Some(w.id) == center;
-            if is_c {
-                let r = self.center_rect(w.id);
+            let open = targets.iter().find(|t| t.0 == w.id && t.3).map(|t| t.1);
+            if let Some(r) = open {
+                let focused = Some(w.id) == center;
                 top.with_pending_state(|s| {
-                    s.size = Some((r.w as i32, r.h as i32).into());
-                    s.states.set(xdg_toplevel::State::Activated);
+                    s.size = Some(((r.w as i32).max(1), (r.h as i32).max(1)).into());
+                    if focused { s.states.set(xdg_toplevel::State::Activated); } else { s.states.unset(xdg_toplevel::State::Activated); }
                     for st in [xdg_toplevel::State::TiledLeft, xdg_toplevel::State::TiledRight, xdg_toplevel::State::TiledTop, xdg_toplevel::State::TiledBottom] {
                         s.states.set(st);
                     }
                     if w.size.full { s.states.set(xdg_toplevel::State::Fullscreen) } else { s.states.unset(xdg_toplevel::State::Fullscreen) }
                 });
-                self.space.map_element(w.window.clone(), (r.x as i32, r.y as i32), true);
+                self.space.map_element(w.window.clone(), (r.x as i32, r.y as i32), focused);
             } else {
+                // minimised: keeps its last buffer for the grid tile
                 top.with_pending_state(|s| {
                     s.states.unset(xdg_toplevel::State::Activated);
                 });
@@ -328,6 +379,15 @@ impl State {
         }
         self.update_pointer_policy();
         self.dirty = true;
+    }
+
+    /// minimise / restore through the ring, keeping max_open
+    pub fn minimize(&mut self, id: u64) {
+        self.transition(|r| { r.minimize(id); });
+    }
+    pub fn restore(&mut self, id: u64) {
+        let max = self.cfg.layout.max_open;
+        self.transition(|r| { r.focus_with(id, max); });
     }
 
     /// The pointer works everywhere except on the lock / greeter screen. In input.pointer = "apps"
@@ -401,8 +461,8 @@ impl CompositorHandler for State {
             }
             if let Some(w) = self.wins.iter().find(|w| w.window.toplevel().map(|t| t.wl_surface() == &root).unwrap_or(false)) {
                 w.window.on_commit();
-                // ring windows are paused: their commits don't cause a redraw
-                if Some(w.id) == self.ring.center() {
+                // open apps redraw; minimised ones only refresh their grid tile on the next frame
+                if self.ring.order.contains(&w.id) {
                     self.dirty = true;
                 }
             }
@@ -491,8 +551,9 @@ impl XdgShellHandler for State {
             app_id: String::new(), title: String::new(), pid, pointer: false, spark: vec![], cpu_prev: None, rss_mb: 0,
         });
         self.space.map_element(window, (0, 0), true);
-        // every new process claims the centre; the previous centre moves to θ₁
-        self.transition(|r| r.spawn(id));
+        // a new app takes the main tile; past max_open the oldest open app is minimised
+        let max = self.cfg.layout.max_open;
+        self.transition(|r| { r.spawn(id, max); });
         if let Some(l) = self.lua.as_mut() {
             l.event("spawn", "", "");
         }
@@ -570,7 +631,7 @@ impl State {
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else { return };
         let Some(w) = self.wins.iter().find(|w| w.window.toplevel().map(|t| t.wl_surface() == &root).unwrap_or(false)) else { return };
-        let r = self.center_rect(w.id);
+        let r = self.targets().into_iter().find(|t| t.0 == w.id).map(|t| t.1).unwrap_or(self.area());
         let (ow, oh) = self.output_size();
         let mut target = Rectangle::new((0, 0).into(), (ow as i32, oh as i32).into());
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));

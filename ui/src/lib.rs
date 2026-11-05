@@ -11,6 +11,7 @@
 //! * Fonts are memory-mapped and rasterised lazily (ab_glyph), so fallback fonts (symbols, CJK)
 //!   cost nothing until a character needs them.
 pub mod canvas;
+pub mod glyphs;
 pub mod font;
 pub mod scale;
 pub mod shell;

@@ -247,17 +247,40 @@ pub fn run_action(state: &mut State, a: &str) {
         "spawn" => spawn(state, rest),
         "focus-next" => state.transition(|r| r.next()),
         "focus-prev" => state.transition(|r| r.prev()),
-        "width-up" | "width-down" | "fullscreen" => {
+        // the main tile's share of the app area (2–3 apps)
+        "width-up" | "width-down" => {
+            let n = state.cfg.layout.presets.len().max(1);
+            state.transition(|_| {});
+            state.main_preset = if verb == "width-up" { (state.main_preset + 1).min(n - 1) } else { state.main_preset.saturating_sub(1) };
+            state.relayout();
+        }
+        "fullscreen" => {
             let Some(id) = state.ring.center() else { return };
-            let n = state.cfg.layout.presets.len();
             state.transition(|_| {});
             if let Some(w) = state.wins.iter_mut().find(|w| w.id == id) {
-                match verb {
-                    "width-up" => w.size.step(true, n),
-                    "width-down" => w.size.step(false, n),
-                    _ => w.size.toggle_full(),
-                }
+                w.size.toggle_full();
             }
+            state.relayout();
+        }
+        // Mod+M: the focused app goes to the grid · Mod+Shift+M: the last one comes back
+        "minimize" => {
+            if let Some(id) = rest.parse::<u64>().ok().or(state.ring.center()) {
+                state.minimize(id);
+            }
+        }
+        "restore" => {
+            let max = state.cfg.layout.max_open;
+            match rest.parse::<u64>() {
+                Ok(id) => state.restore(id),
+                Err(_) => state.transition(|r| { r.restore_last(max); }),
+            }
+        }
+        // Mod+Shift+Return: the focused app takes the main tile
+        "promote" => state.transition(|r| r.promote()),
+        "grid-scroll" => {
+            let d: f64 = rest.parse().unwrap_or(1.0);
+            let (_, max, _) = state.grid();
+            state.grid_scroll = (state.grid_scroll + d * (state.cfg.layout.tile_px as f64 + state.cfg.layout.gap as f64)).clamp(0.0, max);
             state.relayout();
         }
         "close" => state.close_center(),
@@ -275,7 +298,15 @@ pub fn run_action(state: &mut State, a: &str) {
             state.hud_extra = vec![rest.chars().take(60).collect()];
             state.dirty = true;
         }
-        "quit" => state.signal.stop(),
+        // the session ends after the logout animation (render.rs); "quit now" skips it
+        "quit" => {
+            if rest == "now" || state.cfg.layout.anim_ms == 0 {
+                state.signal.stop();
+            } else if state.logout.is_none() {
+                state.logout = Some(Instant::now());
+                state.dirty = true;
+            }
+        }
         "tutorial" => {
             if trained {
                 return; // that key press was the "open this guide again" step itself

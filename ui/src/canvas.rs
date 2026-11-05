@@ -64,6 +64,29 @@ impl Canvas<'_> {
         p[3] = ((255 * a8 + p[3] as u32 * ia + 127) / 255) as u8;
     }
 
+    /// A glyph icon (crate::glyphs) `px` pixels square at x, y in one colour. Rasters are cached
+    /// per glyph and size, so a redraw only blends.
+    pub fn glyph_icon(&mut self, g: crate::glyphs::G, x: i32, y: i32, px: i32, c: Rgb, a: f32) {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        thread_local!(static CACHE: RefCell<HashMap<(crate::glyphs::G, i32), std::rc::Rc<Vec<f32>>>> = RefCell::new(HashMap::new()));
+        let px = px.max(8);
+        let m = CACHE.with(|c| c.borrow_mut().entry((g, px)).or_insert_with(|| std::rc::Rc::new(crate::glyphs::raster(g, px as usize, (px as f32 / 26.0).max(1.2)))).clone());
+        for yy in 0..px {
+            let ty = y + yy;
+            if ty < 0 || ty >= self.h as i32 {
+                continue;
+            }
+            for xx in 0..px {
+                let tx = x + xx;
+                let v = m[(yy * px + xx) as usize];
+                if v > 0.004 && tx >= 0 && tx < self.w as i32 {
+                    self.blend_px(tx as usize, ty as usize, c, a * v);
+                }
+            }
+        }
+    }
+
     pub fn blend(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgb, a: f32) {
         for yy in y.max(0)..(y + h).min(self.h as i32) {
             for xx in x.max(0)..(x + w).min(self.w as i32) {
