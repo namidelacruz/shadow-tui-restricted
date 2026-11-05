@@ -131,7 +131,7 @@ Other entry points:
 
 After that, pick **Shadow TUI Restricted** at the login screen, or run `shadow-session` from a TTY.
 
-**Upgrading from 9.x.** niri is no longer used or installed, and the niri session entry is removed. A niri you installed yourself stays installed but isn't Shadow's any more; your old `~/.config/shadow-state/niri.kdl` is left alone. The 10.0 update adds packages (WebKitGTK, gtk-layer-shell), so run `./install.sh` once rather than the file-level update.
+**Upgrading from 9.x.** niri is no longer used or installed, and the niri session entry is removed. A niri you installed yourself stays installed but isn't Shadow's any more; your old `~/.config/shadow-state/niri.kdl` is left alone. The 10.0 update adds packages (WebKitGTK, gtk-layer-shell), so run `./install.sh` once rather than the file-level update. A 9.x update source set up for this repository (deploy key, `require_private`) is read as the public repository from then on; a fork or a private mirror keeps its own settings.
 
 **Upgrading from 6.x.** The orbital-ring compositor, `shadowctl` and the `sakura` text apps are replaced. Your `config.toml` keeps working: old keys are ignored and new ones have defaults. Run `sudo shadow greeter enable` once to switch the login screen.
 

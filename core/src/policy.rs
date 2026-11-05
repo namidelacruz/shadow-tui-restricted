@@ -168,14 +168,17 @@ fn state() -> PathBuf {
 
 pub fn load() -> Policy {
     let set = st::get("updates", "repo").unwrap_or_default().trim().to_string();
-    let default = set.is_empty() && !DEFAULT_REPO.is_empty();
+    // 9.x set the official repository up as a private one (deploy key, require_private); it is
+    // public now, so that setting means the public default
+    let official = !set.is_empty() && parse(&set).slug().is_some_and(|s| Some(s) == parse(DEFAULT_REPO).slug()) && parse(&set).host() == parse(DEFAULT_REPO).host();
+    let default = (set.is_empty() || official) && !DEFAULT_REPO.is_empty();
     let repo = if default { DEFAULT_REPO.to_string() } else { set };
     let branch = st::get("updates", "branch").filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "main".into()).trim().to_string();
     let auth = match st::get("updates", "auth").as_deref().map(str::trim) {
+        _ if default => Auth::Public,
         Some("credential-helper") => Auth::CredentialHelper,
         Some("deploy-key") => Auth::DeployKey,
         Some("public") => Auth::Public,
-        _ if default => Auth::Public,
         _ => match parse(&repo) {
             Remote::Local(_) => Auth::Local,
             Remote::Https { .. } => Auth::CredentialHelper,
@@ -187,7 +190,7 @@ pub fn load() -> Policy {
         repo,
         branch,
         auth,
-        require_private: st::get_bool("updates", "require_private", auth != Auth::Public),
+        require_private: if default { false } else { st::get_bool("updates", "require_private", auth != Auth::Public) },
         require_signed: st::get_bool("updates", "require_signed", false),
         allow_history_rewrite: st::get_bool("updates", "allow_history_rewrite", false),
         key: state().join("update-deploy-key"),
@@ -769,6 +772,8 @@ mod tests {
         let ssh = Policy { repo: "git@github.com:o/r.git".into(), ..p };
         assert_eq!(ssh.offline().iter().find(|c| c.name == "auth").unwrap().level, Level::Fail);
         assert!(DEFAULT_REPO.starts_with("https://") && !looks_secret(DEFAULT_REPO));
+        // a 9.x private-style setup of the official repository is recognised by its slug
+        assert_eq!(parse("git@github.com:namidelacruz/shadow-tui-restricted.git").slug(), parse(DEFAULT_REPO).slug());
     }
 
     #[test]
