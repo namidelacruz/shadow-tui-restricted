@@ -54,6 +54,14 @@ name = "shadow-glyph"
 path = "src/bin/glyph.rs"
 
 [[bin]]
+name = "shadow-webd"
+path = "src/bin/webd.rs"
+
+[[bin]]
+name = "shadow-settings"
+path = "src/bin/settings.rs"
+
+[[bin]]
 name = "shadow-installer"
 path = "src/bin/installer.rs"
 

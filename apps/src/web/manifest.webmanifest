@@ -1,0 +1,11 @@
+{
+  "name": "Shadow Settings",
+  "short_name": "Settings",
+  "description": "Settings, fix center, default apps, config and crash log for Shadow TUI Restricted",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0E0C09",
+  "theme_color": "#0E0C09",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
