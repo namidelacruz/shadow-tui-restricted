@@ -60,17 +60,19 @@ pub const DEFAULT_CONFIG: &str = r##"# Shadow TUI Restricted — ~/.config/shado
 # learning = true             # learns 7 days, relearns 7 days after each OS update
 
 [updates]
-# Required: the repository updates come from. Set it up with  shadow update setup  (or the
-# "Set up update source" button in shadow-update): it creates a read-only deploy key, pins the
-# server's host key and checks the policy below. Tokens/passwords are never stored here.
-# repo = "git@github.com:owner/repo.git"
+# Where updates come from. Unset = the official public repository, fetched anonymously over
+# HTTPS (no key, no token). For your own private fork: shadow update setup  (read-only deploy
+# key + pinned host key, or your git credential helper). Tokens/passwords are never stored here.
+# repo = "https://github.com/namidelacruz/shadow-tui-restricted.git"
 # branch = "main"
-# auth = "deploy-key"            # or "credential-helper" for https:// (gh / libsecret)
-# require_private = true         # refuse a repository that anyone can read
+# auth = "public"                # public | deploy-key (ssh) | credential-helper (https)
+# require_private = false        # true: refuse a repository that anyone can read
 # require_signed = false         # true: every new commit must be signed by a key in
 #                                #   update-allowed-signers (git ssh allowed-signers format)
 # allow_history_rewrite = false  # refuse force-pushed history
-# checks happen only when you press "Check for updates" in shadow-update
+# auto = "download"              # download: check, build in the background, then
+#                                #   "Update ready — install?" (one click) | notify | off
+# interval_hours = 6
 
 [sync]
 # age_recipient = ""          # default: ~/.ssh/id_ed25519.pub

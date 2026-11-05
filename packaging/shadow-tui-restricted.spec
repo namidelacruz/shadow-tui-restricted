@@ -127,6 +127,9 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/user/shadow.slice
 /usr/lib/systemd/user/shadow-sync.service
 /usr/lib/systemd/user/shadow-sync.timer
+/usr/lib/systemd/user/shadow-update-auto.service
+/usr/lib/systemd/user/shadow-update-auto.timer
+/usr/lib/systemd/user/timers.target.wants/shadow-update-auto.timer
 /usr/lib/systemd/system-sleep/shadow-tui
 /usr/share/polkit-1/actions/org.shadownetwork.wifi.policy
 /usr/share/wayland-sessions/shadow-tui.desktop

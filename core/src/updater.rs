@@ -54,16 +54,9 @@ fn bi(v: &[(String, String)], k: &str) -> String {
 
 pub fn conf(p: &Paths) -> (String, String, bool) {
     let _ = p;
-    let repo = st::get("updates", "repo")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let branch = st::get("updates", "branch")
-        .filter(|b| !b.trim().is_empty())
-        .unwrap_or_else(|| "main".into())
-        .trim()
-        .to_string();
-    (repo, branch, false)
+    // the policy decides: the configured repository, or the official public one
+    let pol = crate::policy::load();
+    (pol.repo, pol.branch, false)
 }
 
 /// The update source must be set up and satisfy the policy (see policy.rs) before anything is
@@ -427,9 +420,19 @@ pub fn main(p: &Paths, args: &[&str]) -> i32 {
             }
         }
         ["run", ..] => run_update(p, yes, args.contains(&"--force")),
-        // checking is on demand only (Update app → "Check for updates"); kept so old sessions that
-        // still call it at login don't error
-        ["login-check"] => 0,
+        // 10.0: automatic checks (see auto_check); `[updates] auto = "off"` turns them off
+        ["login-check"] => login_check(p),
+        ["auto-check", rest @ ..] => auto_check(p, rest.contains(&"--now")),
+        ["stage", rest @ ..] => stage(p, rest.contains(&"--porcelain"), rest.contains(&"--low")),
+        ["install-ready", rest @ ..] => install_ready(p, rest.contains(&"--porcelain"), rest.contains(&"--password-stdin")),
+        ["ready"] => match ready() {
+            Some((h, v, n)) => {
+                println!("{h} {n} {v}");
+                0
+            }
+            None => 1,
+        },
+        ["notify-ready", body] => notify_ready_wait(body),
         ["check-files", rest @ ..] => check_files(p, rest.contains(&"--porcelain")),
         ["apply", rest @ ..] => apply(
             p,
@@ -482,13 +485,17 @@ pub fn main(p: &Paths, args: &[&str]) -> i32 {
             );
             let _ = on;
             println!(
-                "repository: {}  branch: {branch}  (checked only when you ask)",
+                "repository: {}  branch: {branch}",
                 if repo.is_empty() {
                     "(not set)".into()
                 } else {
                     repo
                 }
             );
+            println!("automatic : {} (every {} h)", auto_mode(), interval_secs() / 3600);
+            if let Some((h, v, n)) = ready() {
+                println!("ready     : {} {v} — {n} file(s) staged (shadow update install-ready)", &h[..12.min(h.len())]);
+            }
             println!(
                 "previous  : {}",
                 std::fs::read_to_string(previous())
@@ -498,7 +505,8 @@ pub fn main(p: &Paths, args: &[&str]) -> i32 {
             0
         }
         _ => {
-            eprintln!("usage: shadow update setup [URL] | policy [--offline] | check | check-files [--porcelain] | apply [--porcelain] [--password-stdin] | undo\n                     | run [--yes] [--force] (full package rebuild) | install-local DIR | rollback | status | set-repo URL [BRANCH]");
+            eprintln!("usage: shadow update setup [URL] | policy [--offline] | check | check-files [--porcelain] | apply [--porcelain] [--password-stdin] | undo
+                     | auto-check [--now] | stage [--porcelain] | install-ready [--porcelain] [--password-stdin] | ready\n                     | run [--yes] [--force] (full package rebuild) | install-local DIR | rollback | status | set-repo URL [BRANCH]");
             2
         }
     }
@@ -899,17 +907,46 @@ pub fn plan(stage: &Path, live_root: &Path) -> Vec<(String, String)> {
     v
 }
 
+/// What `prepare` built: a staged tree, its plan, and the commit it came from.
+pub struct Prepared {
+    pub stage: PathBuf,
+    pub planf: PathBuf,
+    pub plan: Vec<(String, String)>,
+    pub head: String,
+    pub n: usize,
+}
+
 pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
-    let password = if password_stdin {
+    let password = read_password(password_stdin);
+    let Some(_l) = Lock::take() else {
+        out(porcelain, "result", "fail another update is running (the automatic updater may be building) — try again in a moment");
+        return 1;
+    };
+    clear_ready();
+    match prepare(p, porcelain, false) {
+        Ok(Some(pr)) => install_prepared(porcelain, password, &pr),
+        Ok(None) => 0,
+        Err(c) => c,
+    }
+}
+
+fn read_password(password_stdin: bool) -> Option<String> {
+    if password_stdin {
         let mut l = String::new();
         let _ = std::io::stdin().read_line(&mut l);
         Some(l.trim_end_matches(['\n', '\r']).to_string())
     } else {
         None
-    };
+    }
+}
+
+/// Fetch, verify, build, test and lay out the new version in the staging tree, and write the plan.
+/// Nothing on the system changes. `low`: background priority (the automatic updater).
+/// Ok(None) = already up to date.
+pub fn prepare(p: &Paths, porcelain: bool, low: bool) -> Result<Option<Prepared>, i32> {
     let fail = |m: &str| {
         out(porcelain, "result", &format!("fail {m}"));
-        1
+        Err(1)
     };
     let (repo, branch, _) = conf(p);
     if let Some(e) = validate(&repo, &branch) {
@@ -941,18 +978,36 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
     }
     let s = src();
     let tgt = target_dir();
+    // background builds yield to everything else (CPU and disk), and use half the cores
+    let nice: Vec<String> = if low {
+        let mut v = vec![];
+        if sys::which("nice").is_some() {
+            v.extend(["nice".to_string(), "-n".into(), "19".into()]);
+        }
+        if sys::which("ionice").is_some() {
+            v.extend(["ionice".to_string(), "-c".into(), "3".into()]);
+        }
+        v
+    } else {
+        vec![]
+    };
+    let jobs = format!("{}", (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2) / 2).max(1));
+    let with_nice = |cmd: Vec<&str>| -> Vec<String> {
+        let mut v = nice.clone();
+        v.extend(cmd.into_iter().map(String::from));
+        if low {
+            v.extend(["-j".to_string(), jobs.clone()]);
+        }
+        v
+    };
     let env = [("CARGO_TARGET_DIR", tgt.to_string_lossy().into_owned())];
     out(
         porcelain,
         "step",
         "Building (incremental: only crates touched by the changes recompile)",
     );
-    if stream(
-        porcelain,
-        &[&cargo, "build", "--release", "--locked", "--workspace"],
-        &s,
-        &env,
-    ) != 0
+    let build = with_nice(vec![&cargo, "build", "--release", "--locked", "--workspace"]);
+    if stream(porcelain, &build.iter().map(String::as_str).collect::<Vec<_>>(), &s, &env) != 0
     {
         return fail("the build failed — nothing was installed");
     }
@@ -991,7 +1046,8 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
                 a.push(c);
             }
         }
-        if stream(porcelain, &a, &s, &env) != 0 {
+        let a = with_nice(a);
+        if stream(porcelain, &a.iter().map(String::as_str).collect::<Vec<_>>(), &s, &env) != 0 {
             return fail("tests failed — nothing was installed");
         }
     }
@@ -1034,7 +1090,7 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
     let n = pl.iter().filter(|(k, _)| k != "config").count();
     if pl.is_empty() && head == base {
         out(porcelain, "result", &format!("ok already up to date ({})", &head[..8.min(head.len())]));
-        return 0;
+        return Ok(None);
     }
     if pl.is_empty() {
         out(
@@ -1048,6 +1104,17 @@ pub fn apply(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
     if std::fs::write(&planf, text).is_err() {
         return fail("cannot write the update plan");
     }
+    Ok(Some(Prepared { stage, planf, plan: pl, head, n }))
+}
+
+/// Install a prepared update (administrator step), then the session side.
+pub fn install_prepared(porcelain: bool, password: Option<String>, pr: &Prepared) -> i32 {
+    let fail = |m: &str| {
+        out(porcelain, "result", &format!("fail {m}"));
+        1
+    };
+    let (stage, planf, pl, head, n) = (&pr.stage, &pr.planf, &pr.plan, &pr.head, pr.n);
+    let root = sysroot();
     out(
         porcelain,
         "step",
@@ -1864,6 +1931,30 @@ mod file_update_tests {
     }
 
     #[test]
+    fn auto_updates_lock_and_power_rules() {
+        let a = Lock::take().expect("first lock");
+        assert!(Lock::take().is_none(), "a second updater must wait");
+        drop(a);
+        assert!(Lock::take().is_some(), "released on drop");
+        let t = std::env::temp_dir().join(format!("shadow-ps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let mk = |n: &str, ty: &str, online: Option<&str>| {
+            std::fs::create_dir_all(t.join(n)).unwrap();
+            std::fs::write(t.join(n).join("type"), ty).unwrap();
+            if let Some(o) = online {
+                std::fs::write(t.join(n).join("online"), o).unwrap();
+            }
+        };
+        assert!(!on_battery_in(&t), "no supplies (desktop/VM): not on battery");
+        mk("AC", "Mains\n", Some("1\n"));
+        mk("BAT0", "Battery\n", None);
+        assert!(!on_battery_in(&t), "plugged in");
+        std::fs::write(t.join("AC/online"), "0\n").unwrap();
+        assert!(on_battery_in(&t), "unplugged laptop: background builds wait");
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
     fn components_and_staging_guard() {
         assert_eq!(component("bar/src/main.rs"), "shadow-bar");
         assert!(component("PKGBUILD").contains("nothing installed"));
@@ -1873,4 +1964,251 @@ mod file_update_tests {
             1
         );
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+//  Automatic updates (10.0): check → download + build in the background → "Update ready —
+//  install?" → one click installs.
+//
+//  `[updates] auto` = "download" (default) | "notify" (check and tell, build only when you press
+//  Update) | "off". `interval_hours` (default 6). A systemd user timer runs `auto-check`; sessions
+//  without systemd start it from `login-check`. Background builds run at idle priority on half the
+//  cores, and not on battery. Staging changes nothing on the system: installing is always your
+//  click (and your administrator password if sudo asks for one), and the usual backup / undo /
+//  recover and the post-update repairs apply exactly as for a manual update.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn auto_mode() -> String {
+    match st::get("updates", "auto").as_deref().map(str::trim) {
+        Some("off") | Some("false") => "off".into(),
+        Some("notify") | Some("check") => "notify".into(),
+        _ => "download".into(),
+    }
+}
+
+fn interval_secs() -> u64 {
+    st::get("updates", "interval_hours").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(6).clamp(1, 24 * 30) * 3600
+}
+
+fn ready_file() -> PathBuf {
+    cache().join("update.ready")
+}
+
+/// The staged update waiting for its click: (commit, version, files to change).
+pub fn ready() -> Option<(String, String, usize)> {
+    let t = std::fs::read_to_string(ready_file()).ok()?;
+    let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).map(|v| v.trim().to_string());
+    let head = get("head")?;
+    if head.len() < 8 || !stage_dir().is_dir() {
+        return None;
+    }
+    Some((head, get("version").unwrap_or_default(), get("files").and_then(|n| n.parse().ok()).unwrap_or(0)))
+}
+
+fn clear_ready() {
+    let _ = std::fs::remove_file(ready_file());
+}
+
+/// One updater at a time (manual or automatic): a pid file, stale when that process is gone.
+struct Lock(PathBuf);
+impl Lock {
+    fn take() -> Option<Lock> {
+        let f = cache().join("update.lock");
+        let _ = std::fs::create_dir_all(cache());
+        for _ in 0..2 {
+            use std::io::Write;
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&f) {
+                Ok(mut h) => {
+                    let _ = write!(h, "{}", std::process::id());
+                    return Some(Lock(f));
+                }
+                Err(_) => {
+                    let pid = std::fs::read_to_string(&f).unwrap_or_default().trim().parse::<u32>().unwrap_or(0);
+                    if pid != 0 && Path::new(&format!("/proc/{pid}")).exists() {
+                        return None;
+                    }
+                    let _ = std::fs::remove_file(&f);
+                }
+            }
+        }
+        None
+    }
+}
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Running on battery (a battery present and no mains supply online).
+pub fn on_battery() -> bool {
+    on_battery_in(Path::new("/sys/class/power_supply"))
+}
+
+fn on_battery_in(dir: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else { return false };
+    let (mut bat, mut mains) = (false, false);
+    for e in rd.flatten() {
+        let p = e.path();
+        let ty = std::fs::read_to_string(p.join("type")).unwrap_or_default();
+        match ty.trim() {
+            "Battery" => bat = true,
+            "Mains" | "USB" => mains |= std::fs::read_to_string(p.join("online")).unwrap_or_default().trim() == "1",
+            _ => {}
+        }
+    }
+    bat && !mains
+}
+
+fn last_checked(p: &Paths) -> u64 {
+    std::fs::read_to_string(last_check(p)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0)
+}
+
+/// `shadow update stage`: download, build and test the new version into the staging tree, and
+/// mark it ready. Nothing on the system changes.
+pub fn stage(p: &Paths, porcelain: bool, low: bool) -> i32 {
+    let Some(_l) = Lock::take() else {
+        out(porcelain, "result", "fail another update is running");
+        return 1;
+    };
+    clear_ready();
+    match prepare(p, porcelain, low) {
+        Ok(Some(pr)) => {
+            let ver = std::fs::read_to_string(pr.stage.join("opt/shadow-tui/share/BUILD_INFO"))
+                .unwrap_or_default()
+                .lines()
+                .find_map(|l| l.strip_prefix("version=").map(|v| v.trim().to_string()))
+                .unwrap_or_default();
+            let body = format!("head={}\nversion={ver}\nfiles={}\ntime={}\n", pr.head, pr.n, sys::now());
+            if write_private(&ready_file(), &body).is_err() {
+                out(porcelain, "result", "fail cannot record the staged update");
+                return 1;
+            }
+            out(porcelain, "result", &format!("ready {} {} file(s) staged — install with: shadow update install-ready", &pr.head[..8.min(pr.head.len())], pr.n));
+            0
+        }
+        Ok(None) => 0,
+        Err(c) => c,
+    }
+}
+
+/// `shadow update install-ready`: install what `stage` prepared — the click.
+pub fn install_ready(p: &Paths, porcelain: bool, password_stdin: bool) -> i32 {
+    let password = read_password(password_stdin);
+    let fail = |m: &str| {
+        out(porcelain, "result", &format!("fail {m}"));
+        1
+    };
+    let Some(_l) = Lock::take() else { return fail("another update is running — wait for it to finish") };
+    let Some((head, _, _)) = ready() else { return fail("no update is staged — press Check for updates") };
+    let (repo, branch, _) = conf(p);
+    if let Some(e) = validate(&repo, &branch) {
+        return fail(&e);
+    }
+    if let Some(m) = marker(&sysroot()) {
+        return fail(if m.running() { "another update is running — wait for it to finish" } else { "an earlier update was interrupted — press Undo / Recover first (or reboot: it recovers on its own)" });
+    }
+    // the staged tree must still be the build of the verified commit it was made from
+    if git(&src(), &["rev-parse", "HEAD"]).1.trim() != head {
+        clear_ready();
+        return fail("the staged build is out of date — press Update to build the latest");
+    }
+    if bi(&build_info(p), "commit") == head {
+        clear_ready();
+        out(porcelain, "result", "ok already installed");
+        return 0;
+    }
+    // re-plan against the system as it is now (it may have changed since staging)
+    let stage = stage_dir();
+    let pl = plan(&stage, &sysroot());
+    let planf = cache().join("update.plan");
+    let text: String = pl.iter().map(|(k, f)| format!("{k} {f}\n")).collect();
+    if std::fs::write(&planf, text).is_err() {
+        return fail("cannot write the update plan");
+    }
+    for (k, f) in &pl {
+        out(porcelain, k, f);
+    }
+    let n = pl.iter().filter(|(k, _)| k != "config").count();
+    let rc = install_prepared(porcelain, password, &Prepared { stage, planf, plan: pl, head, n });
+    if rc == 0 {
+        clear_ready();
+    }
+    rc
+}
+
+/// `shadow update auto-check [--now]`: the timer's job.
+pub fn auto_check(p: &Paths, now: bool) -> i32 {
+    let mode = auto_mode();
+    if mode == "off" {
+        return 0;
+    }
+    if !now && sys::now().saturating_sub(last_checked(p)) < interval_secs() {
+        return 0;
+    }
+    if marker(&sysroot()).is_some() {
+        return 0;
+    }
+    if let Some((h, v, n)) = ready() {
+        // still waiting for its click: remind, don't rebuild
+        if bi(&build_info(p), "commit") != h {
+            notify_ready(&h, &v, n);
+            return 0;
+        }
+        clear_ready();
+    }
+    let (status, msg) = check(p);
+    eprintln!("auto-check: {msg}");
+    if status != "available" {
+        return if status == "up-to-date" { 0 } else { 1 };
+    }
+    if mode == "notify" || on_battery() || cargo().is_none() {
+        st::notify("Shadow update available", &format!("{msg}\nOpen Update to download and install it."), "normal");
+        return 0;
+    }
+    eprintln!("auto-check: downloading and building in the background");
+    let rc = stage(p, false, true);
+    match ready() {
+        Some((h, v, n)) if rc == 0 => notify_ready(&h, &v, n),
+        _ => st::notify("Shadow update", "An update is available but could not be prepared automatically — open Update for details.", "low"),
+    }
+    rc
+}
+
+/// "Update ready — install?" with an Install action (one click opens the installer on it).
+fn notify_ready(head: &str, ver: &str, n: usize) {
+    let body = format!("{} ({}) is built and tested — {n} file(s) to replace.", if ver.is_empty() { "A new version" } else { ver }, &head[..8.min(head.len())]);
+    if sys::which("notify-send").is_some() && std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        // the action wait runs in its own process so the timer job can finish
+        let me = std::env::current_exe().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|_| "shadow".into());
+        st::spawn_detached(&[&me, "update", "notify-ready", &body]);
+    } else {
+        eprintln!("Update ready — install? {body}  (shadow update install-ready)");
+    }
+}
+
+/// The detached half of `notify_ready`: wait for the click.
+fn notify_ready_wait(body: &str) -> i32 {
+    let (c, o, _) = sys::run(&["notify-send", "-a", "Shadow TUI", "-u", "normal", "-A", "install=Install now", "-A", "later=Later", "--wait", "Update ready — install?", body]);
+    if c == 0 && o.trim() == "install" {
+        st::spawn_detached(&["shadow-update", "--install-ready"]);
+    } else if c != 0 {
+        // notify-send without actions (libnotify < 0.7.9): a plain notice
+        st::notify("Update ready — install?", &format!("{body}\nOpen Update → Install"), "normal");
+    }
+    0
+}
+
+/// Login: make sure automatic checks run (the systemd user timer, or a one-off check).
+fn login_check(p: &Paths) -> i32 {
+    if auto_mode() == "off" {
+        return 0;
+    }
+    let timer = sys::run(&["systemctl", "--user", "is-active", "--quiet", "shadow-update-auto.timer"]).0 == 0
+        || sys::run(&["systemctl", "--user", "start", "shadow-update-auto.timer"]).0 == 0;
+    if !timer && sys::now().saturating_sub(last_checked(p)) >= interval_secs() {
+        let me = std::env::current_exe().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|_| "shadow".into());
+        st::spawn_detached(&["nice", "-n", "19", &me, "update", "auto-check"]);
+    }
+    0
 }

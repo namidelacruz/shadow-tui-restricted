@@ -2,7 +2,12 @@
 //! must satisfy. A configured, policy-compliant source is a requirement — nothing is checked,
 //! fetched or built without one.
 //!
-//! For a private repository (the default, `require_private = true`):
+//! The default source (10.0) is the official **public** repository, fetched anonymously over
+//! HTTPS (`auth = "public"`): no credential is needed, so none is used or stored, and every other
+//! rule below (hardened git, no history rewrites, optional signatures) still applies. Set
+//! `[updates] repo` to use your own fork or mirror instead.
+//!
+//! For a private repository (`require_private = true`, the default for anything but `public`):
 //! * Authentication is a dedicated **read-only deploy key** (SSH, `auth = "deploy-key"`) or the
 //!   user's git **credential helper** (HTTPS, `auth = "credential-helper"`, e.g. `gh auth
 //!   setup-git` or libsecret). A token or password is never accepted in the URL or in
@@ -38,7 +43,16 @@ pub enum Auth {
     DeployKey,
     CredentialHelper,
     Local,
+    /// a public repository over HTTPS: anonymous, no credential at all
+    Public,
 }
+
+/// The official repository: used when `[updates] repo` is not set. A build can point at its own
+/// (fork, mirror) with SHADOW_DEFAULT_UPDATE_REPO at compile time.
+pub const DEFAULT_REPO: &str = match option_env!("SHADOW_DEFAULT_UPDATE_REPO") {
+    Some(r) => r,
+    None => "https://github.com/namidelacruz/shadow-tui-restricted.git",
+};
 
 #[derive(Clone, Debug)]
 pub struct Policy {
@@ -153,11 +167,15 @@ fn state() -> PathBuf {
 }
 
 pub fn load() -> Policy {
-    let repo = st::get("updates", "repo").unwrap_or_default().trim().to_string();
+    let set = st::get("updates", "repo").unwrap_or_default().trim().to_string();
+    let default = set.is_empty() && !DEFAULT_REPO.is_empty();
+    let repo = if default { DEFAULT_REPO.to_string() } else { set };
     let branch = st::get("updates", "branch").filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "main".into()).trim().to_string();
     let auth = match st::get("updates", "auth").as_deref().map(str::trim) {
         Some("credential-helper") => Auth::CredentialHelper,
         Some("deploy-key") => Auth::DeployKey,
+        Some("public") => Auth::Public,
+        _ if default => Auth::Public,
         _ => match parse(&repo) {
             Remote::Local(_) => Auth::Local,
             Remote::Https { .. } => Auth::CredentialHelper,
@@ -169,7 +187,7 @@ pub fn load() -> Policy {
         repo,
         branch,
         auth,
-        require_private: st::get_bool("updates", "require_private", true),
+        require_private: st::get_bool("updates", "require_private", auth != Auth::Public),
         require_signed: st::get_bool("updates", "require_signed", false),
         allow_history_rewrite: st::get_bool("updates", "allow_history_rewrite", false),
         key: state().join("update-deploy-key"),
@@ -208,7 +226,7 @@ impl Policy {
         let mut a: Vec<String> = vec![
             "protocol.allow=never".into(),
             "protocol.https.allow=always".into(),
-            "protocol.ssh.allow=always".into(),
+            format!("protocol.ssh.allow={}", if self.auth == Auth::Public { "never" } else { "always" }),
             format!("protocol.file.allow={}", if local { "always" } else { "never" }),
             "core.hooksPath=/dev/null".into(),
             "transfer.fsckObjects=true".into(),
@@ -333,6 +351,9 @@ impl Policy {
                     v.push(c(Level::Pass, "auth", format!("credential helper: {}", helper.lines().next().unwrap_or("").trim())));
                 }
             }
+            (Auth::Public, Remote::Https { .. }) if self.require_private => v.push(c(Level::Fail, "auth", "auth = \"public\" but require_private = true: pick one")),
+            (Auth::Public, Remote::Https { .. }) => v.push(c(Level::Pass, "auth", "public repository: fetched anonymously, no credential used or stored")),
+            (Auth::Public, _) => v.push(c(Level::Fail, "auth", "auth = \"public\" needs an https:// URL")),
             (Auth::CredentialHelper, Remote::Ssh { .. }) => v.push(c(Level::Warn, "auth", "ssh URL with auth = credential-helper: your ssh agent/keys are not used; set auth = \"deploy-key\"")),
             _ => {}
         }
@@ -368,9 +389,14 @@ impl Policy {
         } else if out.trim().is_empty() {
             v.push(c(Level::Fail, "access", format!("branch '{}' does not exist", self.branch)));
         } else {
-            v.push(c(Level::Pass, "access", "the repository is readable with the configured credential"));
+            v.push(c(Level::Pass, "access", if self.auth == Auth::Public { "the repository is readable anonymously" } else { "the repository is readable with the configured credential" }));
         }
         if self.auth == Auth::Local {
+            return v;
+        }
+        if self.auth == Auth::Public {
+            // the access check above already ran without any credential
+            v.push(c(Level::Pass, "private", "public by choice: readable anonymously, as configured"));
             return v;
         }
         match self.remote().anonymous_https() {
@@ -516,7 +542,23 @@ fn fingerprints(lines: &str) -> Vec<String> {
     ch.wait_with_output().map(|o| String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect()).unwrap_or_default()
 }
 
-/// `shadow update setup [URL] [--branch B] [--https] [--host-fingerprint SHA256:…] [--yes]`
+/// A credential-free `ls-remote` succeeds: anyone can read the repository.
+pub fn anon_readable(anon: &str) -> bool {
+    let mut cmd = std::process::Command::new("git");
+    isolate(&mut cmd);
+    cmd.args(["-c", "credential.helper=", "-c", "core.askPass=", "-c", "http.sslVerify=true", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "ls-remote", "--heads", anon])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "/bin/false")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", "/nonexistent")
+        .env("XDG_CONFIG_HOME", "/nonexistent")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd.status().is_ok_and(|s| s.success())
+}
+
+/// `shadow update setup [URL] [--branch B] [--public | --https | --deploy-key] [--host-fingerprint SHA256:…] [--yes]`
 pub fn setup(args: &[&str]) -> i32 {
     let yes = args.contains(&"--yes") || args.contains(&"-y");
     let val = |k: &str| args.iter().position(|a| *a == k).and_then(|i| args.get(i + 1)).map(|s| s.to_string());
@@ -552,7 +594,19 @@ pub fn setup(args: &[&str]) -> i32 {
         return 1;
     }
     let https = args.contains(&"--https");
-    if !https {
+    // a public repository needs no key and no token: fetched anonymously over HTTPS
+    let public = args.contains(&"--public")
+        || (!https && !args.contains(&"--deploy-key") && parse(&url).anonymous_https().is_some_and(|a| {
+            println!("  checking whether the repository is public…");
+            anon_readable(&a)
+        }));
+    if public {
+        if let Some(a) = parse(&url).anonymous_https() {
+            url = a;
+        }
+        println!("  public repository: updates are fetched anonymously over HTTPS (no key, no token)");
+    }
+    if !https && !public {
         let s = to_ssh(&url);
         if s != url {
             println!("  using the SSH form for a deploy key: {s}");
@@ -567,10 +621,11 @@ pub fn setup(args: &[&str]) -> i32 {
     let branch = val("--branch").unwrap_or_else(|| ask("Branch", &cur.branch, yes));
     let auth = match &r {
         Remote::Local(_) => "local",
+        Remote::Https { .. } if public => "public",
         Remote::Https { .. } => "credential-helper",
         _ => "deploy-key",
     };
-    let p = Policy { repo: url.clone(), branch: branch.clone(), auth: match auth { "local" => Auth::Local, "credential-helper" => Auth::CredentialHelper, _ => Auth::DeployKey }, ..cur.clone() };
+    let p = Policy { repo: url.clone(), branch: branch.clone(), auth: match auth { "local" => Auth::Local, "public" => Auth::Public, "credential-helper" => Auth::CredentialHelper, _ => Auth::DeployKey }, ..cur.clone() };
     let _ = std::fs::create_dir_all(state());
     if let Remote::Ssh { host, port, .. } = &r {
         // 1. deploy key
@@ -664,7 +719,15 @@ pub fn setup(args: &[&str]) -> i32 {
     }
     // 4. save (literal values only; never a secret)
     let ok = st::set("updates", "repo", &st::q(&url)).and_then(|_| st::set("updates", "branch", &st::q(&branch))).and_then(|_| st::set("updates", "auth", &st::q(auth)));
-    let _ = st::get("updates", "require_private").is_none().then(|| st::set("updates", "require_private", "true"));
+    let ok = ok.and_then(|_| {
+        if auth == "public" {
+            st::set("updates", "require_private", "false")
+        } else if st::get("updates", "require_private").is_none() {
+            st::set("updates", "require_private", "true")
+        } else {
+            Ok(())
+        }
+    });
     if ok.is_err() {
         eprintln!("setup: cannot write {}", st::config_file().display());
         return 1;
@@ -687,6 +750,26 @@ pub fn setup(args: &[&str]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_repositories_need_no_credential_and_no_ssh() {
+        let p = Policy { repo: DEFAULT_REPO.into(), branch: "main".into(), auth: Auth::Public, require_private: false, require_signed: false, allow_history_rewrite: false, key: "/k".into(), known_hosts: "/kh".into(), signers: "/s".into() };
+        let off = p.offline();
+        let auth = off.iter().find(|c| c.name == "auth").unwrap();
+        assert_eq!(auth.level, Level::Pass, "{}", auth.detail);
+        let (cfg, env) = p.git_prefix();
+        assert!(cfg.iter().any(|x| x == "protocol.ssh.allow=never"));
+        assert!(cfg.iter().any(|x| x == "credential.helper="));
+        assert!(!cfg.iter().any(|x| x.starts_with("credential.helper=") && x != "credential.helper="));
+        assert!(env.iter().all(|(k, _)| k != "GIT_SSH_COMMAND"));
+        // contradictory settings fail closed
+        let both = Policy { require_private: true, ..p.clone() };
+        assert_eq!(both.offline().iter().find(|c| c.name == "auth").unwrap().level, Level::Fail);
+        // public needs https
+        let ssh = Policy { repo: "git@github.com:o/r.git".into(), ..p };
+        assert_eq!(ssh.offline().iter().find(|c| c.name == "auth").unwrap().level, Level::Fail);
+        assert!(DEFAULT_REPO.starts_with("https://") && !looks_secret(DEFAULT_REPO));
+    }
 
     #[test]
     fn urls() {

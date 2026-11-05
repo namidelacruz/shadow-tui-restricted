@@ -1,0 +1,12 @@
+[Unit]
+Description=Shadow TUI automatic update check (download + build in the background; installing waits for your click)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/shadow-tui/bin/shadow update auto-check
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+# nothing here needs more than the build directory and the cache
+TimeoutStartSec=2h

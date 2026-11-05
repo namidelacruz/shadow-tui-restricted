@@ -1,6 +1,12 @@
 //! shadow-update — the updater, its own window.
 //!
-//! Nothing happens until you ask: "Check for updates" fetches the configured repository and lists
+//! 10.0: automatic updates. A timer checks the source, downloads and builds a new version in the
+//! background and offers it: "Update ready — install?". Then "Install update" here (or the
+//! notification's Install button, which opens this window with `--install-ready`) installs it in
+//! one click (plus your administrator password if sudo asks). `[updates] auto` = "notify" or "off"
+//! in config.toml keeps it to checking or turns it off.
+//!
+//! On demand: "Check for updates" fetches the configured repository and lists
 //! the new commits, the changed source files and the components they affect. "Update" rebuilds
 //! incrementally, compares the result byte for byte with what is installed and replaces only the
 //! files that differ (with a backup); "Undo last update" restores that backup. Your config files
@@ -59,6 +65,10 @@ struct Upd {
     pending: Option<String>,
     /// the update-source policy (offline rules): (level, name, detail)
     policy: Vec<(String, String, String)>,
+    /// a staged update waiting for its click (from `shadow update ready`): "commit files version"
+    ready: Option<String>,
+    /// automatic mode line from `shadow update status`
+    auto: String,
 }
 
 fn shadow() -> String {
@@ -132,8 +142,13 @@ impl Upd {
         self.load_policy();
         let (rc, o) = shadow_apps::cmd_out(&[&shadow(), "update", "in-progress"]);
         self.pending = (rc == 0).then(|| o.trim().to_string());
+        let (rc, o) = shadow_apps::cmd_out(&[&shadow(), "update", "ready"]);
+        self.ready = (rc == 0 && !o.trim().is_empty()).then(|| o.trim().to_string());
         let (_, o) = shadow_apps::cmd_out(&[&shadow(), "update", "status"]);
         for l in o.lines() {
+            if let Some(v) = l.strip_prefix("automatic :") {
+                self.auto = v.trim().to_string();
+            }
             if let Some(v) = l.strip_prefix("installed :") {
                 self.installed = v.trim().to_string();
             } else if let Some(v) = l.strip_prefix("repository:") {
@@ -146,7 +161,7 @@ impl Upd {
         match b {
             Btn::Setup => self.busy.is_none(),
             Btn::Check => self.busy.is_none() && self.policy_ok(),
-            Btn::Update => self.busy.is_none() && self.policy_ok() && self.pending.is_none() && self.status == "available" && self.reinstall.is_none(),
+            Btn::Update => self.busy.is_none() && self.policy_ok() && self.pending.is_none() && (self.ready.is_some() || self.status == "available" && self.reinstall.is_none()),
             Btn::Undo => self.busy.is_none() && (self.pending.is_none() || self.interrupted()),
             Btn::Close => true,
         }
@@ -192,7 +207,9 @@ impl Upd {
             }
             Job::Apply => {
                 self.log.clear();
-                let mut v = vec![sh, "update".into(), "apply".into(), "--porcelain".into()];
+                // a staged update installs as is; otherwise build now
+                let verb = if self.ready.is_some() { "install-ready" } else { "apply" };
+                let mut v = vec![sh, "update".into(), verb.into(), "--porcelain".into()];
                 if password.is_some() {
                     v.push("--password-stdin".into());
                 }
@@ -377,7 +394,17 @@ impl App for Upd {
         kv(f, y, "installed  ", if self.installed.is_empty() { "?" } else { &self.installed });
         y += lh + f.px(2.0);
         kv(f, y, "source     ", if self.source.is_empty() { "(required — press “Set up update source”)" } else { &self.source });
-        y += lh + f.px(4.0);
+        y += lh + f.px(2.0);
+        if let Some(r) = &self.ready {
+            let mut it = r.split_whitespace();
+            let (c, n, v) = (it.next().unwrap_or(""), it.next().unwrap_or("0"), it.next().unwrap_or(""));
+            kv(f, y, "ready      ", &format!("Update ready — install?  {v} @ {}  ({n} file(s), built and tested)", &c[..8.min(c.len())]));
+            y += lh + f.px(2.0);
+        } else if !self.auto.is_empty() {
+            kv(f, y, "automatic  ", &self.auto);
+            y += lh + f.px(2.0);
+        }
+        y += f.px(2.0);
         // the policy every fetch must satisfy (offline rules; access + privacy are checked on Check)
         let mut px = x0;
         for (lv, name, detail) in &self.policy {
@@ -411,7 +438,7 @@ impl App for Upd {
             let label = match b {
                 Btn::Setup => if self.policy_ok() { "Update source…" } else { "Set up update source" },
                 Btn::Check => "Check for updates",
-                Btn::Update => "Update",
+                Btn::Update => if self.ready.is_some() { "Install update" } else { "Update" },
                 Btn::Undo => if self.interrupted() { "Recover interrupted update" } else { "Undo last update" },
                 Btn::Close => "Close",
             };
@@ -521,8 +548,20 @@ fn main() {
         scroll: 0,
         pending: None,
         policy: vec![],
+        ready: None,
+        auto: String::new(),
     };
     u.load_status();
+    // from the "Update ready — install?" notification: the click already happened there
+    let install_now = std::env::args().any(|a| a == "--install-ready") && u.ready.is_some() && u.policy_ok() && u.pending.is_none();
+    if install_now {
+        u.sel = BTNS.iter().position(|&b| b == Btn::Update).unwrap_or(0);
+        if shadow_apps::cmd_out(&["sudo", "-n", "true"]).0 == 0 {
+            u.start(Job::Apply, None);
+        } else {
+            u.pw_for = Some(Job::Apply);
+        }
+    }
     if let Err(e) = run(Box::new(u), Some(rx)) {
         eprintln!("shadow-update: {e}");
         std::process::exit(1);
