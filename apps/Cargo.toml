@@ -50,6 +50,10 @@ name = "shadow-craft"
 path = "src/bin/craft.rs"
 
 [[bin]]
+name = "shadow-glyph"
+path = "src/bin/glyph.rs"
+
+[[bin]]
 name = "shadow-installer"
 path = "src/bin/installer.rs"
 

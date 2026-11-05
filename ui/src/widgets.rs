@@ -249,12 +249,12 @@ fn chrome_with(f: &mut Frame, title: &str, status: &str, op: f32) -> (i32, i32) 
     let lh = f.line_h(pt);
     let bar_h = lh + f.px(10.0);
     let tag = format!("  {title}  ");
-    let tw = f.text_w(&tag, pt, true) + f.px(14.0);
+    let tw = f.title_w(&tag, pt) + f.px(14.0);
     let tp = chamfer_pts(pad + f.px(8.0), pad, tw, bar_h, bar_h / 2);
     let (a, v) = (th.amber, th.violet);
     f.cv.glow(pad + f.px(8.0), pad, tw, bar_h, f.px(3.0) as f32, f.px(6.0), th.amber, if f.focused { 0.20 } else { 0.08 });
     f.cv.poly(&tp, 1.0, &|fx, _| crate::canvas::lerp(a, v, fx));
-    f.text(pad + f.px(8.0), pad + f.px(5.0), &tag, pt, th.bg, true);
+    f.title(pad + f.px(8.0), pad + f.px(5.0), &tag, pt, th.bg, 1.0);
     if !status.is_empty() {
         let max = w - 2 * pad - tw - f.px(32.0);
         let s = f.fit(status, pt * 0.92, false, max);

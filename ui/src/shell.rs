@@ -205,6 +205,24 @@ impl Frame<'_> {
         self.fonts.fit(s, px, bold, max)
     }
     /// Draw `s` with its line box's top-left at (x, top). Returns the advance in device pixels.
+    /// Title / label text in Shadow Glyph, the display face (the regular face if it is missing).
+    /// Returns the width drawn.
+    pub fn title(&mut self, x: i32, top: i32, s: &str, pt: f32, color: crate::Rgb, alpha: f32) -> i32 {
+        let px = self.font_px(pt);
+        let (asc, _) = self.fonts.metrics(px);
+        let mut pen = x as f32;
+        for c in s.chars() {
+            let g = self.fonts.glyph_d(c, px);
+            self.cv.glyph(g, pen.round() as i32, top + asc, color, alpha);
+            pen += g.adv;
+        }
+        (pen - x as f32).round() as i32
+    }
+    pub fn title_w(&mut self, s: &str, pt: f32) -> i32 {
+        let px = self.font_px(pt);
+        self.fonts.width_d(s, px)
+    }
+
     pub fn text(&mut self, x: i32, top: i32, s: &str, pt: f32, color: crate::Rgb, bold: bool) -> i32 {
         self.text_a(x, top, s, pt, color, bold, 1.0)
     }

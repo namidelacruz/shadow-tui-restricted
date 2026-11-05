@@ -284,6 +284,11 @@ fn main() {
     if l.from == "shadow-launch" {
         l.from.clear();
     }
+    // shadow-launch --query TEXT: start with a search typed elsewhere (the hidden hub)
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(q) = args.iter().position(|a| a == "--query").and_then(|i| args.get(i + 1)) {
+        l.input.set(q);
+    }
     l.filter();
     if let Err(e) = run(Box::new(l), None) {
         eprintln!("shadow-launch: {e}");

@@ -33,8 +33,23 @@ impl Face {
 pub struct Fonts {
     regular: Face,
     bold: Option<Face>,
+    /// Shadow Glyph, the display face for titles and labels (9.0); None when not installed
+    display: Option<Face>,
     fallbacks: Vec<Face>,
-    cache: HashMap<(char, u32, bool), Glyph>,
+    /// (char, px bits, style: 0 regular, 1 bold, 2 display)
+    cache: HashMap<(char, u32, u8), Glyph>,
+}
+
+/// where Shadow Glyph is looked for (installed with Shadow; ~/.local/share/fonts while developing)
+fn display_face() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("SHADOW_DISPLAY_FONT").map(PathBuf::from).filter(|p| p.is_file()) {
+        return Some(p);
+    }
+    let fixed = Path::new("/opt/shadow-tui/share/fonts/ShadowGlyph-Regular.ttf");
+    if fixed.is_file() {
+        return Some(fixed.into());
+    }
+    scan("ShadowGlyph-Regular.ttf")
 }
 
 /// Default family; [look] font = "..." in config.toml overrides it.
@@ -110,7 +125,7 @@ impl Fonts {
                 }
             }
         }
-        let mut f = Fonts { regular: Face::new(regular), bold: bold.map(Face::new), fallbacks, cache: HashMap::new() };
+        let mut f = Fonts { regular: Face::new(regular), bold: bold.map(Face::new), display: display_face().map(Face::new), fallbacks, cache: HashMap::new() };
         if f.regular.get().is_none() {
             return Err(format!("cannot read font {}", f.regular.path.display()));
         }
@@ -130,20 +145,39 @@ impl Fonts {
     }
 
     pub fn glyph(&mut self, c: char, px: f32, bold: bool) -> &Glyph {
-        let key = (c, px.to_bits(), bold);
+        self.glyph_s(c, px, bold as u8)
+    }
+    /// a glyph of the display face (Shadow Glyph), falling back to the regular face
+    pub fn glyph_d(&mut self, c: char, px: f32) -> &Glyph {
+        self.glyph_s(c, px, 2)
+    }
+    pub fn has_display(&self) -> bool {
+        self.display.is_some()
+    }
+
+    fn glyph_s(&mut self, c: char, px: f32, style: u8) -> &Glyph {
+        let key = (c, px.to_bits(), style);
         if !self.cache.contains_key(&key) {
             if self.cache.len() > 4096 {
                 self.cache.clear();
             }
-            let g = self.raster(c, px, bold);
+            let g = self.raster(c, px, style);
             self.cache.insert(key, g);
         }
         &self.cache[&key]
     }
 
-    fn raster(&mut self, c: char, px: f32, bold: bool) -> Glyph {
+    /// Width of `s` in the display face.
+    pub fn width_d(&mut self, s: &str, px: f32) -> i32 {
+        s.chars().map(|c| self.glyph_d(c, px).adv).sum::<f32>().round() as i32
+    }
+
+    fn raster(&mut self, c: char, px: f32, style: u8) -> Glyph {
+        let bold = style == 1;
         let primary_has = |f: &mut Face| f.get().is_some_and(|f| f.glyph_id(c).0 != 0);
-        let face: &mut Face = if bold && self.bold.as_mut().is_some_and(primary_has) {
+        let face: &mut Face = if style == 2 && self.display.as_mut().is_some_and(primary_has) {
+            self.display.as_mut().unwrap()
+        } else if bold && self.bold.as_mut().is_some_and(primary_has) {
             self.bold.as_mut().unwrap()
         } else if primary_has(&mut self.regular) || c == ' ' {
             &mut self.regular
