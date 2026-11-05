@@ -377,8 +377,8 @@ pub fn run_action(state: &mut State, a: &str) {
                     "widgets" | "quick" => spawn_raw("shadow-glyph summon apps"),
                     _ => spawn_raw("shadow-glyph summon"),
                 }
-            } else if ["start", "widgets", "quick", "toggle", "notifications"].contains(&role) {
-                spawn_raw(&format!("shadow-panel toggle {role}"));
+            } else if ["start", "widgets", "quick", "toggle"].contains(&role) {
+                tell_panel(&format!("toggle {role}"));
             }
         }
         // Mod+Shift+Return: the focused app takes the main tile
@@ -651,7 +651,13 @@ pub fn pointer_button(state: &mut State, button: u32, bs: ButtonState, time: u32
     let serial = SERIAL_COUNTER.next_serial();
     let ptr = state.seat.get_pointer().unwrap();
     if bs == ButtonState::Pressed && !ptr.is_grabbed() {
-        match under(state, state.pointer_loc) {
+        let u = under(state, state.pointer_loc);
+        // a click outside an open flyout (start, widgets, quick settings) closes it
+        let on_flyout = matches!(&u, Under::Surface(_, _, Some(l)) if l.namespace().starts_with("shadow-flyout"));
+        if !on_flyout && flyout_open(state) {
+            tell_panel("hide");
+        }
+        match u {
             Under::Tutorial(b) => {
                 match b {
                     "skip" => if let Some(t) = state.tutorial.as_mut() { t.skip() },
@@ -702,6 +708,21 @@ pub fn switch_workspace(state: &mut State, si: usize, to: usize) {
     state.anim = (state.cfg.layout.anim_ms > 0).then(|| crate::state::Anim::Move { start: Instant::now(), dur: Duration::from_millis(ms), from: start });
     state.relayout();
     state.on_focus_changed();
+}
+
+/// is one of the shell's flyouts mapped on any screen?
+fn flyout_open(state: &State) -> bool {
+    state.desk.screens.iter().any(|s| layer_map_for_output(&s.out).layers().any(|l| l.namespace().starts_with("shadow-flyout")))
+}
+
+/// one line to shadow-panel's socket (never blocks the compositor)
+pub fn tell_panel(line: &str) {
+    let p = std::path::PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into())).join("shadow-panel.sock");
+    if let Ok(mut s) = std::os::unix::net::UnixStream::connect(p) {
+        use std::io::Write;
+        let _ = s.set_nonblocking(true);
+        let _ = s.write_all(format!("{line}\n").as_bytes());
+    }
 }
 
 /// a click on a title bar: focus, or one of the buttons; a double click on the bar maximises

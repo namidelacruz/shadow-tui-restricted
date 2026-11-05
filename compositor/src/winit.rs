@@ -50,7 +50,8 @@ pub fn init(event_loop: &mut EventLoop<'static, State>, state: &mut State) -> Re
     for (i, sz) in sizes.iter().enumerate() {
         // split mode: the first part plays the laptop panel
         let name = if n == 1 { "winit".to_string() } else if i == 0 { "eDP-winit".into() } else { format!("winit-{}", i + 1) };
-        let output = Output::new(name, PhysicalProperties { size: (0, 0).into(), subpixel: Subpixel::Unknown, make: "Shadow".into(), model: "Nested".into() });
+        // the model carries the name, as on real outputs (the shell's panels match monitors by it)
+        let output = Output::new(name.clone(), PhysicalProperties { size: (0, 0).into(), subpixel: Subpixel::Unknown, make: "Shadow".into(), model: name });
         let _ = output.create_global::<State>(&state.dh);
         let mode = Mode { size: *sz, refresh: 60_000 };
         output.change_current_state(Some(mode), Some(Transform::Flipped180), Some(Scale::Fractional(scale)), Some((0, 0).into()));

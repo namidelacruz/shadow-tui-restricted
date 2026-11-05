@@ -1,5 +1,5 @@
 //! Shared pieces of the session services.
-#[path = "../../bar/src/sys.rs"]
+#[path = "sys.rs"]
 pub mod sys;
 pub mod luahost;
 pub mod privilege;

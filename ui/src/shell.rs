@@ -427,7 +427,16 @@ pub fn run(app: Box<dyn App>, messages: Option<Channel<String>>) -> Result<(), S
     while !sh.exit {
         event_loop.dispatch(None, &mut sh).map_err(|e| e.to_string())?;
         sh.render_all(&qh);
-        let _ = conn.flush();
+        // the compositor went away (the session ended or it crashed): stop, instead of waking
+        // up forever on a dead connection
+        if let Err(e) = conn.flush() {
+            if !matches!(&e, smithay_client_toolkit::reexports::client::backend::WaylandError::Io(io) if io.kind() == std::io::ErrorKind::WouldBlock) {
+                return Err(format!("the compositor connection closed: {e}"));
+            }
+        }
+        if conn.protocol_error().is_some() {
+            return Err("the compositor ended the connection".into());
+        }
     }
     if let Some(l) = sh.lock.take() {
         if sh.unlocking {

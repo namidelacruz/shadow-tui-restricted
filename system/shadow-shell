@@ -1,0 +1,29 @@
+#!/bin/sh
+# shadow-shell — starts the desktop shell around the apps (by shadow-compositor's [autostart]).
+#
+# [shell] mode = "web" (10.0 default): shadow-panel — the taskbar on every screen, the start menu,
+# widgets and quick settings, as local pages in frameless WebKitGTK windows. If it can't run
+# (WebKitGTK or gtk-layer-shell missing, or it keeps failing), the 9.x glyph columns
+# (shadow-glyph) take over, so there is always a way to reach the apps.
+# [shell] mode = "glyph": the glyph columns only.
+STATE=${SHADOW_STATE:-${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state}
+LOG=${XDG_STATE_HOME:-$HOME/.local/state}/shadow-tui/shell.log
+mkdir -p "$(dirname "$LOG")"
+MODE=$(sed -n '/^\[shell\]/,/^\[/{s/^mode *= *"\{0,1\}\([a-z]*\)"\{0,1\}.*/\1/p}' "$STATE/config.toml" 2>/dev/null | head -n1)
+[ -n "$MODE" ] || MODE=web
+glyph() { echo "$(date -Is) shell: the glyph columns" >>"$LOG"; exec shadow-glyph; }
+[ "$MODE" = glyph ] && glyph
+command -v shadow-panel >/dev/null 2>&1 || glyph
+# restart the panel if it crashes; three quick failures in a row: fall back
+fails=0
+while :; do
+    t0=$(date +%s)
+    shadow-panel >>"$LOG" 2>&1
+    rc=$?
+    [ "$rc" -eq 0 ] && exit 0
+    if [ $(( $(date +%s) - t0 )) -lt 20 ]; then fails=$((fails + 1)); else fails=0; fi
+    echo "$(date -Is) shadow-panel exited $rc (quick failure $fails/3)" >>"$LOG"
+    [ "$fails" -ge 3 ] && glyph
+    [ "$rc" -eq 3 ] && glyph
+    sleep 1
+done

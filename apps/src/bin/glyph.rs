@@ -12,7 +12,7 @@
 //! settings), the settings web app's pages, and the session (lock, log out, suspend, restart,
 //! shut down). Opening a settings page from a column sends its row to the compositor first
 //! (`origin`), so the window unfolds out of the row into full size.
-#[path = "../../../bar/src/sys.rs"]
+#[path = "../../../desktop/src/sys.rs"]
 #[allow(dead_code)]
 mod hud;
 use shadow_apps::cfg::{get_in, set_in};

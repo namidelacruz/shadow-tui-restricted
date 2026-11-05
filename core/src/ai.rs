@@ -210,7 +210,7 @@ pub fn files_for(issue: &str, repo: &Path) -> Vec<(String, Option<usize>)> {
             let mut parts = loc.split(':');
             let rel = parts.next().unwrap_or("");
             let line = parts.next().and_then(|x| x.parse().ok());
-            for crate_dir in ["ui", "bar", "apps", "desktop", "niri", "greet", "term", "powerd", "core", "lua", "sec"] {
+            for crate_dir in ["ui", "panel", "compositor", "apps", "desktop", "niri", "greet", "term", "powerd", "core", "lua", "sec"] {
                 if repo.join(crate_dir).join(rel).is_file() {
                     out.push((format!("{crate_dir}/{rel}"), line));
                 }
@@ -289,7 +289,7 @@ pub fn quick_tests(work: &Path, touched: &[String]) -> (bool, String) {
             ok = false;
         }
     };
-    for (c, pkg) in [("ui", "shadow-ui"), ("bar", "shadow-bar"), ("apps", "shadow-apps"), ("desktop", "shadow-desktop"), ("niri", "shadow-niri"), ("greet", "shadow-greet"), ("term", "shadow-term"), ("powerd", "shadow-powerd"), ("core", "shadow"), ("lua", "shadow-lua"), ("sec", "shadow-sec")] {
+    for (c, pkg) in [("ui", "shadow-ui"), ("panel", "shadow-panel"), ("compositor", "shadow-compositor"), ("apps", "shadow-apps"), ("desktop", "shadow-desktop"), ("niri", "shadow-niri"), ("greet", "shadow-greet"), ("term", "shadow-term"), ("powerd", "shadow-powerd"), ("core", "shadow"), ("lua", "shadow-lua"), ("sec", "shadow-sec")] {
         if touched.iter().any(|f| f.starts_with(&format!("{c}/"))) {
             run(&format!("{c} tests"), &["cargo", "test", "--offline", "--release", "-q", "-p", pkg], work);
         }

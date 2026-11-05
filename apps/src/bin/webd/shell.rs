@@ -67,11 +67,13 @@ pub fn apps() -> serde_json::Value {
         .into_iter()
         .filter(|e| !e.name.is_empty())
         .map(|e| {
-            let g = shadow_ui::glyphs::for_app(&format!("{} {}", e.id, e.name));
+            // the launcher's ids carry an "app:" tag; the shell uses the desktop-file name
+            let id = e.id.trim_start_matches("app:").to_string();
+            let g = shadow_ui::glyphs::for_app(&format!("{} {}", id, e.name));
             serde_json::json!({
-                "id": e.id, "name": e.name, "detail": e.detail, "cats": e.cats, "keywords": e.keywords,
+                "id": id, "name": e.name, "detail": e.detail, "cats": e.cats, "keywords": e.keywords,
                 "glyph": format!("{g:?}").to_ascii_lowercase(), "jp": shadow_ui::glyphs::jp(g), "app_ids": e.app_ids,
-                "pinned": pins.iter().position(|p| *p == e.id),
+                "pinned": pins.iter().position(|p| *p == id),
             })
         })
         .collect();
@@ -118,7 +120,7 @@ pub fn launch(j: &serde_json::Value) -> Result<serde_json::Value, String> {
     if j["rect"].is_array() {
         let _ = act(&serde_json::json!({ "do": "origin", "rect": j["rect"] }));
     }
-    let e = shadow_apps::desktop::load_apps().into_iter().find(|e| e.id == id).ok_or("that app is not installed")?;
+    let e = shadow_apps::desktop::load_apps().into_iter().find(|e| e.id.trim_start_matches("app:") == id).ok_or("that app is not installed")?;
     let from = shadow_apps::focused_app();
     shadow_apps::desktop::record_launch(&e.id, &from);
     if e.terminal {

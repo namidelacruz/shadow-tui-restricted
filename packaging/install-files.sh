@@ -18,11 +18,12 @@ if [ "$part" = sec ]; then
 fi
 
 install -d "$o/bin" "$o/lib" "$o/share" "$dest/usr/bin"
-for b in shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-glyph shadow-webd shadow-settings shadow-prefs shadow-craft shadow-compositor shadowctl shadow-greet \
+for b in shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-glyph shadow-webd shadow-settings shadow-panel shadow-prefs shadow-craft shadow-compositor shadowctl shadow-greet \
          shadow-sessiond shadow-displayd shadow-term shadow-powerd shadow; do
   inst -m755 "$target/release/$b" "$o/bin/$b"
 done
 inst -m755 "$src/system/shadow-session" "$o/bin/shadow-session"
+inst -m755 "$src/system/shadow-shell"   "$o/bin/shadow-shell"
 ln -sf shadow-powerd "$o/bin/shadow-audiod"
 for b in shadow-sync shadow-healer shadow-netd shadownet; do ln -sf shadow "$o/bin/$b"; done
 for b in "$o"/bin/*; do ln -sf "/opt/shadow-tui/bin/$(basename "$b")" "$dest/usr/bin/$(basename "$b")"; done

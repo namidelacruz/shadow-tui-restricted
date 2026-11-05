@@ -9,7 +9,7 @@
 //!   Another user's process: you're offered to authorise it — polkit asks for the administrator
 //!   password (needs the session's polkit agent, which shadow-sessiond starts).
 //! Everything is read from /proc and /sys once a second; nothing is sent anywhere.
-#[path = "../../../bar/src/sys.rs"]
+#[path = "../../../desktop/src/sys.rs"]
 #[allow(dead_code)]
 mod hud;
 

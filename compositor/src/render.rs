@@ -232,7 +232,12 @@ impl State {
         let ptr = self.pointer_loc;
         // front to back: fullscreen, maximised, focused, then the tiles
         let order = self.stacking();
-        let opened: Vec<(u64, R)> = order.iter().filter_map(|id| vis.iter().find(|v| v.0 == *id && v.3).map(|v| (v.0, v.1))).collect();
+        let mut opened: Vec<(u64, R)> = order.iter().filter_map(|id| vis.iter().find(|v| v.0 == *id && v.3).map(|v| (v.0, v.1))).collect();
+        // a maximised or fullscreen window hides the tiles under it (translucent apps would
+        // show them through); while windows move, everything is drawn
+        if let Some(top) = full.or(self.maximized()).filter(|_| !animating && self.folds.is_empty()) {
+            opened.retain(|(id, _)| *id == top);
+        }
         let titles = self.cfg.shell.titlebars;
         for (id, rect) in &opened {
             let Some(w) = self.win(*id) else { continue };

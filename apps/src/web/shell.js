@@ -147,10 +147,12 @@ function taskbar() {
     const kids = [];
     kids.push(el("button", { class: "tbtn start", on: { click: () => panel({ do: "toggle", role: "start" }) } }, glyph("launch")));
     if (s) {
+      // this screen's workspaces (whichever screen has the keyboard)
+      const go = d => post("/api/shell", { do: "workspace", screen: s.index, n: Math.min(9, Math.max(1, s.workspace + d)) });
       kids.push(el("button", { class: "tbtn ws", on: {
-        click: () => post("/api/shell", { do: "action", action: "workspace-next" }),
-        contextmenu: e => { e.preventDefault(); post("/api/shell", { do: "action", action: "workspace-prev" }); },
-        wheel: e => post("/api/shell", { do: "action", action: e.deltaY > 0 ? "workspace-next" : "workspace-prev" }),
+        click: () => go(1),
+        contextmenu: e => { e.preventDefault(); go(-1); },
+        wheel: e => go(e.deltaY > 0 ? 1 : -1),
       } }, el("span", { class: "jp", text: KANJI[s.workspace] || "" }), el("b", { text: String(s.workspace) })));
     }
     // pinned apps first, then whatever else runs on this screen (any workspace), grouped by app

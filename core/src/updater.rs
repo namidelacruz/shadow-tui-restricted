@@ -617,7 +617,8 @@ fn component(path: &str) -> &'static str {
     match top {
         "ui" => "every 2D app (shared toolkit)",
         "niri" => "compositor IPC client (apps, session services)",
-        "bar" => "shadow-bar",
+        "panel" => "shadow-panel (taskbar, start, widgets, quick settings)",
+        "compositor" => "shadow-compositor (the desktop itself)",
         "apps" => "shadow-glyph / -webd / -settings / -launch / -net / -files / -lock / -update",
         "desktop" => "shadow-sessiond / shadow-displayd",
         "greet" => "shadow-greet (login screen)",
@@ -1022,7 +1023,8 @@ pub fn prepare(p: &Paths, porcelain: bool, low: bool) -> Result<Option<Prepared>
         .filter_map(|f| match f.split('/').next().unwrap_or("") {
             "ui" => Some("shadow-ui"),
             "niri" => Some("shadow-niri"),
-            "bar" => Some("shadow-bar"),
+            "panel" => Some("shadow-panel"),
+            "compositor" => Some("shadow-compositor"),
             "apps" => Some("shadow-apps"),
             "desktop" => Some("shadow-desktop"),
             "greet" => Some("shadow-greet"),
@@ -1172,7 +1174,7 @@ pub fn install_prepared(porcelain: bool, password: Option<String>, pr: &Prepared
         out(porcelain, "log", "the 8.x hub is replaced by the glyph shell");
         switched = true;
     }
-    for prog in ["shadow-bar", "shadow-glyph", "shadow-webd", "shadow-sessiond", "shadow-displayd"] {
+    for prog in ["shadow-panel", "shadow-glyph", "shadow-webd", "shadow-sessiond", "shadow-displayd"] {
         let f = format!("/opt/shadow-tui/bin/{prog}");
         if (prog == "shadow-glyph" || prog == "shadow-webd") && switched {
             continue;
@@ -1957,7 +1959,7 @@ mod file_update_tests {
 
     #[test]
     fn components_and_staging_guard() {
-        assert_eq!(component("bar/src/main.rs"), "shadow-bar");
+        assert_eq!(component("panel/src/main.rs"), "shadow-panel (taskbar, start, widgets, quick settings)");
         assert!(component("PKGBUILD").contains("nothing installed"));
         // refused either way: not root (or) not a staging tree
         assert_eq!(

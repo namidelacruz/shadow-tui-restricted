@@ -50,7 +50,7 @@ fn actions() -> Vec<Entry> {
         action("prefs", "Default apps", "shadow-prefs · file manager, terminal, background", "shadow-prefs"),
         action("crash", "Crash log", "what crashed, what holds changes back · save a report", "shadow-prefs crash"),
         action("hub", "Hub", "Mod+Space · the hidden hub: apps, settings, fix, lock", "shadow-glyph summon"),
-        action("bar", "Show / hide side bar", "Mod+Shift+B · optional next to the hub", "sh -c 'pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar'"),
+        action("bar", "Show / hide taskbar", "Mod+Shift+B", "shadowctl action shell toggle"),
         action("overview", "Workspaces", "next workspace", "shadowctl action workspace-next"),
         action("power", "Power + learning", "shadow-powerd status and schedule", &hold("shadow-powerd status; echo; shadow-powerd learn")),
         action("sync", "Sync state to GitHub", "shadow-sync push", &hold("shadow-sync push")),

@@ -103,7 +103,7 @@ impl Hub {
                     Ok(())
                 }
                 "hud-toggle" => {
-                    let _ = std::process::Command::new("pkill").args(["-USR1", "-x", "shadow-bar"]).status();
+                    let _ = std::process::Command::new("shadowctl").args(["action", "shell", "toggle"]).status();
                     Ok(())
                 }
                 _ => Ok(()),
