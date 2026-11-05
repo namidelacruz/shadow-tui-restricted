@@ -228,17 +228,28 @@ void main() {
         // fine fibre beside each trail
         c += u_amber * 0.05 * lineaa(abs(dd - 7.0), 0.7) * rev;
     }
-    // the hidden hub's star: twelve rays, dashed rings and a soft core
+    // the hidden hub: a Vitruvian figure — a circle and a square sharing their base, the
+    // square graduated in eighths like a canon of proportions, eight faint rays, a soft core
     if (u_starr > 0.0) {
         vec2 v = p - u_star; float r = length(v);
+        float R = u_starr;
+        float circ = lineaa(abs(r - R), 1.0);
+        float S = R * 1.64;
+        vec2 sq = vec2(u_star.x, u_star.y + R - S * 0.5);   // square centre: bases aligned
+        vec2 qv = abs(p - sq) - vec2(S * 0.5);
+        float sd = abs(max(qv.x, qv.y));
+        float square = lineaa(sd, 1.0) * step(max(qv.x, qv.y), 1.5);
+        // graduation ticks along the square's sides, inward
+        vec2 lp = (p - (sq - vec2(S * 0.5))) / S * 8.0;
+        float tx = lineaa(abs(fract(lp.x + 0.5) - 0.5) * S / 8.0, 0.9) * step(abs(qv.y), 9.0) * step(qv.x, 0.0);
+        float ty = lineaa(abs(fract(lp.y + 0.5) - 0.5) * S / 8.0, 0.9) * step(abs(qv.x), 9.0) * step(qv.y, 0.0);
         float ang = atan(v.y, v.x);
-        float k = 12.0;
+        float k = 8.0;
         float ad = abs(fract(ang / 6.28318 * k + 0.5) - 0.5) * 6.28318 / k * r;
-        float ray = lineaa(ad, 0.9) * smoothstep(u_starr, u_starr * 0.3, r) * smoothstep(10.0, 46.0, r);
-        float ring1 = lineaa(abs(r - u_starr * 0.42), 0.8) * step(0.5, fract(ang / 6.28318 * 48.0));
-        float ring2 = lineaa(abs(r - u_starr * 0.78), 0.8) * step(0.7, fract(ang / 6.28318 * 96.0));
-        c += u_amber * (0.10 * ray + 0.09 * ring1 + 0.06 * ring2) * rev;
-        c += u_hi * 0.30 * exp(-r / (u_starr * 0.035)) * rev;
+        float ray = lineaa(ad, 0.8) * smoothstep(R, R * 0.2, r) * smoothstep(14.0, 60.0, r);
+        float inner = lineaa(abs(r - R * 0.5), 0.8) * step(0.55, fract(ang / 6.28318 * 64.0));
+        c += u_amber * (0.16 * circ + 0.14 * square + 0.10 * (tx + ty) + 0.06 * ray + 0.07 * inner) * rev;
+        c += u_hi * 0.28 * exp(-r / (R * 0.03)) * rev;
     }
     // vignette
     c *= mix(1.0, 0.62, smoothstep(0.45, 1.15, length((v_coords - 0.5) * vec2(1.25, 1.0)) * 1.4));
@@ -319,6 +330,13 @@ void main() {
     vec2 nv = abs(p - vec2(s.x * 0.5, 1.5));
     float notch = u_focus * (1.0 - smoothstep(5.0, 6.5, nv.x + nv.y));
     float glow = u_focus * 0.18 * exp(-d / 10.0);
+    // ruler graduations along the top and left edges (every 10 px, longer every 50)
+    float gx = mod(p.x, 10.0); float gy = mod(p.y, 10.0);
+    float longx = mod(p.x, 50.0) < 1.2 ? 7.0 : 3.5;
+    float longy = mod(p.y, 50.0) < 1.2 ? 7.0 : 3.5;
+    float ruler = (step(gx, 1.0) * step(p.y, longx + 2.0) * step(m, p.x) * step(m, s.x - p.x)
+                 + step(gy, 1.0) * step(p.x, longy + 2.0) * step(m, p.y) * step(m, s.y - p.y)) * (0.30 + 0.35 * u_focus);
+    corner += ruler;
     float lvl = 0.38 + 0.42 * u_focus + 0.25 * u_hover;
     vec3 col = u_amber * (edge * lvl + glow) + u_hi * (corner * (0.45 + 0.5 * u_focus) + notch);
     float a = clamp(edge * lvl + corner * 0.9 + notch + glow, 0.0, 1.0);
@@ -330,6 +348,42 @@ void main() {
 }
 "#;
 
+/// The tessellation drawn over a window while it unfolds: the cell grid, a diagonal in every cell
+/// (alternating, so the cells read as triangle pairs), and a circle squared into the rect. The
+/// lines are brightest at the wave front (distance from u_origin ≈ u_front).
+pub const TESS: &str = r#"
+uniform vec3 u_hi;
+uniform vec2 u_cells;
+uniform vec2 u_origin;
+uniform float u_front;
+uniform float u_lines;
+void main() {
+    vec2 p = v_coords * size;
+    vec2 cs = size / u_cells;
+    vec2 g = p / cs;
+    vec2 f = fract(g);
+    vec2 cell = floor(g);
+    // grid lines
+    vec2 dl = min(f, 1.0 - f) * cs;
+    float grid = lineaa(min(dl.x, dl.y), 0.9);
+    // diagonals, alternating per cell
+    float flip = mod(cell.x + cell.y, 2.0);
+    vec2 fd = flip > 0.5 ? vec2(1.0 - f.x, f.y) : f;
+    float diag = lineaa(abs(fd.x - fd.y) * min(cs.x, cs.y) * 0.7071, 0.8);
+    // the circle squared into the window
+    vec2 cc = size * 0.5;
+    float R = min(size.x, size.y) * 0.5 - 2.0;
+    float circ = lineaa(abs(length(p - cc) - R), 1.0);
+    // brightness follows the wave front
+    float d = length(v_coords - u_origin) / 1.4142;
+    float front = exp(-pow((d - u_front) / 0.12, 2.0));
+    float i = (grid * 0.55 + diag * 0.30 + circ * 0.45) * (0.35 + 0.65 * front) * u_lines;
+    vec3 col = mix(u_amber, u_hi, front);
+    float a = clamp(i, 0.0, 1.0) * alpha;
+    gl_FragColor = vec4(col * a, a);
+}
+"#;
+
 pub struct Shaders {
     pub backdrop: GlesPixelProgram,
     pub plate: GlesPixelProgram,
@@ -338,6 +392,7 @@ pub struct Shaders {
     pub background: GlesPixelProgram,
     pub glint: GlesPixelProgram,
     pub frame: GlesPixelProgram,
+    pub tess: GlesPixelProgram,
 }
 
 /// The trail lines on the CPU, the same constants as the shaders: (c, a, f, p, b, g, q)
@@ -373,6 +428,7 @@ pub fn compile(r: &mut GlesRenderer) -> Result<Shaders, GlesError> {
         bar: r.compile_custom_pixel_shader(src(BAR), &with(&[("u_top", UniformType::_1f)]))?,
         background: r.compile_custom_pixel_shader(src(BACKGROUND), &with(&[("u_hi", UniformType::_3f), ("u_seed", UniformType::_1f), ("u_star", UniformType::_2f), ("u_starr", UniformType::_1f), ("u_reveal", UniformType::_1f)]))?,
         glint: r.compile_custom_pixel_shader(src(GLINT), &with(&[("u_hi", UniformType::_3f), ("u_trail", UniformType::_1f), ("u_head", UniformType::_1f), ("u_tail", UniformType::_1f), ("u_screen", UniformType::_4f)]))?,
+        tess: r.compile_custom_pixel_shader(src(TESS), &with(&[("u_hi", UniformType::_3f), ("u_cells", UniformType::_2f), ("u_origin", UniformType::_2f), ("u_front", UniformType::_1f), ("u_lines", UniformType::_1f)]))?,
         frame: r.compile_custom_pixel_shader(src(FRAME), &with(&[("u_hi", UniformType::_3f), ("u_focus", UniformType::_1f), ("u_fill", UniformType::_1f), ("u_hover", UniformType::_1f)]))?,
     })
 }

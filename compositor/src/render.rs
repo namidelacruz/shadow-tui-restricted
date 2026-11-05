@@ -13,7 +13,7 @@ use smithay::{
     backend::renderer::{
         element::{
             memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
-            utils::RescaleRenderElement,
+            utils::{CropRenderElement, RescaleRenderElement},
             solid::SolidColorRenderElement,
             surface::WaylandSurfaceRenderElement,
             AsRenderElements, Id, Kind,
@@ -34,6 +34,8 @@ render_elements! {
     Shader=PixelShaderElement,
     Solid=SolidColorRenderElement,
     Mem=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
+    Tile=RescaleRenderElement<CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    Thumb=RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 
 struct Slot {
@@ -143,8 +145,8 @@ impl State {
     pub fn elements(&mut self, r: &mut GlesRenderer) -> Vec<El> {
         self.ensure_shaders(r);
         let mut out: Vec<El> = vec![];
-        let Some(sh) = self.render.shaders.as_ref().map(|s| (s.backdrop.clone(), s.plate.clone(), s.node.clone(), s.bar.clone(), s.background.clone(), s.glint.clone(), s.frame.clone())) else { return out };
-        let (p_back, p_plate, _p_node, p_bar, p_bg, p_glint, p_frame) = sh;
+        let Some(sh) = self.render.shaders.as_ref().map(|s| (s.backdrop.clone(), s.plate.clone(), s.node.clone(), s.bar.clone(), s.background.clone(), s.glint.clone(), s.frame.clone(), s.tess.clone())) else { return out };
+        let (p_back, p_plate, _p_node, p_bar, p_bg, p_glint, p_frame, p_tess) = sh;
         let scale = self.scale();
         let sc = Scale::from(scale);
         let (ow, oh) = self.output_size();
@@ -245,6 +247,45 @@ impl State {
         for (id, rect) in &opened {
             let Some(w) = self.win(*id) else { continue };
             let is_full = Some(*id) == full;
+            // kinetic unfolding: the window as a tessellation of cells swinging open / shut
+            if let Some(fold) = self.folds.get(id).cloned() {
+                let at = fold.at.unwrap_or(*rect);
+                let t = fold.t();
+                let opening = fold.kind == crate::unfold::Kind::Open;
+                let loc = (Point::<f64, Logical>::from((at.x, at.y)) - w.window.geometry().loc.to_f64()).to_physical(sc).to_i32_round();
+                for c in crate::unfold::cells(at, fold.origin, t, opening) {
+                    if c.p < 0.02 {
+                        continue;
+                    }
+                    let crop = Rectangle::<i32, Physical>::new(((c.r.x * scale).round() as i32, (c.r.y * scale).round() as i32).into(), ((c.r.w * scale).round() as i32, (c.r.h * scale).round() as i32).into());
+                    use crate::unfold::Hinge::*;
+                    let (hx, hy, sx, sy) = match c.hinge {
+                        Left => (c.r.x, c.r.y, c.p, 1.0),
+                        Right => (c.r.x + c.r.w, c.r.y, c.p, 1.0),
+                        Top => (c.r.x, c.r.y, 1.0, c.p),
+                        Bottom => (c.r.x, c.r.y + c.r.h, 1.0, c.p),
+                    };
+                    let hinge = Point::<i32, Physical>::from(((hx * scale).round() as i32, (hy * scale).round() as i32));
+                    let a = (c.p.powf(0.6) as f32) * fade;
+                    let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = w.window.render_elements(r, loc, sc, a);
+                    for e in els {
+                        if let Some(cr) = CropRenderElement::from_element(e, sc, crop) {
+                            out.push(El::Tile(RescaleRenderElement::from_element(cr, hinge, Scale { x: sx, y: sy })));
+                        }
+                    }
+                }
+                // the construction lines over it
+                let (cols, rows) = crate::unfold::grid_dims(at);
+                let o = (((fold.origin.0 - at.x) / at.w).clamp(-0.5, 1.5) as f32, ((fold.origin.1 - at.y) / at.h).clamp(-0.5, 1.5) as f32);
+                let mut u = self.colors();
+                u.extend([("u_hi", hi.to_vec()), ("u_cells", vec![cols as f32, rows as f32]), ("u_origin", vec![o.0, o.1]), ("u_front", vec![if opening { t as f32 } else { 1.0 - t as f32 } * 1.2]), ("u_lines", vec![crate::unfold::lines_alpha(t) as f32])]);
+                out.push(El::Shader(self.render.shader(&format!("tess-{id}"), &p_tess, lrect(at), fade, u)));
+                let mut u = self.colors();
+                u.extend([("u_hi", hi.to_vec()), ("u_focus", vec![if Some(*id) == focus { 1.0 } else { 0.0 }]), ("u_fill", vec![0.0]), ("u_hover", vec![0.0])]);
+                let fa = if opening { t as f32 } else { 1.0 - t as f32 };
+                out.push(El::Shader(self.render.shader(&format!("frame-{id}"), &p_frame, lrect(at.inset(-3.0)), fa * fade, u)));
+                continue;
+            }
             let loc = (Point::<f64, Logical>::from((rect.x, rect.y)) - w.window.geometry().loc.to_f64()).to_physical(sc).to_i32_round();
             let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = w.window.render_elements(r, loc, sc, fade);
             out.extend(els.into_iter().map(El::Surface));
@@ -297,10 +338,10 @@ impl State {
                     let k = ((rect.w - 2.0 * pad) / geo.size.w as f64).min((rect.h - 2.0 * pad) / geo.size.h as f64).min(1.0);
                     let (tw, th) = (geo.size.w as f64 * k, geo.size.h as f64 * k);
                     let tl = Point::<f64, Logical>::from((rect.x + (rect.w - tw) / 2.0 - geo.loc.x as f64 * k, rect.y + (rect.h - th) / 2.0 - geo.loc.y as f64 * k));
-                    let tsc = Scale::from(scale * k);
+                    // drawn at full size at the tile's corner, then shrunk around that corner
                     let at = Point::<i32, Physical>::from(((tl.x * scale).round() as i32, (tl.y * scale).round() as i32));
-                    let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = w.window.render_elements(r, at, tsc, 0.55 * fade);
-                    out.extend(els.into_iter().map(El::Surface));
+                    let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = w.window.render_elements(r, at, sc, 0.55 * fade);
+                    out.extend(els.into_iter().map(|e| El::Thumb(RescaleRenderElement::from_element(e, at, Scale::from(k)))));
                 }
             }
             let mut u = self.colors();
@@ -523,7 +564,8 @@ impl State {
             }
             None => false,
         };
-        self.anim.is_some() || self.boot.is_some() || self.logout.is_some() || tut || self.ui.as_ref().map(|u| u.moving()).unwrap_or(false)
+        let folding = self.step_folds();
+        self.anim.is_some() || self.boot.is_some() || self.logout.is_some() || folding || tut || self.ui.as_ref().map(|u| u.moving()).unwrap_or(false)
     }
 
     /// frame callbacks: open apps and layer surfaces (minimised apps stay paused)

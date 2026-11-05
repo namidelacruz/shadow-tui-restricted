@@ -103,6 +103,16 @@ pub fn command(st: &mut State, line: &str) -> String {
                 "error: test-click X Y".into()
             }
         }
+        // a widget about to open an app: the next window unfolds from this rect's centre
+        "origin" => {
+            let v: Vec<f64> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            if v.len() == 4 {
+                st.pending_origin = Some(((v[0] + v[2] / 2.0, v[1] + v[3] / 2.0), std::time::Instant::now()));
+                "ok".into()
+            } else {
+                "error: origin X Y W H".into()
+            }
+        }
         "refresh" => match rest.parse::<u32>() {
             Ok(hz) => {
                 st.wanted_refresh = Some(hz);

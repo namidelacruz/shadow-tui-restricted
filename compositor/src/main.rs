@@ -20,6 +20,7 @@ mod state;
 mod telemetry;
 mod text;
 mod udev;
+mod unfold;
 mod tutorial;
 mod ui;
 mod winit;
@@ -64,6 +65,7 @@ fn tick(st: &mut State) {
     let snap = hud::snapshot(if n > 0 { 1 } else { 0 }, n, &focused, st.refresh_hz, &extra);
     let changed = st.hud.as_ref().map(|h| h.top_left != snap.top_left || h.top_right != snap.top_right || h.bottom != snap.bottom).unwrap_or(true);
     let ac = snap.power.ac;
+    st.on_ac = ac;
     let bat = snap.power.battery.map(|b| b as i64).unwrap_or(-1);
     st.hud = Some(snap);
     if changed && st.hud_visible {
@@ -247,6 +249,17 @@ fn main() {
         tick(st);
         TimeoutAction::ToDuration(Duration::from_secs(2))
     }).expect("timer");
+    // the light travelling the background lines: ~30 fps on mains, 12 on battery / "low";
+    // nothing while an app is fullscreen or the screen is locked
+    event_loop.handle().insert_source(Timer::from_duration(Duration::from_millis(33)), |_, _, st| {
+        let motion = st.cfg.look.motion.clone();
+        let locked = st.ui.as_ref().map(|u| u.mode == ui::Mode::Lock).unwrap_or(false);
+        if motion != "off" && st.fullscreen().is_none() && !locked {
+            st.dirty = true;
+        }
+        let ms = if motion == "on" && st.on_ac { 33 } else { 83 };
+        TimeoutAction::ToDuration(Duration::from_millis(ms))
+    }).expect("motion timer");
     tracing::info!("shadow-compositor on {socket_name} ({})", if greeter { "greeter" } else { "session" });
 
     event_loop.run(None, &mut state, |st| {

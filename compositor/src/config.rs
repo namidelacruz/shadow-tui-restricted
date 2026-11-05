@@ -20,10 +20,12 @@ pub struct Layout {
     pub gap: u32,
     /// edge of a minimised app's square tile, logical px
     pub tile_px: u32,
+    /// kinetic unfolding of windows opening / closing / minimising, ms (0 = off)
+    pub unfold_ms: u64,
 }
 impl Default for Layout {
     fn default() -> Self {
-        Layout { presets: vec![50, 60, 70], default_preset: 1, height: 84, anim_ms: 160, max_open: 4, gap: 14, tile_px: 128 }
+        Layout { presets: vec![50, 60, 70], default_preset: 1, height: 84, anim_ms: 160, max_open: 4, gap: 14, tile_px: 128, unfold_ms: 560 }
     }
 }
 
@@ -323,6 +325,7 @@ impl Config {
         l.max_open = l.max_open.clamp(1, 9);
         l.gap = l.gap.min(48);
         l.tile_px = l.tile_px.clamp(64, 256);
+        l.unfold_ms = l.unfold_ms.min(2000);
         if !["on", "low", "off"].contains(&self.look.motion.as_str()) {
             self.look.motion = "on".into();
         }

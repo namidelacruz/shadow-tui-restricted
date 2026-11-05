@@ -149,6 +149,10 @@ pub struct State {
     pub logout: Option<Instant>,
     /// on mains power (the background light runs faster)
     pub on_ac: bool,
+    /// windows unfolding / folding right now (unfold.rs)
+    pub folds: HashMap<u64, crate::unfold::Fold>,
+    /// where the next window unfolds from (a widget's centre, sent with `origin` over IPC), and when
+    pub pending_origin: Option<((f64, f64), Instant)>,
     pub suppressed_keys: Vec<u32>,
     pub key_times: Vec<Instant>,
     pub last_input: Instant,
@@ -211,7 +215,7 @@ impl State {
             ui: None, greeter_mode: greeter, boot: (!greeter).then(Instant::now),
             pointer_loc: (0.0, 0.0).into(), pointer_live: false,
             cursor_status: CursorImageStatus::default_named(), cursors: Default::default(), cursor_typing_hidden: false,
-            layer_kb_focus: None, tutorial: None, tut_buttons: vec![], ring_scroll: 0.0, grid_scroll: 0.0, main_preset: 1, logout: None, on_ac: true, suppressed_keys: vec![], key_times: vec![], last_input: Instant::now(),
+            layer_kb_focus: None, tutorial: None, tut_buttons: vec![], ring_scroll: 0.0, grid_scroll: 0.0, main_preset: 1, logout: None, on_ac: true, folds: HashMap::new(), pending_origin: None, suppressed_keys: vec![], key_times: vec![], last_input: Instant::now(),
             text, render: Default::default(), lua: None, dirty: true, mem_high_seen: 0,
             binds: vec![], ui_tx: None, exit_code: 0,
         }
@@ -381,13 +385,27 @@ impl State {
         self.dirty = true;
     }
 
-    /// minimise / restore through the ring, keeping max_open
+    /// minimise: the window folds up toward the grid band, then joins the grid
     pub fn minimize(&mut self, id: u64) {
-        self.transition(|r| { r.minimize(id); });
+        let ms = self.cfg.layout.unfold_ms;
+        if ms == 0 || !self.ring.order.contains(&id) {
+            self.transition(|r| { r.minimize(id); });
+            return;
+        }
+        let at = self.targets().into_iter().find(|t| t.0 == id).map(|t| t.1);
+        let a = self.area();
+        self.folds.insert(id, crate::unfold::Fold::new(crate::unfold::Kind::Minimize, (a.x + a.w / 2.0, a.y + a.h), at, ms * 3 / 4));
+        self.dirty = true;
     }
+    /// restore: the window unfolds out of its grid tile
     pub fn restore(&mut self, id: u64) {
         let max = self.cfg.layout.max_open;
+        let from = self.targets().into_iter().find(|t| t.0 == id && !t.3).map(|t| (t.1.x + t.1.w / 2.0, t.1.y + t.1.h / 2.0));
         self.transition(|r| { r.focus_with(id, max); });
+        if self.cfg.layout.unfold_ms > 0 {
+            let o = from.unwrap_or_else(|| self.take_origin());
+            self.folds.insert(id, crate::unfold::Fold::new(crate::unfold::Kind::Open, o, None, self.cfg.layout.unfold_ms));
+        }
     }
 
     /// The pointer works everywhere except on the lock / greeter screen. In input.pointer = "apps"
@@ -430,10 +448,56 @@ impl State {
         })
     }
 
+    /// Mod+Q: the focused app folds up toward the middle, then is asked to close
     pub fn close_center(&mut self) {
-        if let Some(t) = self.ring.center().and_then(|id| self.win(id)).and_then(|w| w.window.toplevel().cloned()) {
-            t.send_close();
+        let Some(id) = self.ring.center() else { return };
+        let ms = self.cfg.layout.unfold_ms;
+        if ms == 0 {
+            if let Some(t) = self.win(id).and_then(|w| w.window.toplevel().cloned()) {
+                t.send_close();
+            }
+            return;
         }
+        let at = self.targets().into_iter().find(|t| t.0 == id).map(|t| t.1);
+        let a = self.area();
+        self.folds.insert(id, crate::unfold::Fold::new(crate::unfold::Kind::Close, (a.x + a.w / 2.0, a.y + a.h / 2.0), at, ms * 3 / 4));
+        self.dirty = true;
+    }
+
+    /// where a new or restored window unfolds from: a widget that asked (origin over IPC, 3 s)
+    /// or the hidden hub in the middle of the app area
+    pub fn take_origin(&mut self) -> (f64, f64) {
+        if let Some((p, t)) = self.pending_origin.take() {
+            if t.elapsed() < Duration::from_secs(3) {
+                return p;
+            }
+        }
+        let a = self.area();
+        (a.x + a.w / 2.0, a.y + a.h / 2.0)
+    }
+
+    /// finish folds that are done: closes and minimises happen now; true while any is running
+    pub fn step_folds(&mut self) -> bool {
+        let done: Vec<(u64, crate::unfold::Kind)> = self.folds.iter().filter(|(_, f)| f.done()).map(|(id, f)| (*id, f.kind)).collect();
+        for (id, kind) in done {
+            self.folds.remove(&id);
+            match kind {
+                crate::unfold::Kind::Close => {
+                    if let Some(t) = self.win(id).and_then(|w| w.window.toplevel().cloned()) {
+                        t.send_close();
+                    }
+                }
+                crate::unfold::Kind::Minimize => {
+                    let anim = self.cfg.layout.anim_ms;
+                    self.cfg.layout.anim_ms = 0;
+                    self.transition(|r| { r.minimize(id); });
+                    self.cfg.layout.anim_ms = anim;
+                }
+                crate::unfold::Kind::Open => {}
+            }
+            self.dirty = true;
+        }
+        !self.folds.is_empty()
     }
 
     pub fn run_lua_actions(&mut self) {
@@ -554,6 +618,10 @@ impl XdgShellHandler for State {
         // a new app takes the main tile; past max_open the oldest open app is minimised
         let max = self.cfg.layout.max_open;
         self.transition(|r| { r.spawn(id, max); });
+        if self.cfg.layout.unfold_ms > 0 {
+            let o = self.take_origin();
+            self.folds.insert(id, crate::unfold::Fold::new(crate::unfold::Kind::Open, o, None, self.cfg.layout.unfold_ms));
+        }
         if let Some(l) = self.lua.as_mut() {
             l.event("spawn", "", "");
         }
@@ -564,6 +632,7 @@ impl XdgShellHandler for State {
             self.space.unmap_elem(&w.window);
         }
         self.wins.retain(|w| w.id != id);
+        self.folds.remove(&id);
         self.render.forget_window(id);
         self.text.forget(&format!("node-{id}-"));
         self.transition(|r| r.remove(id));

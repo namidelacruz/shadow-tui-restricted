@@ -269,10 +269,9 @@ pub fn run_action(state: &mut State, a: &str) {
             }
         }
         "restore" => {
-            let max = state.cfg.layout.max_open;
-            match rest.parse::<u64>() {
-                Ok(id) => state.restore(id),
-                Err(_) => state.transition(|r| { r.restore_last(max); }),
+            let id = rest.parse::<u64>().ok().or(state.ring.min.first().copied());
+            if let Some(id) = id {
+                state.restore(id);
             }
         }
         // Mod+Shift+Return: the focused app takes the main tile
@@ -508,7 +507,7 @@ pub fn pointer_button(state: &mut State, button: u32, bs: ButtonState, time: u32
                 return; // the panel's own click: no client sees it
             }
             Under::Node(id) => {
-                state.transition(|r| { r.focus(id); });
+                state.restore(id);
                 return;
             }
             Under::Surface(s, _, layer) => click_focus(state, &s, layer),
