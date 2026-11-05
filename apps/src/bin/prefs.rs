@@ -392,7 +392,7 @@ fn write_report(rows: &[Row]) -> Result<PathBuf, String> {
     let mut t = String::new();
     t.push_str(&format!("Shadow TUI Restricted crash report — {}\n", cmd_out(&["date", "-Is"]).1.trim()));
     t.push_str("Personal details (user and computer name, Wi-Fi names, MAC / IP / e-mail addresses, passwords and tokens) are replaced by <placeholders>.\nRead it before you send it: it is plain text.\n\n");
-    for (label, args) in [("shadow", vec!["shadow", "--version"]), ("niri", vec!["niri", "--version"]), ("kernel", vec!["uname", "-r"]), ("os", vec!["sh", "-c", ". /etc/os-release && echo \"$PRETTY_NAME\""])] {
+    for (label, args) in [("shadow", vec!["shadow", "--version"]), ("compositor", vec!["shadow-compositor", "--version"]), ("kernel", vec!["uname", "-r"]), ("os", vec!["sh", "-c", ". /etc/os-release && echo \"$PRETTY_NAME\""])] {
         t.push_str(&format!("{label}: {}\n", cmd_out(&args).1.lines().next().unwrap_or("?").trim()));
     }
     t.push_str(&format!("hardware: {}\n", shadow_apps::hw::profile().summary()));
@@ -531,7 +531,7 @@ impl Prefs {
         match r {
             Ok(m) => {
                 // Mod+Return / Mod+E / the background colour live in niri's config
-                let (c, o) = cmd_out(&["shadow", "setup", "niri"]);
+                let (c, o) = cmd_out(&["shadow", "setup", "compositor"]);
                 let extra = if c == 0 { " — applied".to_string() } else { format!(" — saved; niri: {}", o.lines().last().unwrap_or("").trim()) };
                 self.msg = (format!("{m}{extra}"), c != 0);
             }

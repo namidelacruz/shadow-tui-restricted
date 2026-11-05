@@ -1,4 +1,4 @@
-//! The fix center: known problems of desktop apps under niri (and Wayland tiling compositors in
+//! The fix center: known problems of desktop apps on Shadow's compositor (and Wayland tiling compositors in
 //! general), found in what Hyprland/sway/niri users report, with repairs — and tasks for the
 //! everyday "it's stuck" moments. Text console first (`shadow fix …` works on a text console);
 //! the shadow-fix window drives the same commands.
@@ -38,13 +38,13 @@ pub struct Fix {
 
 pub const FIXES: &[Fix] = &[
     Fix { id: "polkit-agent", app: "session", title: "password prompts for privileged actions (polkit agent)", root: true },
-    Fix { id: "xwayland", app: "session", title: "X11 apps (Steam, games, older apps) need xwayland-satellite under niri", root: true },
+    Fix { id: "xwayland", app: "session", title: "X11 apps (Steam, games, older apps) need xwayland-satellite", root: true },
     Fix { id: "portals", app: "session", title: "screen sharing and file pickers (xdg-desktop-portal-gnome + gtk)", root: true },
     Fix { id: "notifications", app: "session", title: "app notifications need a notification daemon", root: true },
     Fix { id: "keyring-pam", app: "session", title: "unlock the login keyring at login (saved app logins, no keyring prompts)", root: true },
     Fix { id: "dark-mode", app: "session", title: "GTK / libadwaita apps follow the dark Shadow theme", root: false },
     Fix { id: "discord-skip-update", app: "discord", title: "Discord: stop the \"update available, download\" loop of distro packages", root: false },
-    Fix { id: "discord-tray", app: "discord", title: "Discord: closing hides it in a tray niri doesn't have — quit on close instead", root: false },
+    Fix { id: "discord-tray", app: "discord", title: "Discord: closing hides it in a tray Shadow doesn't show — quit on close instead", root: false },
     Fix { id: "discord-wayland", app: "discord", title: "Discord: native Wayland (sharp text, PipeWire screen capture)", root: false },
     Fix { id: "code-keyring", app: "code", title: "VS Code: \"OS keyring couldn't be identified\" — use the Secret Service", root: false },
     Fix { id: "chromium-flags", app: "chromium", title: "Chrome / Chromium / Brave / Vivaldi / Edge: Wayland + keyring", root: false },
@@ -276,7 +276,7 @@ fn scale() -> f64 {
 }
 
 fn shadow_niri_scale() -> Option<f64> {
-    let (c, o, _) = sys::run(&["niri", "msg", "--json", "outputs"]);
+    let (c, o, _) = sys::run(&["shadowctl", "niri", "--json", "outputs"]);
     if c != 0 {
         return None;
     }
@@ -296,10 +296,10 @@ pub fn detect(id: &str) -> State {
             if any_file(&agents) { State::Ok("installed (shadow-sessiond starts it)".into()) } else { State::Issue("none installed: actions that need a password fail".into()) }
         }
         "xwayland" => {
-            if !have("niri") {
+            if !have("shadow-compositor") {
                 State::NotHere
             } else if have("xwayland-satellite") {
-                State::Ok("installed (niri starts it when an X11 app opens)".into())
+                State::Ok("installed (the compositor starts it for X11 apps)".into())
             } else {
                 State::Issue("not installed: X11-only apps won't open".into())
             }
@@ -309,7 +309,7 @@ pub fn detect(id: &str) -> State {
             let gtk = any_file(&["/usr/libexec/xdg-desktop-portal-gtk", "/usr/lib/xdg-desktop-portal-gtk"]);
             match (gnome, gtk) {
                 (true, true) => State::Ok("gnome + gtk portals installed".into()),
-                (false, _) => State::Issue("xdg-desktop-portal-gnome missing: no screen sharing under niri".into()),
+                (false, _) => State::Issue("xdg-desktop-portal-gnome missing: no screen sharing".into()),
                 (true, false) => State::Issue("xdg-desktop-portal-gtk missing: some file dialogs won't open".into()),
             }
         }

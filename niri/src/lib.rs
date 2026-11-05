@@ -1,25 +1,30 @@
-//! Talks to niri only through its documented public interfaces: `niri msg --json` (IPC) and the
-//! KDL config file. Nothing here depends on niri's source; field access is tolerant so a newer
-//! niri that adds fields keeps working.
-pub mod config;
+//! The client side of shadow-compositor's control socket (10.0: Shadow's only compositor).
+//!
+//! The crate keeps its old name: the compositor answers in niri's IPC shapes (`niri msg --json`:
+//! outputs, windows, workspaces, actions, the event stream), so every Shadow program that was
+//! written against niri works unchanged. Nothing here runs a `niri` binary any more.
 
 use serde_json::Value;
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
 
-fn niri() -> Command {
-    let mut c = Command::new(std::env::var("SHADOW_NIRI").unwrap_or_else(|_| "niri".into()));
-    c.stdin(Stdio::null());
-    c
-}
-
-/// Which compositor this session runs: niri, or Shadow's own (shadow-compositor). Shadow's own
-/// exports SHADOW_SOCKET and answers the same questions in niri's format (`niri …` on its socket).
+/// The running shadow-compositor's control socket: $SHADOW_SOCKET (exported by the compositor to
+/// everything it starts), else the newest $XDG_RUNTIME_DIR/shadow-compositor.*.sock (for programs
+/// started outside it, e.g. by systemd user units).
 pub fn shadow_compositor() -> Option<std::path::PathBuf> {
-    if std::env::var_os("NIRI_SOCKET").is_some_and(|v| !v.is_empty()) {
-        return None;
+    if let Some(p) = std::env::var_os("SHADOW_SOCKET").filter(|v| !v.is_empty()).map(std::path::PathBuf::from) {
+        return p.exists().then_some(p);
     }
-    std::env::var_os("SHADOW_SOCKET").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).filter(|p| p.exists())
+    let dir = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+    let mut v: Vec<_> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| {
+            let n = n.to_string_lossy();
+            n.starts_with("shadow-compositor.") && n.ends_with(".sock")
+        }))
+        .collect();
+    v.sort();
+    v.pop()
 }
 
 fn compositor_ask(sock: &std::path::Path, line: &str) -> Result<String, String> {
@@ -44,24 +49,16 @@ pub fn compositor_command(line: &str) -> Result<String, String> {
     }
 }
 
-/// The running session answers (niri, or Shadow's own compositor)
+/// The session's compositor answers
 pub fn session_alive() -> bool {
-    match shadow_compositor() {
-        Some(sock) => compositor_ask(&sock, "ping").is_ok(),
-        None => std::env::var_os("NIRI_SOCKET").is_some_and(|p| std::path::Path::new(&p).exists()) && msg(&["version"]).is_ok(),
-    }
+    shadow_compositor().is_some_and(|sock| compositor_ask(&sock, "ping").is_ok())
 }
 
-/// `niri msg <args>`; Ok(stdout) on success.
+/// What `niri msg <args>` would answer, from shadow-compositor; Ok(stdout) on success.
 pub fn msg(args: &[&str]) -> Result<String, String> {
-    if let Some(sock) = shadow_compositor() {
-        return compositor_ask(&sock, &format!("niri {}", args.join(" ")));
-    }
-    let out = niri().arg("msg").args(args).output().map_err(|e| format!("niri: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    match shadow_compositor() {
+        Some(sock) => compositor_ask(&sock, &format!("niri {}", args.join(" "))),
+        None => Err("shadow-compositor is not running".into()),
     }
 }
 
@@ -80,7 +77,7 @@ pub fn action(args: &[&str]) -> Result<(), String> {
 }
 
 pub fn available() -> bool {
-    std::env::var_os("NIRI_SOCKET").is_some() || shadow_compositor().is_some()
+    shadow_compositor().is_some()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -294,32 +291,9 @@ impl Model {
     }
 }
 
-/// `niri msg --json event-stream`, line by line. Reconnects with a short back-off if niri
-/// restarts; `f` returning false stops the stream.
-pub fn event_stream(mut f: impl FnMut(&str) -> bool) {
-    if shadow_compositor().is_some() {
-        return compositor_event_stream(f);
-    }
-    loop {
-        let child: Option<Child> = niri().args(["msg", "--json", "event-stream"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok();
-        if let Some(mut c) = child {
-            if let Some(out) = c.stdout.take() {
-                for line in BufReader::new(out).lines() {
-                    let Ok(line) = line else { break };
-                    if !f(&line) {
-                        let _ = c.kill();
-                        return;
-                    }
-                }
-            }
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        if !f("") {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    }
+/// The event stream in niri's format (`niri msg --json event-stream`); `f` returning false stops it.
+pub fn event_stream(f: impl FnMut(&str) -> bool) {
+    compositor_event_stream(f)
 }
 
 /// Shadow's own compositor has no push stream: ask it twice a second and turn the differences

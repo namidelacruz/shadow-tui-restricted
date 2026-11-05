@@ -1,24 +1,24 @@
 #!/bin/sh
 # Shadow TUI Restricted session (started by greetd through shadow-greet, or from a TTY).
 #
-# niri is the compositor. Its config is generated from ~/.config/shadow-state/config.toml into
-# ~/.config/shadow-state/niri.kdl (so a plain niri setup in ~/.config/niri is never touched), and
-# niri starts the Shadow session services and side bar itself (spawn-at-startup).
+# shadow-compositor (Shadow's own Smithay compositor, 10.0: the only one) reads
+# ~/.config/shadow-state/config.toml itself and starts the Shadow session services and the shell
+# panels ([autostart]).
 #
-# Memory: niri and the Shadow apps run in the user unit shadow.slice (memory.high 13 %,
+# Memory: the compositor and the Shadow apps run in the user unit shadow.slice (memory.high 13 %,
 # memory.max 16 % of RAM); the system daemons have the other 4 % in the system shadow.slice:
 # together <= 20 % (spec §3.4). Programs you start go to app.slice and keep the other 80 %.
-export XDG_CURRENT_DESKTOP=niri XDG_SESSION_DESKTOP=shadow-tui XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=shadow XDG_SESSION_DESKTOP=shadow-tui XDG_SESSION_TYPE=wayland
 export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM="wayland;xcb" SDL_VIDEODRIVER="wayland,x11" ELECTRON_OZONE_PLATFORM_HINT=auto
 # Java (AWT/Swing: JetBrains IDEs, …) draws blank grey windows on non-reparenting compositors
 export _JAVA_AWT_WM_NONREPARENTING=1
 # OpenGL only, no Vulkan, for the whole session. The Arc 140V (Lunar Lake / Xe2) runs on the
-# xe kernel driver with Mesa iris for OpenGL; niri renders with OpenGL ES through EGL.
+# xe kernel driver with Mesa iris for OpenGL; the compositor renders with OpenGL ES through EGL.
 # GTK >= 4.16 and Qt 6 would otherwise pick Vulkan on their own. Override in
 # ~/.config/shadow-state/session.env if you ever want it back.
 export GSK_RENDERER=ngl QSG_RHI_BACKEND=opengl
 [ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ] && export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-# /usr/local/bin: niri and greetd built from source on RHEL 9
+# /usr/local/bin: greetd built from source on RHEL 9
 export PATH="/opt/shadow-tui/bin:/usr/local/bin:$PATH"
 STATE=${SHADOW_STATE:-${XDG_CONFIG_HOME:-$HOME/.config}/shadow-state}
 [ -f "$STATE/session.env" ] && . "$STATE/session.env"
@@ -43,9 +43,10 @@ MSG
 }
 update_gate
 
-# first login: per-user setup; every login: niri config in step with config.toml
+# first login: per-user setup (the compositor reads config.toml itself)
 [ -f "$STATE/config.toml" ] || /opt/shadow-tui/bin/shadow setup --yes >>"$LOG" 2>&1
-/opt/shadow-tui/bin/shadow setup niri >>"$LOG" 2>&1
+# automatic updates: the user timer (or a one-off check without systemd)
+( /opt/shadow-tui/bin/shadow update login-check >>"$LOG" 2>&1 & )
 
 run() {
     if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
@@ -57,19 +58,11 @@ run() {
 }
 update_gate
 
-# which compositor: Shadow's own (default since 9.0: the glyph desktop) or niri: --compositor NAME,
-# or [session] compositor = "shadow" | "niri" in config.toml
-COMP=$(sed -n '/^\[session\]/,/^\[/{s/^compositor *= *"\{0,1\}\([a-z]*\)"\{0,1\}.*/\1/p}' "$STATE/config.toml" 2>/dev/null | head -n1)
-[ "$1" = "--compositor" ] && [ -n "$2" ] && COMP=$2
-[ -n "$COMP" ] || COMP=shadow
-# the own compositor left out of this build (RPM --without compositor): niri
-if [ "$COMP" = shadow ] && ! command -v shadow-compositor >/dev/null 2>&1; then
-    echo "$(date -Is) shadow-compositor is not installed — using niri" >>"$LOG"
-    COMP=niri
-fi
-if [ "$COMP" = niri ] && ! command -v niri >/dev/null 2>&1 && command -v shadow-compositor >/dev/null 2>&1; then
-    echo "$(date -Is) niri is not installed — using Shadow's own compositor" >>"$LOG"
-    COMP=shadow
+if ! command -v shadow-compositor >/dev/null 2>&1; then
+    echo "$(date -Is) shadow-compositor is not installed — reinstall Shadow TUI (./install.sh)" >>"$LOG"
+    echo "Shadow TUI: shadow-compositor is missing. Reinstall with ./install.sh (or your package manager)." >&2
+    [ -t 2 ] && sleep 3
+    exit 1
 fi
 
 # WSL (Windows Subsystem for Linux): no DRM, no greetd, no laptop hardware. The compositor runs as a
@@ -88,21 +81,4 @@ if grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
     fi
 fi
 
-if [ "$COMP" = shadow ]; then
-    run shadow-compositor 2>>"$LOG"
-    exit $?
-fi
-run niri --session -c "$STATE/niri.kdl" 2>>"$LOG"
-rc=$?
-# failsafe: a config niri refuses can't keep you out — niri falls back to its built-in defaults
-# for an invalid file, and if it still died at once, start it once more with no Shadow config;
-# and if niri itself won't run at all, Shadow's own compositor gets a go
-if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ]; then
-    echo "$(date -Is) niri exited $rc — starting once more without the Shadow config" >>"$LOG"
-    run niri --session 2>>"$LOG"
-    rc=$?
-    if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ] && command -v shadow-compositor >/dev/null 2>&1; then
-        echo "$(date -Is) niri exited $rc again — starting Shadow's own compositor instead" >>"$LOG"
-        run shadow-compositor 2>>"$LOG"
-    fi
-fi
+run shadow-compositor 2>>"$LOG"

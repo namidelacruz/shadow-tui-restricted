@@ -39,6 +39,7 @@ fn handle_client(st: &mut State, s: UnixStream) {
 }
 
 pub fn command(st: &mut State, line: &str) -> String {
+    st.cur = st.desk.focused.min(st.desk.screens.len().saturating_sub(1));
     let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
     match verb {
         "ping" => "pong".into(),
@@ -46,8 +47,8 @@ pub fn command(st: &mut State, line: &str) -> String {
         // hub, launcher and session services work unchanged on this compositor
         "niri" => niri_compat(st, rest),
         "state" => {
-            let center = st.ring.center();
-            let wins: Vec<serde_json::Value> = st.ring.order.iter().enumerate().filter_map(|(i, id)| st.win(*id).map(|w| serde_json::json!({
+            let center = st.ring().center();
+            let wins: Vec<serde_json::Value> = st.ring().order.iter().enumerate().filter_map(|(i, id)| st.win(*id).map(|w| serde_json::json!({
                 "id": w.id, "slot": i, "app_id": w.app_id, "title": w.title, "pid": w.pid, "preset": w.size.preset, "fullscreen": w.size.full, "pointer": w.pointer,
             }))).collect();
             serde_json::json!({
@@ -61,6 +62,35 @@ pub fn command(st: &mut State, line: &str) -> String {
                 })),
             }).to_string()
         }
+        // the web shell (taskbar, start menu): every window, screen and workspace in one answer
+        "shell" => shell_state(st),
+        "close" => match rest.trim().parse::<u64>() {
+            Ok(id) if st.win(id).is_some() => {
+                st.focus_window(id);
+                st.close_center();
+                "ok".into()
+            }
+            _ => "error: no such window".into(),
+        },
+        "minimize" => match rest.trim().parse::<u64>() {
+            Ok(id) if st.win(id).is_some() => {
+                let si = st.desk.locate(id).map(|l| l.0).unwrap_or(st.cur);
+                st.with_screen(si, |s| s.minimize(id));
+                "ok".into()
+            }
+            _ => "error: no such window".into(),
+        },
+        // "workspace SCREEN N": show workspace N (1-based) on that screen
+        "workspace" => {
+            let v: Vec<usize> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            match v.as_slice() {
+                [si, n] if *si < st.desk.screens.len() && (1..=crate::desk::WORKSPACES).contains(n) => {
+                    crate::input::switch_workspace(st, *si, n - 1);
+                    "ok".into()
+                }
+                _ => "error: workspace SCREEN N".into(),
+            }
+        }
         "action" => {
             crate::input::run_action(st, rest);
             "ok".into()
@@ -69,9 +99,9 @@ pub fn command(st: &mut State, line: &str) -> String {
             crate::input::spawn(st, rest);
             "ok".into()
         }
-        "focus" => match rest.parse::<u64>() {
+        "focus" => match rest.trim().parse::<u64>() {
             Ok(id) if st.win(id).is_some() => {
-                st.transition(|r| { r.focus(id); });
+                st.focus_window(id);
                 "ok".into()
             }
             _ => "error: no such window".into(),
@@ -127,7 +157,7 @@ pub fn command(st: &mut State, line: &str) -> String {
             st.cfg_problem = p.clone();
             st.binds = crate::input::compile_binds(st);
             if matches!(st.backend, crate::state::Backend::Udev(_)) {
-                st.set_output_scale(crate::winit::scale_override(st.cfg.look.scale));
+                st.set_output_scale(None, crate::winit::scale_override(st.cfg.look.scale));
             }
             st.relayout();
             p.map(|p| format!("error: {p} (defaults in use)")).unwrap_or_else(|| "ok".into())
@@ -138,6 +168,36 @@ pub fn command(st: &mut State, line: &str) -> String {
         }
         _ => format!("error: unknown command '{verb}' (ping, state, action A, spawn CMD, focus ID, lock, refresh HZ, config-reload, lua-reload)"),
     }
+}
+
+fn glyph_name(g: crate::glyphs::G) -> String {
+    format!("{g:?}").to_ascii_lowercase()
+}
+
+/// windows, screens and workspaces for the taskbar / start menu (JSON)
+fn shell_state(st: &State) -> String {
+    let focused_screen = st.desk.focused;
+    let center = st.desk.screens.get(focused_screen).map(|_| st.desk.ring(focused_screen).center()).unwrap_or(None);
+    let screens: Vec<serde_json::Value> = st.desk.screens.iter().enumerate().map(|(i, s)| serde_json::json!({
+        "index": i, "name": s.name, "internal": s.internal, "primary": i == st.desk.primary(), "focused": i == focused_screen,
+        "x": s.loc.0, "y": s.loc.1, "w": s.size.0, "h": s.size.1, "workspace": s.active + 1,
+        "workspaces": s.ws.iter().enumerate().map(|(n, r)| serde_json::json!({ "n": n + 1, "windows": r.all().count(), "active": n == s.active })).collect::<Vec<_>>(),
+    })).collect();
+    let mut wins = vec![];
+    for (id, si, wi) in st.desk.all() {
+        let Some(w) = st.win(id) else { continue };
+        let g = crate::glyphs::for_app(&w.app_id);
+        let minimized = st.desk.screens[si].ws[wi].min.contains(&id);
+        wins.push(serde_json::json!({
+            "id": id, "app_id": w.app_id, "title": w.title, "pid": w.pid, "screen": si, "workspace": wi + 1,
+            "minimized": minimized, "maximized": w.size.max, "fullscreen": w.size.full,
+            "focused": Some(id) == center, "visible": st.desk.screens[si].active == wi,
+            "glyph": glyph_name(g), "jp": crate::glyphs::jp(g), "en": crate::glyphs::en(g),
+        }));
+    }
+    // taskbar order: by id (the order apps were opened), as Windows does
+    wins.sort_by_key(|w| w["id"].as_u64().unwrap_or(0));
+    serde_json::json!({ "screens": screens, "windows": wins, "focused": center, "locked": st.ui.is_some() }).to_string()
 }
 
 /// talk to shadow-healer's socket (revert / status); a short reply line
@@ -161,7 +221,7 @@ fn niri_compat(st: &mut State, args: &str) -> String {
     let json = args.split_whitespace().any(|a| a == "--json" || a == "-j");
     let words: Vec<&str> = args.split_whitespace().filter(|a| *a != "--json" && *a != "-j").collect();
     let output = st.output_name();
-    let focused = st.ring.center();
+    let focused = st.ring().center();
     match words.as_slice() {
         ["version"] => {
             let v = env!("CARGO_PKG_VERSION");
@@ -171,29 +231,36 @@ fn niri_compat(st: &mut State, args: &str) -> String {
                 format!("Compositor version: shadow-compositor {v}")
             }
         }
-        // one workspace: the ring
-        ["workspaces"] => serde_json::json!([{ "id": 1, "idx": 1, "name": null, "output": output, "is_active": true, "is_focused": true, "active_window_id": focused }]).to_string(),
-        ["focused-output"] => serde_json::json!({ "name": output }).to_string(),
+        // every screen's nine workspaces (ids: screen × 10 + n)
+        ["workspaces"] => serde_json::Value::Array(st.desk.screens.iter().enumerate().flat_map(|(si, s)| {
+            let focused = si == st.desk.focused;
+            s.ws.iter().enumerate().map(move |(n, r)| serde_json::json!({
+                "id": si * 10 + n + 1, "idx": n + 1, "name": null, "output": s.name, "is_active": n == s.active,
+                "is_focused": focused && n == s.active, "active_window_id": r.center(),
+            })).collect::<Vec<_>>()
+        }).collect()).to_string(),
+        ["focused-output"] => serde_json::json!({ "name": st.desk.screens.get(st.desk.focused).map(|s| s.name.clone()).unwrap_or(output) }).to_string(),
         ["outputs"] => {
             // niri's shape, so shadow-displayd and the settings app read modes and scale
-            let o = st.output.clone();
-            let (modes, cur, mm, make, model) = o.as_ref().map(|o| {
+            let mut m = serde_json::Map::new();
+            for s in &st.desk.screens {
+                let o = &s.out;
                 let modes: Vec<_> = o.modes();
                 let cur = o.current_mode().and_then(|c| modes.iter().position(|m| *m == c));
                 let pref = o.preferred_mode();
                 let pp = o.physical_properties();
-                (modes.iter().map(|m| serde_json::json!({ "width": m.size.w, "height": m.size.h, "refresh_rate": m.refresh, "is_preferred": Some(*m) == pref })).collect::<Vec<_>>(), cur, [pp.size.w, pp.size.h], pp.make, pp.model)
-            }).unwrap_or_default();
-            let (lw, lh) = st.output_size();
-            serde_json::json!({ output.clone(): {
-                "name": output, "make": make, "model": model, "physical_size": mm, "modes": modes, "current_mode": cur,
-                "logical": { "x": 0, "y": 0, "width": lw as i32, "height": lh as i32, "scale": st.scale(), "transform": "Normal" },
-            } }).to_string()
+                let modes_j: Vec<_> = modes.iter().map(|m| serde_json::json!({ "width": m.size.w, "height": m.size.h, "refresh_rate": m.refresh, "is_preferred": Some(*m) == pref })).collect();
+                m.insert(s.name.clone(), serde_json::json!({
+                    "name": s.name, "make": pp.make, "model": pp.model, "physical_size": [pp.size.w, pp.size.h], "modes": modes_j, "current_mode": cur,
+                    "logical": { "x": s.loc.0 as i32, "y": s.loc.1 as i32, "width": s.size.0 as i32, "height": s.size.1 as i32, "scale": o.current_scale().fractional_scale(), "transform": "Normal" },
+                }));
+            }
+            serde_json::Value::Object(m).to_string()
         }
         // shadow-displayd: scale changes apply live; mode / power are handled by the compositor itself
-        ["output", _, "scale", v] => match v.parse::<f64>() {
+        ["output", name, "scale", v] => match v.parse::<f64>() {
             Ok(x) if (0.5..=4.0).contains(&x) => {
-                st.set_output_scale(x);
+                st.set_output_scale(Some(name), x);
                 "ok".into()
             }
             _ => "error: scale must be 0.5-4".into(),
@@ -203,7 +270,7 @@ fn niri_compat(st: &mut State, args: &str) -> String {
             Some(w) => serde_json::json!({ "id": w.id, "app_id": w.app_id, "title": w.title, "pid": w.pid }).to_string(),
             None => "null".into(),
         },
-        ["windows"] => serde_json::Value::Array(st.ring.order.iter().filter_map(|id| st.win(*id)).map(|w| serde_json::json!({ "id": w.id, "app_id": w.app_id, "title": w.title, "pid": w.pid, "workspace_id": 1, "is_focused": Some(w.id) == focused })).collect()).to_string(),
+        ["windows"] => serde_json::Value::Array(st.desk.all().into_iter().filter_map(|(id, si, wi)| st.win(id).map(|w| serde_json::json!({ "id": w.id, "app_id": w.app_id, "title": w.title, "pid": w.pid, "workspace_id": si * 10 + wi + 1, "is_focused": Some(w.id) == focused }))).collect()).to_string(),
         ["action", "quit", ..] => {
             crate::input::run_action(st, "quit");
             "ok".into()
@@ -241,7 +308,7 @@ fn niri_compat(st: &mut State, args: &str) -> String {
                 "focus-window" => {
                     let id = rest.iter().skip_while(|x| **x != "--id").nth(1).and_then(|v| v.parse::<u64>().ok());
                     if let Some(id) = id.filter(|id| st.win(*id).is_some()) {
-                        st.transition(|r| { r.focus(id); });
+                        st.focus_window(id);
                     }
                     Some("")
                 }

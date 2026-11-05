@@ -118,10 +118,30 @@ pub struct Display {
     pub refresh_policy: String,
     /// preferred connector ("eDP-1"); empty = the built-in panel, else the first connected one
     pub output: String,
+    /// with a second monitor: where new apps open — "external" (the other screen), "focused",
+    /// "primary"
+    pub open_apps_on: String,
+    /// use every connected monitor (false: only the preferred one, as before 10.0)
+    pub all_outputs: bool,
 }
 impl Default for Display {
     fn default() -> Self {
-        Display { refresh_ac: 120, refresh_battery: 60, refresh_policy: "auto".into(), output: String::new() }
+        Display { refresh_ac: 120, refresh_battery: 60, refresh_policy: "auto".into(), output: String::new(), open_apps_on: "external".into(), all_outputs: true }
+    }
+}
+
+/// [shell]: the desktop around the apps. "web" (10.0): the taskbar, start menu, widgets and quick
+/// settings as local web pages in shadow-panel windows; "glyph": the 9.x edge columns.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Shell {
+    pub mode: String,
+    /// title bars with minimise / maximise / close over every window
+    pub titlebars: bool,
+}
+impl Default for Shell {
+    fn default() -> Self {
+        Shell { mode: "web".into(), titlebars: true }
     }
 }
 
@@ -182,22 +202,25 @@ pub struct Config {
     pub memory: Memory,
     pub autostart: Autostart,
     pub defaults: Defaults,
+    pub shell: Shell,
     pub binds: BTreeMap<String, String>,
 }
 
-/// The same keys as Shadow on niri (niri/src/config.rs), on this compositor's actions
+/// The same keys as Shadow on niri (the old niri config generator), on this compositor's actions
 pub fn default_binds() -> BTreeMap<String, String> {
     [
         ("Mod+Return", "spawn shadow-term"),
         ("Mod+T", "spawn shadow-term"),
         ("Mod+D", "spawn shadow-launch"),
-        ("Mod+Space", "spawn shadow-glyph summon"),
-        ("Mod+A", "spawn shadow-glyph summon apps"),
+        // the shell (10.0): start menu, widgets on the left, quick settings on the right
+        ("Mod+Space", "shell start"),
+        ("Mod+W", "shell widgets"),
+        ("Mod+A", "shell quick"),
         ("Mod+E", "spawn shadow-files"),
         ("Mod+N", "spawn shadow-net"),
         ("Mod+Comma", "spawn shadow-settings settings"),
         ("Mod+U", "spawn shadow-update"),
-        ("Mod+W", "spawn shadow-settings look"),
+        ("Mod+Shift+W", "spawn shadow-settings look"),
         ("Mod+Shift+H", "spawn shadow-settings fix"),
         ("Ctrl+Shift+Escape", "spawn shadow-tasks"),
         ("Mod+Tab", "focus-next"),
@@ -213,12 +236,24 @@ pub fn default_binds() -> BTreeMap<String, String> {
         ("Mod+Alt+L", "lock"),
         ("Mod+Shift+E", "quit"),
         ("Mod+Shift+F", "fullscreen"),
-        // the widget columns on the screen edges: hide / show
-        ("Mod+Shift+B", "spawn shadow-glyph toggle"),
+        // the taskbar: hide / show
+        ("Mod+Shift+B", "shell toggle"),
         ("Mod+P", "spawn shadow-settings defaults"),
         // minimise to the grid · bring the last one back · focused app to the main tile
         ("Mod+M", "minimize"),
         ("Mod+Shift+M", "restore"),
+        // Windows-style: maximise · restore down (then minimise) · bring the last minimised back
+        ("Mod+Up", "maximize"),
+        ("Mod+Down", "unmaximize"),
+        ("Mod+Shift+Up", "restore"),
+        // workspaces (each screen has nine) and screens
+        ("Mod+Ctrl+Right", "workspace-next"),
+        ("Mod+Ctrl+Left", "workspace-prev"),
+        ("Mod+Ctrl+Shift+Right", "move-to-workspace-next"),
+        ("Mod+Ctrl+Shift+Left", "move-to-workspace-prev"),
+        ("Mod+Shift+Right", "move-to-screen-next"),
+        ("Mod+Shift+Left", "move-to-screen-prev"),
+        ("Mod+O", "focus-screen-next"),
         ("Mod+Shift+Return", "promote"),
         // the hotkey tutorial (first login opens it by itself)
         ("Mod+Shift+Slash", "tutorial"),
@@ -231,6 +266,7 @@ pub fn default_binds() -> BTreeMap<String, String> {
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
+    .chain((1..=9).flat_map(|n| [(format!("Mod+{n}"), format!("workspace {n}")), (format!("Mod+Shift+{n}"), format!("move-to-workspace {n}"))]))
     .collect()
 }
 
@@ -255,15 +291,17 @@ fn hub_enabled_8x() -> bool {
 }
 
 pub fn default_autostart() -> Vec<String> {
-    // the widget columns + hidden hub, and the settings service behind the settings web app
-    vec!["shadow-glyph".into(), "shadow-webd".into()]
+    // the local web service (settings app + shell pages) and the shell itself ([shell] mode
+    // decides which: the web panels, or the 9.x glyph columns — shadow-shell picks, and falls
+    // back to the glyph columns when the web panels can't start)
+    vec!["shadow-webd".into(), "shadow-shell".into()]
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             layout: Layout::default(), look: Look::default(), input: Input::default(), hud: Hud::default(), display: Display::default(),
-            lock: Lock::default(), memory: Memory::default(), autostart: Autostart::default(), defaults: Defaults::default(), binds: default_binds(),
+            lock: Lock::default(), memory: Memory::default(), autostart: Autostart::default(), defaults: Defaults::default(), shell: Shell::default(), binds: default_binds(),
         }
     }
 }
@@ -366,7 +404,7 @@ mod t {
         assert!(e.is_some());
         assert_eq!(c.layout.presets, vec![50, 60, 70]);
         assert_eq!(super::rgb("#FFB000"), [1.0, 176.0 / 255.0, 0.0]);
-        // Shadow's own config.toml (sections shared with niri's generator) still loads, and the
+        // Shadow's own config.toml (the sections every Shadow program shares) still loads, and the
         // DEFAULTS page's terminal / file manager drive Mod+Return / Mod+E
         let shadow = format!("{}\n[defaults]\nterminal_cmd = \"foot\"\nfiles_cmd = \"nautilus --new-window\"\n[hub]\nenabled = true\n[display.scale]\n\"eDP-1\" = 1.5\n", super::shadow_core_like());
         std::fs::write(dir.join("c.toml"), shadow).unwrap();

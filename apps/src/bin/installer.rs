@@ -1,7 +1,7 @@
 //! shadow-installer: the graphical front of ./install.sh (./install.sh --gui).
 //!
 //! Two ways in:
-//!   FULL DESKTOP — Shadow TUI Restricted on niri: the hub, every app, the power daemon, Wi-Fi
+//!   FULL DESKTOP — Shadow TUI Restricted on its own compositor: the shell, every app, the power daemon, Wi-Fi
 //!                  repair, updates; optionally the login screen and the security package.
 //!   APPS ONLY    — pick the apps you want and keep your current desktop. They are installed for
 //!                  your user only (~/.local), with no system services, no session and no login
@@ -23,7 +23,7 @@ pub const APPS: &[(&str, &str, &str, &str)] = &[
     ("shadow-launch", "Launcher", "search apps, files and actions from one box", "give it a key in your desktop's settings"),
     ("shadow-tasks", "Task manager", "CPU, memory, GPU, NPU, power and processes", ""),
     ("shadow-craft", "Craft apps", "install and update the ArtCraft suite (PhotoCraft, FilmCraft …)", "needs curl"),
-    ("shadow-wallpaper", "3D wallpaper", "the vertex background that follows the cursor", "KDE, Sway, Hyprland or niri — not GNOME"),
+    ("shadow-wallpaper", "3D wallpaper", "the vertex background that follows the cursor", "KDE, Sway or Hyprland — not GNOME"),
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -185,12 +185,12 @@ impl App for Installer {
                 let ch = (f.px(56.0) + tlh0 + slh * 2 + 7 * (slh + f.px(3.0))).min(h - cy - f.px(80.0));
                 let cards: [(&str, &str, &[&str]); 2] = [
                     ("FULL DESKTOP", "Shadow becomes your desktop", &[
-                        "the vertex hub, menu and widgets",
+                        "glyph desktop, taskbar, widgets",
                         "every Shadow app and the launcher",
                         "power daemon · Wi-Fi self-repair",
                         "updates, crash reports, settings",
-                        "runs on niri (or Shadow's own",
-                        "compositor) — a new login session",
+                        "its own compositor: a new",
+                        "login session · auto updates",
                         "needs your password (sudo)",
                     ]),
                     ("APPS ONLY", "keep your desktop, add the apps", &[

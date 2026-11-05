@@ -1,0 +1,154 @@
+/* Shadow shell (10.0) — taskbar, start, widgets, quick settings. Vitruvian gold line work on
+   obsidian glass; Shadow Glyph for the alien labels, Japanese beside them. */
+@font-face { font-family: "Shadow Glyph"; src: url("/font.ttf") format("truetype"); font-display: block; }
+:root {
+  --bg: #0E0C09; --glass: rgba(14, 12, 9, .94); --panel: #16130D; --gold: #D4AA5A; --hi: #F0DB9C; --bronze: #8A632E;
+  --text: #EBE0C4; --dim: #8F8062; --red: #C84B31; --green: #9CB86A;
+  --line: color-mix(in srgb, var(--gold) 38%, transparent); --faint: color-mix(in srgb, var(--gold) 14%, transparent);
+  --glyph: "Shadow Glyph", "JetBrains Mono", monospace;
+  --jp: "Noto Sans CJK JP", "Noto Sans JP", "Source Han Sans JP", "IPAexGothic", "WenQuanYi Zen Hei", sans-serif;
+  --ui: "Inter", "Noto Sans", "DejaVu Sans", var(--jp), sans-serif;
+  --tb: 48px;
+}
+* { box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-user-drag: none; }
+html, body { margin: 0; height: 100%; background: transparent; color: var(--text); font: 13px/1.4 var(--ui); overflow: hidden; cursor: default; }
+::-webkit-scrollbar { width: 6px; height: 6px; } ::-webkit-scrollbar-thumb { background: var(--line); } ::-webkit-scrollbar-track { background: transparent; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: default; }
+.jp { font-family: var(--jp); letter-spacing: .02em; }
+.al { font-family: var(--glyph); letter-spacing: .14em; text-transform: uppercase; }
+.glyph { width: 24px; height: 24px; display: inline-block; color: var(--gold); flex: none; }
+.glyph svg { width: 100%; height: 100%; display: block; }
+
+/* the alien hairline with tick marks used under headings */
+.rule { height: 6px; border-top: 1px solid var(--line); background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 9px); background-size: 100% 4px; background-repeat: no-repeat; }
+
+/* ───────────────────────── taskbar ───────────────────────── */
+body.taskbar { background: var(--glass); border-top: 1px solid var(--line); }
+body.taskbar::before { content: ""; position: absolute; left: 0; right: 0; top: 2px; height: 4px; opacity: .5;
+  background: repeating-linear-gradient(90deg, var(--faint) 0 1px, transparent 1px 12px); pointer-events: none; }
+.tb { position: relative; height: var(--tb); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 8px; }
+.tb .left, .tb .right { display: flex; align-items: center; gap: 2px; height: 100%; }
+.tb .right { justify-content: flex-end; }
+.tb .mid { display: flex; align-items: center; gap: 2px; height: 100%; }
+.tbtn { position: relative; height: 40px; min-width: 40px; padding: 0 8px; display: flex; align-items: center; justify-content: center; gap: 8px;
+  border: 1px solid transparent; transition: background .12s, border-color .12s; }
+.tbtn:hover { background: color-mix(in srgb, var(--gold) 9%, transparent); border-color: var(--faint); }
+.tbtn:active { transform: translateY(1px); }
+.tbtn .glyph { width: 26px; height: 26px; }
+/* running indicator: a short gold bar (a diamond when it has the keyboard), as on Windows 11 */
+.tbtn .run { position: absolute; bottom: 2px; left: 50%; width: 6px; height: 3px; transform: translateX(-50%); background: var(--dim); transition: width .18s; }
+.tbtn.focused { background: color-mix(in srgb, var(--gold) 12%, transparent); border-color: var(--line); }
+.tbtn.focused .run { width: 16px; background: var(--gold); }
+.tbtn.minimized .glyph { opacity: .55; }
+.tbtn.minimized .run { width: 4px; height: 4px; transform: translateX(-50%) rotate(45deg); background: var(--bronze); }
+.tbtn.start .glyph { width: 30px; height: 30px; color: var(--hi); }
+.tbtn.start:hover .glyph { filter: drop-shadow(0 0 3px var(--gold)); }
+.tbtn.ws { font: 12px var(--glyph); letter-spacing: .1em; color: var(--dim); gap: 4px; }
+.tbtn.ws b { color: var(--hi); font-weight: normal; }
+.tbtn .count { position: absolute; top: 3px; right: 3px; font: 9px var(--glyph); color: var(--bg); background: var(--gold); padding: 0 3px; }
+.sep { width: 1px; height: 22px; background: var(--faint); margin: 0 6px; }
+.tray { font-size: 12px; color: var(--text); gap: 10px; padding: 0 10px; }
+.tray .ic { display: inline-flex; align-items: center; gap: 4px; color: var(--gold); }
+.tray .ic svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+.clock { flex-direction: column; gap: 0; line-height: 1.15; align-items: flex-end; padding: 0 10px; }
+.clock .t { font: 14px var(--glyph); letter-spacing: .12em; color: var(--hi); }
+.clock .d { font-size: 11px; color: var(--dim); }
+.badge { font: 10px var(--glyph); letter-spacing: .08em; color: var(--bg); background: var(--gold); padding: 2px 6px; animation: pulse 2.4s ease-in-out infinite; }
+@keyframes pulse { 50% { background: var(--hi); } }
+.tip { position: fixed; bottom: calc(var(--tb) + 6px); pointer-events: none; }
+
+/* ───────────────────────── flyouts (start · widgets · quick) ───────────────────────── */
+body.fly { background: transparent; }
+.panel { position: absolute; inset: 0; background: var(--glass); border: 1px solid var(--line);
+  clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% calc(100% - 14px), calc(100% - 14px) 100%, 14px 100%, 0 calc(100% - 14px), 0 14px);
+  display: flex; flex-direction: column; overflow: hidden; animation: unfold .26s cubic-bezier(.2, 0, 0, 1) both; }
+.panel::before { content: ""; position: absolute; inset: 6px; border: 1px solid var(--faint); pointer-events: none;
+  clip-path: inherit; }
+@keyframes unfold { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+body.left .panel { animation-name: unfold-l; } body.right .panel { animation-name: unfold-r; }
+@keyframes unfold-l { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+@keyframes unfold-r { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+.head { display: flex; align-items: baseline; gap: 10px; padding: 18px 22px 6px; }
+.head .al { font-size: 15px; color: var(--hi); }
+.head .jp { color: var(--gold); font-size: 13px; }
+.head .rule { flex: 1; align-self: center; }
+.sect { display: flex; align-items: center; gap: 10px; padding: 12px 22px 6px; color: var(--dim); }
+.sect .al { font-size: 11px; color: var(--gold); }
+.sect .rule { flex: 1; }
+.sect button { font-size: 11px; color: var(--dim); padding: 2px 8px; border: 1px solid var(--faint); }
+.sect button:hover { color: var(--hi); border-color: var(--line); }
+.scroll { flex: 1; overflow: auto; padding-bottom: 8px; }
+
+/* start */
+.search { margin: 14px 22px 4px; position: relative; }
+.search input { width: 100%; font: 14px var(--ui); color: var(--text); background: var(--panel); border: 1px solid var(--line); padding: 10px 12px 10px 38px; outline: none; -webkit-user-select: text; user-select: text; }
+.search input:focus { border-color: var(--hi); box-shadow: 0 0 0 1px var(--hi); }
+.search .glyph { position: absolute; left: 9px; top: 8px; width: 22px; height: 22px; }
+.grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 4px 18px; }
+.app { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 2px 8px; border: 1px solid transparent; text-align: center; min-width: 0; }
+.app:hover, .app.sel { background: color-mix(in srgb, var(--gold) 9%, transparent); border-color: var(--faint); }
+.app .glyph { width: 34px; height: 34px; }
+.app .n { font-size: 11.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app .j { font-size: 10px; color: var(--dim); }
+.list .row { display: grid; grid-template-columns: 30px 1fr auto; gap: 10px; align-items: center; padding: 6px 22px; }
+.list .row:hover, .list .row.sel { background: color-mix(in srgb, var(--gold) 9%, transparent); }
+.list .row .glyph { width: 24px; height: 24px; }
+.list .row .d { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list .letter { padding: 8px 22px 2px; font: 11px var(--glyph); color: var(--gold); letter-spacing: .2em; }
+.foot { display: flex; align-items: center; gap: 6px; padding: 10px 18px; border-top: 1px solid var(--faint); background: color-mix(in srgb, var(--bg) 70%, transparent); }
+.foot .who { display: flex; align-items: center; gap: 10px; flex: 1; color: var(--text); }
+.foot .who .glyph { width: 26px; height: 26px; }
+.pbtn { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 8px; border: 1px solid transparent; min-width: 52px; }
+.pbtn:hover { border-color: var(--line); background: color-mix(in srgb, var(--gold) 8%, transparent); }
+.pbtn .glyph { width: 20px; height: 20px; }
+.pbtn span { font-size: 9.5px; color: var(--dim); }
+.pbtn.danger:hover .glyph { color: var(--red); }
+.empty { padding: 30px 22px; color: var(--dim); text-align: center; }
+
+/* widgets */
+.clockbig { padding: 18px 22px 4px; }
+.clockbig .t { font: 54px/1 var(--glyph); letter-spacing: .08em; color: var(--hi); }
+.clockbig .d { margin-top: 8px; color: var(--gold); font-size: 14px; }
+.clockbig .d .jp { color: var(--dim); margin-left: 8px; }
+.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; padding: 4px 22px; text-align: center; font-size: 12px; }
+.cal .h { color: var(--dim); font-size: 10.5px; padding: 2px 0; }
+.cal .c { padding: 5px 0; color: var(--text); border: 1px solid transparent; }
+.cal .c.o { color: color-mix(in srgb, var(--dim) 55%, transparent); }
+.cal .c.today { color: var(--bg); background: var(--gold); position: relative; }
+.card { margin: 6px 22px; padding: 12px 14px; border: 1px solid var(--faint); position: relative; display: grid; gap: 6px; }
+.card::before, .card::after { content: ""; position: absolute; width: 7px; height: 7px; border: 1px solid var(--gold); }
+.card::before { left: -1px; top: -1px; border-right: 0; border-bottom: 0; } .card::after { right: -1px; bottom: -1px; border-left: 0; border-top: 0; }
+.card .k { display: flex; justify-content: space-between; gap: 10px; }
+.card .k span:first-child { color: var(--dim); }
+.card .big { font: 22px var(--glyph); color: var(--hi); letter-spacing: .08em; }
+.bar { height: 4px; background: var(--faint); position: relative; } .bar i { position: absolute; inset: 0 auto 0 0; background: var(--gold); }
+.act { font: 11px var(--glyph); letter-spacing: .12em; color: var(--gold); border: 1px solid var(--gold); padding: 7px 12px; text-align: center; }
+.act:hover { background: var(--gold); color: var(--bg); }
+.wsgrid { display: grid; gap: 6px; }
+.wsrow { display: grid; grid-template-columns: 74px repeat(9, 1fr); gap: 3px; align-items: center; }
+.wsrow .nm { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wsdot { height: 24px; border: 1px solid var(--faint); font: 10px var(--glyph); color: var(--dim); display: flex; align-items: center; justify-content: center; }
+.wsdot.has { border-color: var(--line); color: var(--text); }
+.wsdot.on { background: var(--gold); color: var(--bg); border-color: var(--gold); }
+.wsdot:hover { border-color: var(--hi); }
+
+/* quick settings */
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 14px 18px 6px; }
+.tile { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 10px 10px 8px; border: 1px solid var(--line); min-height: 72px; text-align: left; }
+.tile:hover { border-color: var(--hi); }
+.tile .glyph { width: 20px; height: 20px; }
+.tile .n { font-size: 12px; } .tile .s { font-size: 10.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.tile.on { background: var(--gold); color: var(--bg); border-color: var(--gold); }
+.tile.on .glyph, .tile.on .s { color: var(--bg); }
+.tile.na { opacity: .4; }
+.slider { display: grid; grid-template-columns: 26px 1fr 42px; align-items: center; gap: 10px; padding: 8px 22px; }
+.slider .glyph { width: 20px; height: 20px; }
+.slider .v { font: 12px var(--glyph); color: var(--hi); text-align: right; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; background: var(--faint); outline: none; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; background: var(--gold); transform: rotate(45deg); border: 0; }
+input[type=range]:focus::-webkit-slider-thumb { background: var(--hi); }
+.qfoot { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; border-top: 1px solid var(--faint); margin-top: auto; }
+.qfoot .bat { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.qfoot .bat b { font: 14px var(--glyph); color: var(--hi); font-weight: normal; letter-spacing: .08em; }
+
+@media (prefers-reduced-motion: reduce) { .panel, .badge { animation: none; } }

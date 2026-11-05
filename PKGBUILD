@@ -1,7 +1,7 @@
 # Shadow TUI Restricted — local PKGBUILD (build from this directory: makepkg -si, or ./install.sh)
 #
 # Split package:
-#   shadow-tui-restricted   the glyph desktop on Shadow's own compositor (niri optional): edge columns, hidden hub, settings web app
+#   shadow-tui-restricted   the glyph desktop on Shadow's own compositor: web shell (taskbar, widgets, quick settings), settings web app
 #                           (shadow-launch, -net, -config, -files, -lock, -term), session services
 #                           (shadow-sessiond, shadow-displayd), static console login (shadow-greet),
 #                           shadow-powerd (7-day learning schedule), shadow-netd, shadow-healer, shadow-sync
@@ -9,19 +9,18 @@
 #
 # Isolated runtime: everything lives in /opt/shadow-tui (bin, lib, share) with commands linked into
 # /usr/bin. Binaries carry DT_RPATH=/opt/shadow-tui/lib, and the keyboard library is bundled there.
-# Every Shadow app renders on the CPU into shared memory (no GPU API in the apps); niri does the
-# compositing with OpenGL ES. Mesa, libdrm, glibc and PAM stay the system's.
-# niri itself comes from Arch (extra/niri): Shadow talks to it only through `niri msg` and its
-# config file, so a niri update can't break Shadow's binaries.
+# Every Shadow app renders on the CPU into shared memory (no GPU API in the apps); shadow-compositor
+# does the compositing with OpenGL ES. The shell panels are local web pages shown by shadow-panel in
+# WebKitGTK. Mesa, libdrm, glibc, PAM and WebKitGTK stay the system's.
 pkgbase=shadow-tui-restricted
 pkgname=(shadow-tui-restricted shadow-tui-sec)
 pkgver=9.0.0
 pkgrel=1
-pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on niri — vertex wireframe hub, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
+pkgdesc="Shadow TUI Restricted: keyboard-first tactical desktop for Arch (Dell 14 Plus / Lunar Lake) on its own Wayland compositor — Vitruvian glyph desktop, Windows 11-style web shell, multi-monitor workspaces, automatic updates, dedicated Rust 2D apps, self-resolving scaling across monitors, static console login, power/NPU daemon with a weekly learning schedule, Wi-Fi self-repair, sandboxed self-healing Lua layer, GitHub state sync"
 arch=('x86_64')
 url="https://github.com/namidelacruz/shadow-tui-restricted"
 license=('MIT')
-makedepends=(cargo clang git pkgconf libinput libdrm seatd wayland)
+makedepends=(cargo clang git pkgconf libinput libdrm seatd wayland webkit2gtk-4.1 gtk3 libsoup3)
 options=(!debug !lto)
 _src="$startdir"
 _bundle=${SHADOW_BUNDLE:-1}
@@ -50,9 +49,6 @@ check() {
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR="$srcdir/target"
   cargo test --frozen --release --workspace
   for m in "$_src"/modules/*.lua; do "$srcdir/target/release/shadow" healer check "$m"; done
-  if command -v niri >/dev/null; then
-    "$srcdir/target/release/shadow-niri-gen" > "$srcdir/niri-check.kdl" && niri validate -c "$srcdir/niri-check.kdl"
-  fi
   for s in wifi-helper wifi-device-helper greeter-wrapper shadow-session shadow-tui.sleep; do sh -n "$_src/system/$s"; done
   sh -n "$_src/packaging/install-files.sh" && sh -n "$_src/packaging/post-install.sh"
 }
@@ -67,14 +63,15 @@ _bundle_libs() {
 }
 
 package_shadow-tui-restricted() {
-  depends=(niri mesa libinput libdrm seatd libxkbcommon pam systemd fontconfig ttf-jetbrains-mono-nerd
-           networkmanager wpa_supplicant iproute2 util-linux kmod git openssh polkit wireplumber brightnessctl)
-  optdepends=('xwayland-satellite: X11 apps on niri and shadow-compositor' 'xorg-xwayland: X11 apps'
+  depends=(mesa libinput libdrm seatd libxkbcommon pam systemd fontconfig ttf-jetbrains-mono-nerd
+           networkmanager wpa_supplicant iproute2 util-linux kmod git openssh polkit wireplumber brightnessctl
+           webkit2gtk-4.1 gtk3 libsoup3)
+  optdepends=('xwayland-satellite: X11 apps (the compositor starts it)' 'xorg-xwayland: X11 apps'
     
     'mate-polkit: password prompts for privileged actions (any polkit agent works; ./install.sh installs one)'
     'greetd: the Shadow login screen (shadow greeter enable)'
     'terminus-font: login screen text sized to the panel (ter-v24n on 2560x1600)'
-    'xdg-desktop-portal-gnome: screen sharing and file pickers under niri'
+    'xdg-desktop-portal-gtk: file pickers (portals)'
     'noto-fonts-cjk: CJK text in the Shadow apps (loaded only when needed)'
     'age: encrypted Wi-Fi credentials in the synced state (secrets.age)'
     'github-cli: shadow-sync init --github (private repository)'

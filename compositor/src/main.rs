@@ -5,6 +5,7 @@
 //!   shadow-compositor --winit      force the nested backend      --udev   force DRM/KMS
 mod config;
 mod cursor;
+mod desk;
 #[path = "../../ui/src/glyphs.rs"]
 #[allow(dead_code)]
 mod glyphs;
@@ -53,8 +54,8 @@ fn read_proc_cpu(pid: i32) -> Option<(u64, u64)> {
 
 /// every 2 s: HUD text, ring sparklines, refresh policy, idle lock, memory pressure, Lua widgets
 fn tick(st: &mut State) {
-    let n = st.ring.order.len();
-    let focused = st.ring.center().and_then(|id| st.win(id)).map(|w| if w.app_id.is_empty() { w.title.clone() } else { w.app_id.clone() }).unwrap_or_default();
+    let n = st.ring().order.len();
+    let focused = st.ring().center().and_then(|id| st.win(id)).map(|w| if w.app_id.is_empty() { w.title.clone() } else { w.app_id.clone() }).unwrap_or_default();
     let mut extra = st.hud_extra.clone();
     if let Some(p) = &st.cfg_problem {
         extra.push(format!("CONFIG ERROR: {}", p.chars().take(40).collect::<String>()));
@@ -76,7 +77,7 @@ fn tick(st: &mut State) {
     }
     st.run_lua_actions();
     // ring sparklines (only background windows; the centre is live anyway)
-    let center = st.ring.center();
+    let center = st.ring().center();
     let page_kb = 4u64;
     for w in st.wins.iter_mut().filter(|w| Some(w.id) != center) {
         let Some(pid) = w.pid else { continue };
@@ -87,7 +88,8 @@ fn tick(st: &mut State) {
                 if w.spark.len() > 12 {
                     w.spark.remove(0);
                 }
-                st.dirty = true;
+                // (sampled for `state` and the task manager; nothing on screen shows them, so
+                // no redraw: an idle desktop stays at zero frames)
             }
             w.cpu_prev = Some((p, t));
         }
@@ -230,7 +232,7 @@ fn main() {
         state.ui = Some(ui::Ui::new(ui::Mode::Greeter));
     } else {
         // X11 apps (older AppImages, Electron without Wayland, Steam, Wine) through
-        // xwayland-satellite, the same helper niri uses; skipped when it isn't installed
+        // xwayland-satellite, X11 apps; skipped when it isn't installed
         xwayland = start_xwayland();
         luahost::reload(&mut state);
         for c in state.cfg.autostart.commands.clone() {

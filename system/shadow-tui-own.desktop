@@ -1,6 +1,0 @@
-[Desktop Entry]
-Name=Shadow TUI Restricted (own compositor, preview)
-Comment=Shadow on its own Smithay compositor instead of niri
-Exec=/opt/shadow-tui/bin/shadow-session --compositor shadow
-Type=Application
-DesktopNames=ShadowTUI

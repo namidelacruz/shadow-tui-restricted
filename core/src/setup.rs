@@ -12,8 +12,8 @@ const SHELL_TAG: &str = "# shadow-network shell integration";
 
 pub const DEFAULT_CONFIG: &str = r##"# Shadow TUI Restricted — ~/.config/shadow-state/config.toml
 # Every value here is the default; uncomment and change what you need, or use shadow-config
-# (Mod+Comma), which applies changes live. Layout, look and input become niri's config through
-# `shadow setup niri` (validated by niri first); a broken value never stops the desktop.
+# (Mod+Comma), which applies changes live: shadow-compositor re-reads this file on every change
+# (`shadow setup compositor`); a broken value is ignored, never stops the desktop.
 
 [layout]
 # presets = [45, 65, 85]      # center-stage widths (% of the monitor), Mod+[ / Mod+]
@@ -205,9 +205,7 @@ pub fn install(yes: bool) -> i32 {
         info(&format!("{n} file(s) from older versions kept in {}", aside.display()));
     }
     shell_integration(false);
-    if niri_config(false) == 0 {
-        info(&format!("niri config: {}", shadow_niri::config::path().display()));
-    }
+    niri_config(false);
     // the folder default is Shadow's file manager unless one was chosen in Preferences
     if sys::which("xdg-mime").is_some() && st::get_in(&std::fs::read_to_string(st::state_dir().join("config.toml")).unwrap_or_default(), "defaults", "files").is_none() {
         sys::run(&["xdg-mime", "default", "shadow-files.desktop", "inode/directory"]);
@@ -238,187 +236,31 @@ pub fn remove(purge: bool) -> i32 {
     0
 }
 
-/// numbers in a TOML array literal like [45, 65, 85] or [0.45, 0.65]
-fn num_list(v: &str) -> Vec<f64> {
-    v.trim().trim_start_matches('[').trim_end_matches(']').split(',').filter_map(|x| x.trim().parse::<f64>().ok()).collect()
-}
-
-/// [display.scale] "NAME" = 1.5 entries
-fn pinned_scales(text: &str) -> Vec<(String, f64)> {
-    let mut out = vec![];
-    let mut cur = String::new();
-    for l in text.lines() {
-        let t = l.trim();
-        if t.starts_with('[') && t.ends_with(']') {
-            cur = t.trim_matches(|c| c == '[' || c == ']').trim().to_string();
-            continue;
-        }
-        if cur != "display.scale" || t.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = t.split_once('=') {
-            if let Ok(f) = v.split('#').next().unwrap_or("").trim().parse::<f64>() {
-                out.push((k.trim().trim_matches('"').to_string(), f.clamp(0.5, 4.0)));
-            }
-        }
-    }
-    out
-}
-
-/// Settings from config.toml for the niri config generator.
-pub fn niri_gen(text: &str) -> shadow_niri::config::Gen {
-    let mut g = shadow_niri::config::Gen::default();
-    let get = |s: &str, k: &str| st::get_in(text, s, k);
-    if let Some(p) = get("layout", "presets").map(|v| num_list(&v)).filter(|v| !v.is_empty() && v.len() <= 6) {
-        g.presets = p.into_iter().map(|x| if x > 1.0 { x / 100.0 } else { x }).map(|x| x.clamp(0.1, 1.0)).collect();
-    }
-    let n = |s: &str, k: &str| get(s, k).and_then(|v| v.parse::<f64>().ok());
-    if let Some(v) = n("layout", "default_preset") {
-        g.default_preset = (v.max(0.0) as usize).min(g.presets.len().saturating_sub(1));
-    }
-    if let Some(v) = n("layout", "gaps") {
-        g.gaps = v.clamp(0.0, 64.0) as u32;
-    }
-    if let Some(v) = n("layout", "anim_ms") {
-        g.anim_ms = v.clamp(0.0, 1000.0) as u32;
-    }
-    let col = |k: &str, d: &str| get("look", k).filter(|v| v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit())).unwrap_or_else(|| d.to_string());
-    g.amber = col("amber", "#FFB000");
-    g.obsidian = col("obsidian", "#0A0B0E");
-    g.crimson = col("crimson", "#FF2A00");
-    g.xkb_layout = get("input", "xkb_layout").unwrap_or_default();
-    g.xkb_options = get("input", "xkb_options").unwrap_or_default();
-    if let Some(v) = n("input", "repeat_delay") {
-        g.repeat_delay = v.clamp(100.0, 1000.0) as u32;
-    }
-    if let Some(v) = n("input", "repeat_rate") {
-        g.repeat_rate = v.clamp(5.0, 100.0) as u32;
-    }
-    if let Some(v) = get("input", "natural_scroll") {
-        g.natural_scroll = v != "false";
-    }
-    // blur costs GPU time on every frame behind a blurred window: none on software rendering
-    if software_rendering() {
-        g.blur = false;
-    }
-    if let Some(v) = get("hub", "enabled") {
-        g.hub = v != "false";
-    }
-    if let Some(v) = get("look", "solid_background") {
-        g.solid_bg = v != "false";
-    }
-    if let Some(v) = get("defaults", "terminal_cmd").filter(|v| !v.trim().is_empty()) {
-        g.terminal = v;
-    }
-    if let Some(v) = get("defaults", "files_cmd").filter(|v| !v.trim().is_empty()) {
-        g.files = v;
-    }
-    g.pinned_scales = pinned_scales(text);
-    g.macros = std::fs::read_to_string(st::state_dir().join("macros.list")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '_')).collect();
-    g
-}
-
-/// No 3D-capable GPU driver (same test as the UI's theme): blur would cost CPU on every frame
-fn software_rendering() -> bool {
-    let root = std::path::PathBuf::from(std::env::var_os("SHADOW_SYS_ROOT").filter(|v| !v.is_empty()).unwrap_or_else(|| "/".into()));
-    if root.join("dev/dxg").exists() {
-        return false;
-    }
-    let Ok(rd) = std::fs::read_dir(root.join("sys/class/drm")) else { return true };
-    !rd.flatten().any(|e| {
-        let n = e.file_name().to_string_lossy().to_string();
-        n.starts_with("card")
-            && !n.contains('-')
-            && std::fs::read_link(e.path().join("device/driver")).ok().and_then(|t| t.file_name().map(|f| f.to_string_lossy().to_string())).is_some_and(|d| !matches!(d.as_str(), "vmwgfx" | "bochs-drm" | "bochs" | "cirrus" | "simpledrm" | "efifb" | "hyperv_drm" | "vboxvideo" | "qxl"))
-    })
-}
-
-/// `shadow setup niri`: regenerate niri's config from config.toml; niri validates it before it
-/// replaces the current one (niri then reloads it live). 0 = written, 1 = rejected (old kept).
+/// `shadow setup compositor` (also `shadow setup niri`, its old name): a running shadow-compositor
+/// re-reads config.toml now. 0 = reloaded or nothing to reload, 1 = the compositor refused it.
 pub fn niri_config(verbose: bool) -> i32 {
-    // Shadow's own compositor reads config.toml itself: a running one reloads now (the niri file is
-    // still written below, so switching back to niri keeps the same settings)
-    if shadow_niri::shadow_compositor().is_some() {
-        match shadow_niri::compositor_command("config-reload") {
-            Ok(_) => if verbose { println!("shadow-compositor reloaded config.toml") },
-            Err(e) => eprintln!("shadow-compositor: {e}"),
-        }
-    }
-    let text = std::fs::read_to_string(st::state_dir().join("config.toml")).unwrap_or_default();
-    let path = shadow_niri::config::path();
-    let old = std::fs::read_to_string(&path).unwrap_or_default();
-    let tail = shadow_niri::config::user_tail(&old);
-    let mut g = niri_gen(&text);
-    let mut new = shadow_niri::config::generate(&g, &tail);
-    if new == old {
+    if shadow_niri::shadow_compositor().is_none() {
         if verbose {
-            println!("{} is up to date", path.display());
+            println!("shadow-compositor is not running: it reads config.toml when it starts");
         }
         return 0;
     }
-    let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let tmp = path.with_extension("kdl.new");
-    let validate = |cfg: &str| -> Result<(), String> {
-        std::fs::write(&tmp, cfg).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-        if sys::which("niri").is_none() {
-            return Ok(());
-        }
-        let (code, out, err) = sys::run(&["niri", "validate", "-c", &tmp.to_string_lossy()]);
-        if code == 0 {
-            Ok(())
-        } else {
-            let why = format!("{out}{err}");
-            // niri prints a boxed diagnostic: keep the line that says what is wrong
-            let lines: Vec<&str> = why.lines().map(str::trim).filter(|l| !l.is_empty() && l.chars().any(char::is_alphanumeric)).collect();
-            // the most specific "× …" line (the last one), e.g. "unexpected node `background-effect`"
-            let pick = lines.iter().rev().find(|l| l.contains('×')).or(lines.last());
-            Err(pick.map(|l| l.trim_start_matches("Error:").trim().trim_start_matches(['×', '│', '╭', '╰', '─', ' ']).to_string()).unwrap_or_default())
-        }
-    };
-    // tiers, newest first: everything; without blur (niri < 26.04); compatibility mode (also
-    // without the overview backdrop and layer shadows). One unknown optional line never keeps the
-    // whole config — and with it the hub, the binds and the startup programs — out.
-    if let Err(why) = validate(&new) {
-        eprintln!("shadow setup niri: niri rejected the full config: {why}");
-        let mut accepted = false;
-        for (blur, compat, note) in [
-            (false, false, "without blur (needs niri 26.04)"),
-            (false, true, "in compatibility mode (no blur, no overview backdrop colour, no layer shadow rules) — update niri to get them back"),
-        ] {
-            g.blur = blur;
-            g.compat = compat;
-            new = shadow_niri::config::generate(&g, &tail);
-            if new == old {
-                let _ = std::fs::remove_file(&tmp);
-                return 0;
+    match shadow_niri::compositor_command("config-reload") {
+        Ok(_) => {
+            if verbose {
+                println!("shadow-compositor reloaded config.toml");
             }
-            match validate(&new) {
-                Ok(()) => {
-                    eprintln!("shadow setup niri: using the config {note}");
-                    accepted = true;
-                    break;
-                }
-                Err(w) => eprintln!("shadow setup niri: also rejected {note}: {w}"),
-            }
+            0
         }
-        if !accepted {
-            let _ = std::fs::remove_file(&tmp);
-            eprintln!("shadow setup niri: niri rejected the generated config — kept the current one");
-            return 1;
+        Err(e) => {
+            eprintln!("shadow setup compositor: {e}");
+            1
         }
     }
-    if std::fs::rename(&tmp, &path).is_err() {
-        eprintln!("shadow setup niri: cannot replace {}", path.display());
-        return 1;
-    }
-    if verbose {
-        println!("wrote {} (niri reloads it automatically)", path.display());
-    }
-    0
 }
 
 pub fn main(args: &[&str]) -> i32 {
-    if args.first() == Some(&"niri") {
+    if matches!(args.first(), Some(&"niri") | Some(&"compositor")) {
         return niri_config(true);
     }
     if args.contains(&"--remove") {
@@ -436,18 +278,5 @@ mod t {
             assert!(super::DEFAULT_CONFIG.contains(&format!("[{s}]")), "{s}");
         }
         assert!(crate::st::get_in(super::DEFAULT_CONFIG, "layout", "presets").is_none()); // commented out
-    }
-
-    #[test]
-    fn niri_settings_from_config() {
-        let t = "[layout]\npresets = [40, 60, 90]\ndefault_preset = 2\n[look]\namber = \"#FFC000\"\nobsidian = \"bad\"\n[display.scale]\n\"DP-1\" = 1.25\n# \"eDP-1\" = 2\n[input]\nxkb_layout = \"us,ca\"\n";
-        let g = super::niri_gen(t);
-        assert_eq!(g.presets, vec![0.4, 0.6, 0.9]);
-        assert_eq!(g.default_preset, 2);
-        assert_eq!((g.amber.as_str(), g.obsidian.as_str()), ("#FFC000", "#0A0B0E"));
-        assert_eq!(g.pinned_scales, vec![("DP-1".to_string(), 1.25)]);
-        assert_eq!(g.xkb_layout, "us,ca");
-        let d = super::niri_gen(super::DEFAULT_CONFIG);
-        assert_eq!(d.presets, vec![0.45, 0.65, 0.85]);
     }
 }

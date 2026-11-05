@@ -27,6 +27,36 @@ impl R {
     }
 }
 
+/// Title bar height over every window (10.0), logical px.
+pub const TITLE_H: f64 = 30.0;
+/// a title bar button's width (as on Windows 11)
+pub const TITLE_BTN_W: f64 = 46.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TitleBtn {
+    Bar,
+    Min,
+    Max,
+    Close,
+}
+
+/// The title bar above `content`, and its buttons right to left: close, maximise, minimise.
+pub fn title_bar(content: R) -> (R, [(TitleBtn, R); 3]) {
+    let t = R { x: content.x, y: content.y - TITLE_H, w: content.w, h: TITLE_H };
+    let w = TITLE_BTN_W.min((t.w / 4.0).max(16.0));
+    let b = |i: f64| R { x: t.x + t.w - w * (i + 1.0), y: t.y, w, h: t.h };
+    (t, [(TitleBtn::Close, b(0.0)), (TitleBtn::Max, b(1.0)), (TitleBtn::Min, b(2.0))])
+}
+
+/// what of a title bar is at (x, y)
+pub fn title_hit(content: R, x: f64, y: f64) -> Option<TitleBtn> {
+    let (t, btns) = title_bar(content);
+    if !t.contains(x, y) {
+        return None;
+    }
+    Some(btns.iter().find(|(_, r)| r.contains(x, y)).map(|(b, _)| *b).unwrap_or(TitleBtn::Bar))
+}
+
 /// cubic-bezier(0.2, 0.0, 0.0, 1.0) — fast start, soft landing
 pub fn ease(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
@@ -196,11 +226,13 @@ impl Ring {
     }
 }
 
-/// Fullscreen toggle per window (the 8.x width presets became the main-tile share).
+/// Fullscreen / maximised per window (the 8.x width presets became the main-tile share).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Size {
     pub preset: usize,
     pub full: bool,
+    /// fills the app area above the other tiles, title bar kept (Mod+Up / the □ button)
+    pub max: bool,
 }
 impl Size {
     pub fn step(&mut self, up: bool, n: usize) {
@@ -209,6 +241,23 @@ impl Size {
     }
     pub fn toggle_full(&mut self) {
         self.full = !self.full;
+    }
+}
+
+#[cfg(test)]
+mod title_t {
+    use super::*;
+    #[test]
+    fn title_bar_buttons_sit_right_to_left() {
+        let c = R { x: 100.0, y: 130.0, w: 600.0, h: 400.0 };
+        let (t, b) = title_bar(c);
+        assert_eq!((t.y, t.h, t.w), (100.0, TITLE_H, 600.0));
+        assert_eq!(b[0].0, TitleBtn::Close);
+        assert!((b[0].1.x + b[0].1.w - 700.0).abs() < 0.01, "close is at the right edge");
+        assert!(b[2].1.x < b[1].1.x && b[1].1.x < b[0].1.x);
+        assert_eq!(title_hit(c, 690.0, 110.0), Some(TitleBtn::Close));
+        assert_eq!(title_hit(c, 200.0, 110.0), Some(TitleBtn::Bar));
+        assert_eq!(title_hit(c, 200.0, 140.0), None, "the content is not the bar");
     }
 }
 

@@ -101,6 +101,83 @@ pub fn for_app(app_id: &str) -> G {
     }
 }
 
+/// 10.0 bilingual labels: the Japanese word shown beside the English one (設定 SETTINGS).
+pub fn jp(g: G) -> &'static str {
+    match g {
+        G::Terminal => "端末",
+        G::Files => "ファイル",
+        G::Browser => "ブラウザ",
+        G::Launch => "起動",
+        G::Tasks => "タスク",
+        G::Craft => "工房",
+        G::Settings => "設定",
+        G::Fix => "修復",
+        G::Network => "通信",
+        G::Power => "電源",
+        G::Lock => "施錠",
+        G::Logout => "退出",
+        G::Restart => "再起動",
+        G::Suspend => "休止",
+        G::Music => "音楽",
+        G::Image => "画像",
+        G::Code => "コード",
+        G::Chat => "会話",
+        G::Mail => "メール",
+        G::Game => "遊戯",
+        G::Generic => "アプリ",
+        G::Emergency => "緊急",
+        G::Clock => "時計",
+        G::System => "系統",
+        G::Battery => "電池",
+        G::Volume => "音量",
+        G::Brightness => "輝度",
+        G::Desktop => "机上",
+        G::Update => "更新",
+        G::User => "利用者",
+    }
+}
+
+/// the English label of a glyph (what the bilingual label pairs with the Japanese one)
+pub fn en(g: G) -> &'static str {
+    match g {
+        G::Terminal => "TERMINAL",
+        G::Files => "FILES",
+        G::Browser => "BROWSER",
+        G::Launch => "LAUNCH",
+        G::Tasks => "TASKS",
+        G::Craft => "CRAFT",
+        G::Settings => "SETTINGS",
+        G::Fix => "FIX",
+        G::Network => "NETWORK",
+        G::Power => "POWER",
+        G::Lock => "LOCK",
+        G::Logout => "LOG OUT",
+        G::Restart => "RESTART",
+        G::Suspend => "SLEEP",
+        G::Music => "MUSIC",
+        G::Image => "IMAGES",
+        G::Code => "CODE",
+        G::Chat => "CHAT",
+        G::Mail => "MAIL",
+        G::Game => "GAMES",
+        G::Generic => "APP",
+        G::Emergency => "EMERGENCY",
+        G::Clock => "CLOCK",
+        G::System => "SYSTEM",
+        G::Battery => "BATTERY",
+        G::Volume => "VOLUME",
+        G::Brightness => "BRIGHTNESS",
+        G::Desktop => "DESKTOP",
+        G::Update => "UPDATE",
+        G::User => "USER",
+    }
+}
+
+/// "設定 SETTINGS"
+pub fn bilingual(g: G) -> String {
+    format!("{} {}", jp(g), en(g))
+}
+
 /// the carved block every app glyph sits in
 fn cartouche(v: &mut Vec<P>) {
     v.push(P::R(0.08, 0.10, 0.84, 0.80, 0.20));
@@ -214,6 +291,37 @@ fn dist(p: &P, x: f32, y: f32) -> f32 {
             out.abs()
         }
     }
+}
+
+/// The glyph as SVG (for the web shell): strokes in `currentColor`, viewBox 0 0 100 100.
+pub fn svg(g: G) -> String {
+    let k = |v: f32| (v * 100.0 * 100.0).round() / 100.0;
+    let mut body = String::new();
+    for p in prims(g) {
+        match p {
+            P::L(x0, y0, x1, y1) => body += &format!("<line x1='{}' y1='{}' x2='{}' y2='{}'/>", k(x0), k(y0), k(x1), k(y1)),
+            P::A(cx, cy, r, a0, a1) => {
+                let pt = |t: f32| (cx + r * (t * std::f32::consts::TAU).cos(), cy + r * (t * std::f32::consts::TAU).sin());
+                let (s0, e0) = (pt(a0), pt(a1));
+                let large = if (a1 - a0).abs() > 0.5 { 1 } else { 0 };
+                let sweep = if a1 > a0 { 1 } else { 0 };
+                if (a1 - a0).abs() >= 0.999 {
+                    body += &format!("<circle cx='{}' cy='{}' r='{}'/>", k(cx), k(cy), k(r));
+                } else {
+                    body += &format!("<path d='M{} {}A{} {} 0 {large} {sweep} {} {}'/>", k(s0.0), k(s0.1), k(r), k(r), k(e0.0), k(e0.1));
+                }
+            }
+            P::C(cx, cy, r) => body += &format!("<circle cx='{}' cy='{}' r='{}'/>", k(cx), k(cy), k(r)),
+            P::D(cx, cy, r) => body += &format!("<circle cx='{}' cy='{}' r='{}' fill='currentColor' stroke='none'/>", k(cx), k(cy), k(r)),
+            P::R(x, y, w, h, r) => body += &format!("<rect x='{}' y='{}' width='{}' height='{}' rx='{}'/>", k(x), k(y), k(w), k(h), k(r)),
+        }
+    }
+    format!("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none' stroke='currentColor' stroke-width='4.6' stroke-linecap='round' stroke-linejoin='round'>{body}</svg>")
+}
+
+/// a glyph by its lower-case name ("terminal", "settings", …)
+pub fn by_name(name: &str) -> Option<G> {
+    ALL.iter().copied().find(|g| format!("{g:?}").eq_ignore_ascii_case(name))
 }
 
 /// Coverage mask, `px` × `px`, row-major. `stroke` is the line width in pixels (≥ 1).

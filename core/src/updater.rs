@@ -336,7 +336,7 @@ pub fn build_and_install(srcdir: &Path, yes: bool, label: &str) -> i32 {
         }
     }
     step("Regenerating the niri configuration and reloading the Lua modules");
-    sh(&["shadow", "setup", "niri"], None, &[]);
+    sh(&["shadow", "setup", "compositor"], None, &[]);
     sh(&["shadow-sessiond", "reload"], None, &[]);
     step(&format!(
         "Updated.{}",
@@ -395,7 +395,7 @@ pub fn rollback(yes: bool) -> i32 {
     if sh(&guarded_pkg(prev.trim(), yes, true), None, &[]) != 0 {
         return 5;
     }
-    sh(&["shadow", "setup", "niri"], None, &[]);
+    sh(&["shadow", "setup", "compositor"], None, &[]);
     sh(&["shadow-sessiond", "reload"], None, &[]);
     0
 }
@@ -616,7 +616,7 @@ fn component(path: &str) -> &'static str {
     let top = path.split('/').next().unwrap_or("");
     match top {
         "ui" => "every 2D app (shared toolkit)",
-        "niri" => "niri integration (bar, apps, session services, config generator)",
+        "niri" => "compositor IPC client (apps, session services)",
         "bar" => "shadow-bar",
         "apps" => "shadow-glyph / -webd / -settings / -launch / -net / -files / -lock / -update",
         "desktop" => "shadow-sessiond / shadow-displayd",
@@ -1160,7 +1160,7 @@ pub fn install_prepared(porcelain: bool, password: Option<String>, pr: &Prepared
         }
     }
     // session side: niri config, Lua modules, restart the session programs that changed
-    sh_quiet(&["shadow", "setup", "niri"]);
+    sh_quiet(&["shadow", "setup", "compositor"]);
     sh_quiet(&["shadow-sessiond", "reload"]);
     // 9.0: the glyph shell replaced the hub — a session still running the 8.x hub switches now
     let mut switched = false;
@@ -1932,10 +1932,11 @@ mod file_update_tests {
 
     #[test]
     fn auto_updates_lock_and_power_rules() {
-        let a = Lock::take().expect("first lock");
-        assert!(Lock::take().is_none(), "a second updater must wait");
+        let lf = std::env::temp_dir().join(format!("shadow-lock-{}", std::process::id()));
+        let a = Lock::at(lf.clone()).expect("first lock");
+        assert!(Lock::at(lf.clone()).is_none(), "a second updater must wait");
         drop(a);
-        assert!(Lock::take().is_some(), "released on drop");
+        assert!(Lock::at(lf).is_some(), "released on drop");
         let t = std::env::temp_dir().join(format!("shadow-ps-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&t);
         let mk = |n: &str, ty: &str, online: Option<&str>| {
@@ -2013,8 +2014,12 @@ fn clear_ready() {
 struct Lock(PathBuf);
 impl Lock {
     fn take() -> Option<Lock> {
-        let f = cache().join("update.lock");
-        let _ = std::fs::create_dir_all(cache());
+        Lock::at(cache().join("update.lock"))
+    }
+    fn at(f: PathBuf) -> Option<Lock> {
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
         for _ in 0..2 {
             use std::io::Write;
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&f) {

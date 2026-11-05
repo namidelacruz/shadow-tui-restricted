@@ -145,7 +145,7 @@ pub fn ui_key(state: &mut State, sym: Keysym, ch: Option<char>) {
 
 /// a click on the login / lock card
 fn ui_click(state: &mut State) {
-    let p = state.pointer_loc;
+    let p = state.pointer_loc - state.desk.screens.get(state.desk.focused).map(|s| Point::from(s.loc)).unwrap_or_default();
     let Some(ui) = state.ui.as_mut() else { return };
     let hit = ui.buttons.iter().find(|(_, r)| r.contains(p.x, p.y)).map(|(n, _)| *n);
     let action = match hit {
@@ -273,7 +273,7 @@ pub fn run_action(state: &mut State, a: &str) {
             state.relayout();
         }
         "fullscreen" => {
-            let Some(id) = state.ring.center() else { return };
+            let Some(id) = state.ring().center() else { return };
             state.transition(|_| {});
             if let Some(w) = state.wins.iter_mut().find(|w| w.id == id) {
                 w.size.toggle_full();
@@ -282,14 +282,103 @@ pub fn run_action(state: &mut State, a: &str) {
         }
         // Mod+M: the focused app goes to the grid · Mod+Shift+M: the last one comes back
         "minimize" => {
-            if let Some(id) = rest.parse::<u64>().ok().or(state.ring.center()) {
+            if let Some(id) = rest.parse::<u64>().ok().or(state.ring().center()) {
                 state.minimize(id);
             }
         }
         "restore" => {
-            let id = rest.parse::<u64>().ok().or(state.ring.min.first().copied());
+            let id = rest.parse::<u64>().ok().or(state.ring().min.first().copied());
             if let Some(id) = id {
                 state.restore(id);
+            }
+        }
+        // Mod+Up: maximise (again: restore) · Mod+Down: restore down, then minimise
+        "maximize" => {
+            if let Some(id) = state.ring().center() {
+                toggle_max(state, id);
+            }
+        }
+        "unmaximize" => {
+            let Some(id) = state.ring().center() else { return };
+            if state.win(id).is_some_and(|w| w.size.max || w.size.full) {
+                state.transition(|_| {});
+                if let Some(w) = state.wins.iter_mut().find(|w| w.id == id) {
+                    w.size.max = false;
+                    w.size.full = false;
+                }
+                state.relayout();
+            } else {
+                state.minimize(id);
+            }
+        }
+        // workspaces of the focused screen (1–9), and screens
+        "workspace" | "workspace-next" | "workspace-prev" => {
+            let si = state.desk.focused;
+            let Some(scr) = state.desk.screens.get(si) else { return };
+            let n = scr.ws.len();
+            let cur = scr.active;
+            let to = match verb {
+                "workspace-next" => (cur + 1).min(n - 1),
+                "workspace-prev" => cur.saturating_sub(1),
+                _ => rest.trim().parse::<usize>().unwrap_or(1).clamp(1, n) - 1,
+            };
+            switch_workspace(state, si, to);
+        }
+        "move-to-workspace" | "move-to-workspace-next" | "move-to-workspace-prev" => {
+            let si = state.desk.focused;
+            let Some(id) = state.ring().center() else { return };
+            let Some(scr) = state.desk.screens.get(si) else { return };
+            let (n, cur) = (scr.ws.len(), scr.active);
+            let to = match verb {
+                "move-to-workspace-next" => (cur + 1).min(n - 1),
+                "move-to-workspace-prev" => cur.saturating_sub(1),
+                _ => rest.trim().parse::<usize>().unwrap_or(1).clamp(1, n) - 1,
+            };
+            if to != cur {
+                let max = state.cfg.layout.max_open;
+                state.transition(|r| r.remove(id));
+                state.desk.move_to(id, si, to, max);
+                // follow it there
+                switch_workspace(state, si, to);
+            }
+        }
+        "focus-screen-next" | "focus-screen-prev" => {
+            let n = state.desk.screens.len();
+            if n > 1 {
+                let d = if verb.ends_with("next") { 1 } else { n - 1 };
+                state.desk.focused = (state.desk.focused + d) % n;
+                state.cur = state.desk.focused;
+                state.relayout();
+                state.on_focus_changed();
+            }
+        }
+        "move-to-screen-next" | "move-to-screen-prev" => {
+            let n = state.desk.screens.len();
+            let Some(id) = state.ring().center() else { return };
+            if n > 1 {
+                let d = if verb.ends_with("next") { 1 } else { n - 1 };
+                let to = (state.desk.focused + d) % n;
+                let ws = state.desk.screens[to].active;
+                let max = state.cfg.layout.max_open;
+                state.transition(|r| r.remove(id));
+                state.desk.move_to(id, to, ws, max);
+                state.desk.focused = to;
+                state.cur = to;
+                state.transition(|r| { r.focus(id); });
+                state.on_focus_changed();
+            }
+        }
+        // the shell around the apps: start menu, widgets, quick settings, taskbar on/off
+        "shell" => {
+            let role = rest.trim();
+            if state.cfg.shell.mode == "glyph" {
+                match role {
+                    "toggle" => spawn_raw("shadow-glyph toggle"),
+                    "widgets" | "quick" => spawn_raw("shadow-glyph summon apps"),
+                    _ => spawn_raw("shadow-glyph summon"),
+                }
+            } else if ["start", "widgets", "quick", "toggle", "notifications"].contains(&role) {
+                spawn_raw(&format!("shadow-panel toggle {role}"));
             }
         }
         // Mod+Shift+Return: the focused app takes the main tile
@@ -297,7 +386,7 @@ pub fn run_action(state: &mut State, a: &str) {
         "grid-scroll" => {
             let d: f64 = rest.parse().unwrap_or(1.0);
             let (_, max, _) = state.grid();
-            state.grid_scroll = (state.grid_scroll + d * (state.cfg.layout.tile_px as f64 + state.cfg.layout.gap as f64)).clamp(0.0, max);
+            state.set_grid_scroll((state.grid_scroll() + d * (state.cfg.layout.tile_px as f64 + state.cfg.layout.gap as f64)).clamp(0.0, max));
             state.relayout();
         }
         "close" => state.close_center(),
@@ -358,15 +447,17 @@ pub fn close_tutorial(state: &mut State) {
 pub enum Under {
     /// a client surface and the surface's origin in global logical coordinates
     Surface(WlSurface, Point<f64, Logical>, Option<LayerSurface>),
-    /// a background node of the ring (drawn by the compositor)
+    /// a minimised app's square in the grid
     Node(u64),
+    /// a window's title bar (or one of its buttons)
+    Title(u64, crate::orbit::TitleBtn),
     /// a button of the FIELD TRAINING panel
     Tutorial(&'static str),
     Nothing,
 }
 
 fn layer_hit(state: &State, p: Point<f64, Logical>, layers: &[Layer]) -> Option<(WlSurface, Point<f64, Logical>, LayerSurface)> {
-    let o = state.output.as_ref()?;
+    let o = state.output()?;
     let map = layer_map_for_output(o);
     for want in layers {
         // later layers are on top: search from the end
@@ -381,7 +472,8 @@ fn layer_hit(state: &State, p: Point<f64, Logical>, layers: &[Layer]) -> Option<
     None
 }
 
-pub fn under(state: &State, p: Point<f64, Logical>) -> Under {
+/// What is under global point `p` (on whichever screen it is).
+pub fn under(state: &mut State, p: Point<f64, Logical>) -> Under {
     if state.ui.is_some() {
         return Under::Nothing;
     }
@@ -390,29 +482,50 @@ pub fn under(state: &State, p: Point<f64, Logical>) -> Under {
             return Under::Tutorial(name);
         }
     }
+    let si = state.desk.screen_at(p.x, p.y).unwrap_or(state.desk.focused);
+    state.with_screen(si, |st| {
+        let o = st.origin();
+        match under_local(st, p - o) {
+            Under::Surface(s, at, l) => Under::Surface(s, at + o, l),
+            u => u,
+        }
+    })
+}
+
+/// What is under `p` on the current screen, in its coordinates.
+fn under_local(state: &State, p: Point<f64, Logical>) -> Under {
     if let Some((s, at, l)) = layer_hit(state, p, &[Layer::Overlay, Layer::Top]) {
         return Under::Surface(s, at, Some(l));
     }
-    // centre stage (its popups included)
+    // open apps, front to back (their popups included), each with its title bar
     let (vis, _) = state.visual();
-    if let Some((id, rect, _, _)) = vis.iter().find(|v| v.3) {
-        if state.center_takes_pointer() {
-            if let Some(w) = state.win(*id) {
-                let loc = Point::<f64, Logical>::from((rect.x, rect.y)) - w.window.geometry().loc.to_f64();
-                if let Some((s, sp)) = w.window.surface_under(p - loc, WindowSurfaceType::ALL) {
-                    return Under::Surface(s, sp.to_f64() + loc, None);
-                }
+    let titles = state.cfg.shell.titlebars;
+    for id in state.stacking() {
+        let Some((_, rect, _, _)) = vis.iter().find(|v| v.0 == id && v.3) else { continue };
+        let Some(w) = state.win(id) else { continue };
+        if titles && !w.size.full {
+            if let Some(b) = crate::orbit::title_hit(*rect, p.x, p.y) {
+                return Under::Title(id, b);
             }
-        } else if p.x >= rect.x && p.x < rect.x + rect.w && p.y >= rect.y && p.y < rect.y + rect.h {
+        }
+        let loc = Point::<f64, Logical>::from((rect.x, rect.y)) - w.window.geometry().loc.to_f64();
+        let focused = state.ring().center() == Some(id);
+        if !focused || state.center_takes_pointer() {
+            if let Some((s, sp)) = w.window.surface_under(p - loc, WindowSurfaceType::ALL) {
+                return Under::Surface(s, sp.to_f64() + loc, None);
+            }
+        } else if rect.contains(p.x, p.y) {
             return Under::Nothing; // keyboard-only window: the click goes nowhere
         }
+        // a maximised or fullscreen window covers the tiles under it
+        if (w.size.max || w.size.full) && rect.contains(p.x, p.y) {
+            return Under::Nothing;
+        }
     }
-    // ring nodes, nearest first
-    let mut ring: Vec<(u64, crate::orbit::R, f64)> = vis.iter().filter(|v| !v.3).map(|v| (v.0, v.1, v.2)).collect();
-    ring.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-    for (id, r, _) in ring {
-        if p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h {
-            return Under::Node(id);
+    // minimised squares
+    for (id, r, _, _) in vis.iter().filter(|v| !v.3) {
+        if r.contains(p.x, p.y) {
+            return Under::Node(*id);
         }
     }
     if let Some((s, at, l)) = layer_hit(state, p, &[Layer::Bottom, Layer::Background]) {
@@ -429,6 +542,8 @@ fn surface_focus(u: &Under) -> Option<(WlSurface, Point<f64, Logical>)> {
 }
 
 pub fn on_input<B: InputBackend>(state: &mut State, event: InputEvent<B>) {
+    // input acts on the screen with the keyboard
+    state.cur = state.desk.focused.min(state.desk.screens.len().saturating_sub(1));
     match event {
         InputEvent::Keyboard { event } => on_key(state, event.key_code(), event.state(), event.time_msec()),
         InputEvent::PointerMotion { event } => {
@@ -453,7 +568,7 @@ pub fn on_input<B: InputBackend>(state: &mut State, event: InputEvent<B>) {
             ptr.frame(state);
         }
         InputEvent::PointerMotionAbsolute { event } => {
-            let (w, h) = state.output_size();
+            let (w, h) = state.total_size();
             let p = event.position_transformed((w as i32, h as i32).into());
             pointer_to(state, p, event.time_msec());
         }
@@ -464,15 +579,19 @@ pub fn on_input<B: InputBackend>(state: &mut State, event: InputEvent<B>) {
                 return;
             }
             // over the minimised squares: the grid scrolls (wheel or two fingers, either axis)
-            let in_band = state.grid().2.map(|b| b.contains(state.pointer_loc.x, state.pointer_loc.y)).unwrap_or(false);
-            if in_band {
-                let px = |ax| event.amount(ax).or(event.amount_v120(ax).map(|d| d / 120.0 * 48.0)).unwrap_or(0.0);
-                let d = px(Axis::Vertical) + px(Axis::Horizontal);
-                if d != 0.0 {
-                    let (_, max, _) = state.grid();
-                    state.grid_scroll = (state.grid_scroll + d).clamp(0.0, max);
-                    state.dirty = true;
+            let si = state.desk.screen_at(state.pointer_loc.x, state.pointer_loc.y).unwrap_or(state.desk.focused);
+            let px = |ax| event.amount(ax).or(event.amount_v120(ax).map(|d| d / 120.0 * 48.0)).unwrap_or(0.0);
+            let d = px(Axis::Vertical) + px(Axis::Horizontal);
+            let in_band = state.with_screen(si, |st| {
+                let hit = st.grid().2.map(|b| b.contains(st.pointer_loc.x, st.pointer_loc.y)).unwrap_or(false);
+                if hit && d != 0.0 {
+                    let (_, max, _) = st.grid();
+                    st.set_grid_scroll((st.grid_scroll() + d).clamp(0.0, max));
+                    st.dirty = true;
                 }
+                hit
+            });
+            if in_band {
                 return;
             }
             // Mod + scroll: the keyboard moves between the open apps
@@ -542,15 +661,80 @@ pub fn pointer_button(state: &mut State, button: u32, bs: ButtonState, time: u32
                 return; // the panel's own click: no client sees it
             }
             Under::Node(id) => {
-                state.restore(id);
+                state.focus_window(id);
                 return;
             }
+            Under::Title(id, b) => {
+                title_click(state, id, b);
+                return; // the compositor's own bar: no client sees it
+            }
             Under::Surface(s, _, layer) => click_focus(state, &s, layer),
-            Under::Nothing => {}
+            Under::Nothing => {
+                // an empty spot of a screen: that screen gets the keyboard
+                if let Some(si) = state.desk.screen_at(state.pointer_loc.x, state.pointer_loc.y) {
+                    if si != state.desk.focused {
+                        state.desk.focused = si;
+                        state.cur = si;
+                        state.relayout();
+                    }
+                }
+            }
         }
     }
     ptr.button(state, &ButtonEvent { button, state: bs, serial, time });
     ptr.frame(state);
+}
+
+/// Show workspace `to` on screen `si`: the windows slide in from the side they come from.
+pub fn switch_workspace(state: &mut State, si: usize, to: usize) {
+    let from = state.desk.screens.get(si).map(|s| s.active).unwrap_or(0);
+    let w = state.desk.screens.get(si).map(|s| s.size.0).unwrap_or(1280.0);
+    if !state.desk.switch(si, to) {
+        return;
+    }
+    state.desk.focused = si;
+    state.cur = si;
+    // where the arriving windows start: one screen-width to the side
+    let dx = if to > from { w } else { -w };
+    let targets = state.targets();
+    let start: std::collections::HashMap<u64, crate::orbit::R> = targets.iter().map(|(id, r, _, _)| (*id, crate::orbit::R { x: r.x + dx, ..*r })).collect();
+    let ms = state.cfg.layout.anim_ms.max(1) * 3 / 2;
+    state.anim = (state.cfg.layout.anim_ms > 0).then(|| crate::state::Anim::Move { start: Instant::now(), dur: Duration::from_millis(ms), from: start });
+    state.relayout();
+    state.on_focus_changed();
+}
+
+/// a click on a title bar: focus, or one of the buttons; a double click on the bar maximises
+fn title_click(state: &mut State, id: u64, b: crate::orbit::TitleBtn) {
+    use crate::orbit::TitleBtn::*;
+    let double = state.last_title_click.is_some_and(|(i, t)| i == id && t.elapsed() < Duration::from_millis(400));
+    state.last_title_click = Some((id, Instant::now()));
+    state.focus_window(id);
+    match b {
+        Min => state.minimize(id),
+        Max => toggle_max(state, id),
+        Close => state.close_center(),
+        Bar if double => {
+            state.last_title_click = None;
+            toggle_max(state, id);
+        }
+        Bar => {}
+    }
+    state.dirty = true;
+}
+
+pub fn toggle_max(state: &mut State, id: u64) {
+    state.transition(|_| {});
+    let others: Vec<u64> = state.ring().order.clone();
+    for w in state.wins.iter_mut() {
+        if w.id == id {
+            w.size.max = !w.size.max;
+            w.size.full = false;
+        } else if others.contains(&w.id) {
+            w.size.max = false; // one maximised window per workspace
+        }
+    }
+    state.relayout();
 }
 
 /// test hook (SHADOW_TEST_INPUT only): move to x,y and click there, through the same paths
@@ -579,8 +763,14 @@ fn click_focus(state: &mut State, s: &WlSurface, layer: Option<LayerSurface>) {
         }
         Some(_) => {}
         None => {
-            let is_center = state.ring.center().and_then(|id| state.win(id)).and_then(|w| w.window.toplevel().map(|t| t.wl_surface() == &root)).unwrap_or(false);
-            if is_center && state.layer_kb_focus.is_some() {
+            let id = state.wins.iter().find(|w| w.window.toplevel().map(|t| t.wl_surface() == &root).unwrap_or(false)).map(|w| w.id);
+            if let Some(id) = id {
+                let focused_here = state.desk.locate(id).map(|l| l.0) == Some(state.desk.focused) && state.ring().center() == Some(id);
+                if !focused_here {
+                    state.focus_window(id);
+                }
+            }
+            if state.layer_kb_focus.is_some() {
                 state.layer_kb_focus = None;
                 state.relayout();
             }
@@ -589,8 +779,13 @@ fn click_focus(state: &mut State, s: &WlSurface, layer: Option<LayerSurface>) {
 }
 
 fn pointer_to(state: &mut State, p: Point<f64, Logical>, time: u32) {
-    let (w, h) = state.output_size();
-    state.pointer_loc = (p.x.clamp(0.0, w - 1.0), p.y.clamp(0.0, h - 1.0)).into();
+    let (cx, cy) = if state.desk.screens.is_empty() {
+        let (w, h) = state.output_size();
+        (p.x.clamp(0.0, w - 1.0), p.y.clamp(0.0, h - 1.0))
+    } else {
+        state.desk.clamp(p.x, p.y)
+    };
+    state.pointer_loc = (cx, cy).into();
     activity(state);
     if state.ui.is_some() {
         state.cursor_typing_hidden = false;
@@ -607,7 +802,7 @@ fn pointer_to(state: &mut State, p: Point<f64, Logical>, time: u32) {
     let focus = surface_focus(&u);
     // nothing of a client's under the pointer: the compositor's own arrow
     if focus.is_none() {
-        let want = if hover_tut || matches!(u, Under::Node(_)) { smithay::input::pointer::CursorIcon::Pointer } else { smithay::input::pointer::CursorIcon::Default };
+        let want = if hover_tut || matches!(u, Under::Node(_) | Under::Title(..)) { smithay::input::pointer::CursorIcon::Pointer } else { smithay::input::pointer::CursorIcon::Default };
         if !matches!(&state.cursor_status, smithay::input::pointer::CursorImageStatus::Named(i) if *i == want) {
             state.cursor_status = smithay::input::pointer::CursorImageStatus::Named(want);
         }

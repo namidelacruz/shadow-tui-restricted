@@ -4,8 +4,6 @@
 # The whole rpmbuild output is kept in ~/.local/state/shadow-tui/build-rpm.log. When the build fails
 # the compiler's own error is shown, and two known causes are retried by themselves:
 #   - the compiler was killed for lack of memory   -> once more with one compile job
-#   - only Shadow's own compositor (preview) fails -> once more without it (the niri session
-#     doesn't use it; it comes back with the next update that builds)
 set -eu
 src=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:-$src/dist}
@@ -62,13 +60,6 @@ else
     printf '\n  ~ the compiler ran out of memory — building again with one job at a time (slower)\n'
     export SHADOW_BUILD_JOBS=1
     try "$@" && ok=1 || e=$(errors)
-  fi
-  # the failure is in the compositor or the system libraries only it uses
-  if [ "$ok" = 0 ] && printf '%s' "$e" | grep -qE 'shadow-compositor|smithay|input-sys|libseat|gbm-sys|drm-sys|wayland-sys|libudev-sys|wayland-egl|winit|x11rb|calloop|`gbm`|`input`|`drm`'; then
-    show_errors
-    printf '\n  ~ only Shadow'"'"'s own compositor (preview) failed — building everything else without it.\n'
-    printf '    The niri session is unaffected. Send the log above with the crash report if you want it fixed.\n\n'
-    try "$@" --without compositor && ok=1
   fi
 fi
 if [ "$ok" = 0 ]; then show_errors; exit 1; fi

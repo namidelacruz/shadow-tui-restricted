@@ -1,4 +1,4 @@
-//! shadow-launch — the application launcher. It opens as its own normal window (tiled by niri,
+//! shadow-launch — the application launcher. It opens as its own normal window (tiled by the compositor,
 //! fully opaque), not as an overlay over what is on screen.
 //!
 //! Type to search apps and Shadow actions. With an empty query the list is ranked by intent:
@@ -51,7 +51,7 @@ fn actions() -> Vec<Entry> {
         action("crash", "Crash log", "what crashed, what holds changes back · save a report", "shadow-prefs crash"),
         action("hub", "Hub", "Mod+Space · the hidden hub: apps, settings, fix, lock", "shadow-glyph summon"),
         action("bar", "Show / hide side bar", "Mod+Shift+B · optional next to the hub", "sh -c 'pgrep -x shadow-bar >/dev/null && pkill -USR1 -x shadow-bar || exec shadow-bar'"),
-        action("overview", "Overview", "all workspaces", "niri msg action toggle-overview"),
+        action("overview", "Workspaces", "next workspace", "shadowctl action workspace-next"),
         action("power", "Power + learning", "shadow-powerd status and schedule", &hold("shadow-powerd status; echo; shadow-powerd learn")),
         action("sync", "Sync state to GitHub", "shadow-sync push", &hold("shadow-sync push")),
         action("healer", "Healer status", "self-correction log and proposals", &hold("shadow healer status")),
@@ -62,7 +62,7 @@ fn actions() -> Vec<Entry> {
         action("tasks", "Task manager", "shadow-tasks · CPU, RAM, NPU, GPU, processes", "shadow-tasks"),
         action("update", "Update", "shadow-update · check for and install updates (only changed files)", "shadow-update"),
         action("display", "Display status", "scale, text size, refresh per monitor", &hold("shadow-displayd status")),
-        action("logout", "Log out", "leave the session", "niri msg action quit --skip-confirmation"),
+        action("logout", "Log out", "leave the session", "shadowctl action quit"),
         action("suspend", "Suspend", "", "systemctl suspend"),
         action("reboot", "Reboot", "", "systemctl reboot"),
         action("poweroff", "Shut down", "", "systemctl poweroff"),

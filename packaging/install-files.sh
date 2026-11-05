@@ -20,8 +20,6 @@ fi
 install -d "$o/bin" "$o/lib" "$o/share" "$dest/usr/bin"
 for b in shadow-bar shadow-launch shadow-net shadow-config shadow-files shadow-lock shadow-update shadow-flyout shadow-tasks shadow-fix shadow-passfix shadow-wallpaper shadow-glyph shadow-webd shadow-settings shadow-prefs shadow-craft shadow-compositor shadowctl shadow-greet \
          shadow-sessiond shadow-displayd shadow-term shadow-powerd shadow; do
-  # Shadow's own compositor is optional (RPM: --without compositor)
-  case $b in shadow-compositor|shadowctl) [ -e "$target/release/$b" ] || continue ;; esac
   inst -m755 "$target/release/$b" "$o/bin/$b"
 done
 inst -m755 "$src/system/shadow-session" "$o/bin/shadow-session"
@@ -57,7 +55,8 @@ ln -sf ../shadow-update-auto.timer "$dest/$u/timers.target.wants/shadow-update-a
 inst -m755 "$src/system/shadow-tui.sleep"    "$dest/usr/lib/systemd/system-sleep/shadow-tui"
 inst -m644 "$src/system/org.shadownetwork.wifi.policy" "$dest/usr/share/polkit-1/actions/org.shadownetwork.wifi.policy"
 inst -m644 "$src/system/shadow-tui.desktop"  "$dest/usr/share/wayland-sessions/shadow-tui.desktop"
-[ -e "$o/bin/shadow-compositor" ] && inst -m644 "$src/system/shadow-tui-own.desktop" "$dest/usr/share/wayland-sessions/shadow-tui-own.desktop"
+# XDG_CURRENT_DESKTOP=shadow: which portal backends file pickers, screenshots etc. use
+inst -m644 "$src/system/shadow-portals.conf" "$dest/usr/share/xdg-desktop-portal/shadow-portals.conf"
 for d in shadow-term shadow-settings shadow-files shadow-net shadow-launch shadow-update shadow-tasks shadow-wallpaper shadow-craft; do
   inst -m644 "$src/system/$d.desktop" "$dest/usr/share/applications/$d.desktop"
 done

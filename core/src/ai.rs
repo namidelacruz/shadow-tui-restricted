@@ -432,7 +432,7 @@ pub fn ask(q: &str) -> Result<String, String> {
         sys::run(&["shadow", "wifi", "status"]).1
     );
     chat("You are the built-in assistant of Shadow TUI Restricted (Arch Linux, Dell 14 Plus, keyboard-first desktop on niri). \
-          Answer briefly and concretely. Prefer the system's own commands (shadow, shadow-powerd, shadow-displayd, shadow-sync, shadow-healer, niri msg) when they solve the problem. \
+          Answer briefly and concretely. Prefer the system's own commands (shadow, shadow-powerd, shadow-displayd, shadow-sync, shadow-healer, shadowctl) when they solve the problem. \
           Never ask for passwords.", &format!("{ctx}\nQuestion: {q}"))
 }
 

@@ -163,7 +163,7 @@ impl Fixc {
                 if let Err(e) = shadow_apps::atomic_write(&p, &t) {
                     self.msg = (format!("cannot write {}: {e}", p.display()), true);
                 } else {
-                    self.work(vec!["shadow".into(), "setup".into(), "niri".into()]);
+                    self.work(vec!["shadow".into(), "setup".into(), "compositor".into()]);
                     self.load();
                     self.msg = (format!("{key} = {} — niri applies it now", !on), false);
                 }

@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Shadow TUI Restricted
-Comment=Keyboard-first tactical desktop on niri
+Comment=Shadow's own glyph desktop (shadow-compositor)
 Exec=/opt/shadow-tui/bin/shadow-session
 Type=Application
-DesktopNames=niri;ShadowTUI
+DesktopNames=shadow;ShadowTUI

@@ -44,7 +44,7 @@ case "$1" in
     fi
     cat <<'MSG'
 ==> Shadow TUI Restricted installed (/opt/shadow-tui). Next, as your normal user:
-      shadow setup                         # config.toml and the niri config
+      shadow setup                         # config.toml (the compositor reads it live)
     Login screen (static console login, sized to the panel):
       sudo shadow greeter enable           # needs greetd (./install.sh --greeter installs it)
     Or pick "Shadow TUI Restricted" in your current login manager, or run shadow-session on a TTY.

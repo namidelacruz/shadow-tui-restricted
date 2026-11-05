@@ -30,7 +30,7 @@ pub fn learning_on() -> bool {
 
 /// the focused app, from niri
 pub fn focused_app() -> String {
-    let (code, out, _) = sys::run(&["niri", "msg", "--json", "focused-window"]);
+    let (code, out, _) = sys::run(&["shadowctl", "niri", "--json", "focused-window"]);
     if code != 0 {
         return String::new();
     }
@@ -40,7 +40,7 @@ pub fn focused_app() -> String {
 
 /// the built-in panel's (connector, width, height, refresh mHz, all refreshes at that size)
 pub fn panel() -> Option<(String, i64, i64, i64, Vec<i64>)> {
-    let (code, out, _) = sys::run(&["niri", "msg", "--json", "outputs"]);
+    let (code, out, _) = sys::run(&["shadowctl", "niri", "--json", "outputs"]);
     if code != 0 {
         return None;
     }

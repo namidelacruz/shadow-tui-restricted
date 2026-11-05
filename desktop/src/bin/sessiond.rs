@@ -1,12 +1,12 @@
-//! shadow-sessiond — the session's event hub on niri.
+//! shadow-sessiond — the session's event hub (on shadow-compositor, through its niri-compatible IPC).
 //!
-//!  * follows niri's event stream (focus, new windows, workspaces)
+//!  * follows the compositor's event stream (focus, new windows, workspaces)
 //!  * sends a 32-byte telemetry record to shadow-powerd on every focus change / launch
 //!  * hosts the sandboxed Lua layer: window rules on open, bar widgets, events, key macros
-//!  * keeps niri's config in step with the Lua key macros (`shadow setup niri`)
+//!  * tells the compositor when the Lua key macros change (`shadow setup compositor`)
 //!
-//!   shadow-sessiond                 run (started by niri at login)
-//!   shadow-sessiond macro KEY       run the Lua macro bound to KEY (niri binds call this)
+//!   shadow-sessiond                 run (started by the compositor at login)
+//!   shadow-sessiond macro KEY       run the Lua macro bound to KEY (compositor binds call this)
 //!   shadow-sessiond reload          reload the Lua modules
 //!   shadow-sessiond status          modules, errors, focus
 use shadow_desktop::{luahost::LuaHost, runtime_dir, spawn, sys, telemetry};
@@ -73,7 +73,7 @@ impl Hub {
         let new = keys.join("\n");
         if std::fs::read_to_string(&f).unwrap_or_default().trim() != new.trim() {
             let _ = std::fs::write(&f, format!("{new}\n"));
-            let _ = std::process::Command::new("shadow").args(["setup", "niri"]).stdout(std::process::Stdio::null()).status();
+            let _ = std::process::Command::new("shadow").args(["setup", "compositor"]).stdout(std::process::Stdio::null()).status();
         }
     }
 
@@ -315,11 +315,11 @@ fn main() {
     }
     if niri::available() {
         let tx = tx.clone();
-        let sock = std::env::var_os("NIRI_SOCKET").map(std::path::PathBuf::from);
+        let sock = niri::shadow_compositor();
         std::thread::spawn(move || {
             niri::event_stream(|l| {
                 if l.is_empty() {
-                    // niri went away: if its socket is gone the session is over
+                    // the compositor went away: if its socket is gone the session is over
                     if sock.as_ref().is_some_and(|s| !s.exists()) {
                         let _ = std::fs::remove_file(sock_path_for_exit());
                         std::process::exit(0);
@@ -330,7 +330,7 @@ fn main() {
             })
         });
     } else {
-        eprintln!("shadow-sessiond: NIRI_SOCKET not set — run inside the niri session");
+        eprintln!("shadow-sessiond: shadow-compositor is not running — run inside the Shadow session");
     }
     let mut hub = Hub { lua: None, model: Model::default(), widgets: String::new(), last_widgets: Instant::now() };
     hub.load_lua();

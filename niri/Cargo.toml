@@ -2,12 +2,8 @@
 name = "shadow-niri"
 version = "9.0.0"
 edition = "2021"
-description = "Shadow TUI Restricted: client for niri's public IPC (niri msg --json), event-stream model, config generation"
+description = "Shadow TUI Restricted: client for shadow-compositor's control socket (niri-compatible IPC shapes, event-stream model)"
 license = "MIT"
 
 [dependencies]
 serde_json = "1"
-
-[[bin]]
-name = "shadow-niri-gen"
-path = "src/bin/gen.rs"

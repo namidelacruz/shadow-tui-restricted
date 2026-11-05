@@ -286,7 +286,7 @@ fn set_refresh(r: &str, keep: bool) -> i32 {
     };
     let best = rates.iter().min_by_key(|r| (**r - hz as i64 * 1000).abs()).copied().unwrap_or(hz as i64 * 1000);
     let mode = format!("{w}x{h}@{:.3}", best as f64 / 1000.0);
-    let (code, out, err) = sys::run(&["niri", "msg", "output", &name, "mode", &mode]);
+    let (code, out, err) = sys::run(&["shadowctl", "niri", "output", &name, "mode", &mode]);
     println!("{}", if code == 0 { format!("{name}: {mode} (until the power source changes){out}") } else { err });
     if keep {
         println!("to make it permanent: set [display] refresh_{} = {hz} in ~/.config/shadow-state/config.toml (or Settings → Display)", if ctx.ac { "ac" } else { "battery" });

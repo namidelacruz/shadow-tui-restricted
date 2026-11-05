@@ -48,6 +48,9 @@ struct Slot {
 #[derive(Default)]
 pub struct RenderCache {
     pub shaders: Option<Shaders>,
+    /// per-screen key prefix: each screen keeps its own shader / solid elements (their sizes
+    /// differ), so an idle screen sees no damage from the other one
+    pub prefix: String,
     slots: HashMap<String, Slot>,
     solids: HashMap<String, (Id, CommitCounter, Rectangle<i32, Physical>, [f32; 4])>,
     pub glyphs: HashMap<(crate::glyphs::G, i32, u8, u8, u8), MemoryRenderBuffer>,
@@ -55,8 +58,9 @@ pub struct RenderCache {
 
 impl RenderCache {
     pub fn forget_window(&mut self, id: u64) {
-        let p = format!("node-{id}");
-        self.slots.retain(|k, _| !k.starts_with(&p));
+        let tags = [format!("node-{id}"), format!("frame-{id}"), format!("tess-{id}"), format!("tile-{id}"), format!("title-{id}")];
+        self.slots.retain(|k, _| !tags.iter().any(|t| k.contains(t.as_str())));
+        self.solids.retain(|k, _| !tags.iter().any(|t| k.contains(t.as_str())));
     }
 
     fn shader(&mut self, key: &str, prog: &GlesPixelProgram, area: Rectangle<i32, Logical>, alpha: f32, uni: Vec<(&'static str, Vec<f32>)>) -> PixelShaderElement {
@@ -69,6 +73,7 @@ impl RenderCache {
                 _ => Uniform::new(*n, [v[0], v[1], v[2], v[3]]),
             }).collect()
         };
+        let key = &format!("{}{key}", self.prefix);
         match self.slots.get_mut(key) {
             Some(s) if (s.alpha - alpha).abs() < 1e-4 => {
                 if s.area != area {
@@ -90,7 +95,7 @@ impl RenderCache {
     }
 
     fn solid(&mut self, key: &str, geo: Rectangle<i32, Physical>, color: [f32; 4]) -> SolidColorRenderElement {
-        let e = self.solids.entry(key.into()).or_insert_with(|| (Id::new(), CommitCounter::default(), geo, color));
+        let e = self.solids.entry(format!("{}{key}", self.prefix)).or_insert_with(|| (Id::new(), CommitCounter::default(), geo, color));
         if e.2 != geo || e.3 != color {
             e.1.increment();
             e.2 = geo;
@@ -144,6 +149,7 @@ impl State {
     /// Build the frame. Returns the elements (front to back).
     pub fn elements(&mut self, r: &mut GlesRenderer) -> Vec<El> {
         self.ensure_shaders(r);
+        self.render.prefix = if self.cur == 0 { String::new() } else { format!("s{}:", self.cur) };
         let mut out: Vec<El> = vec![];
         let Some(sh) = self.render.shaders.as_ref().map(|s| (s.backdrop.clone(), s.plate.clone(), s.node.clone(), s.bar.clone(), s.background.clone(), s.glint.clone(), s.frame.clone(), s.tess.clone())) else { return out };
         let (p_back, p_plate, _p_node, p_bar, p_bg, p_glint, p_frame, p_tess) = sh;
@@ -158,7 +164,13 @@ impl State {
 
         // ---------------------------------------------------------- greeter / lock screen
         if self.ui.is_some() {
-            self.ui_elements(r, &mut out, &p_frame, &p_bg, &p_glint);
+            // the card on the focused screen; the others show the figure only
+            if self.cur == self.desk.focused || self.desk.screens.len() < 2 {
+                self.ui_elements(r, &mut out, &p_frame, &p_bg, &p_glint);
+            } else {
+                let rv = self.ui.as_ref().map(|u| u.reveal()).unwrap_or(1.0);
+                self.background_elements(&mut out, &p_bg, &p_glint, rv, false);
+            }
             return out;
         }
 
@@ -196,7 +208,7 @@ impl State {
 
         // ---------------------------------------------------------- overlay + top layers
         let full = self.fullscreen();
-        let layers: Vec<(Layer, smithay::desktop::LayerSurface, Rectangle<i32, Logical>)> = self.output.as_ref().map(|o| {
+        let layers: Vec<(Layer, smithay::desktop::LayerSurface, Rectangle<i32, Logical>)> = self.output().map(|o| {
             let map = layer_map_for_output(o);
             map.layers().filter_map(|l| map.layer_geometry(l).map(|g| (l.layer(), l.clone(), g))).collect()
         }).unwrap_or_default();
@@ -215,11 +227,13 @@ impl State {
         // ---------------------------------------------------------- open apps
         let (vis, e) = self.visual();
         let animating = e < 1.0;
-        let focus = self.ring.center();
+        // the focused window shows as focused only on the screen with the keyboard
+        let focus = if self.cur == self.desk.focused { self.ring().center() } else { None };
         let ptr = self.pointer_loc;
-        let mut opened: Vec<(u64, R)> = vis.iter().filter(|v| v.3).map(|v| (v.0, v.1)).collect();
-        // the fullscreen app is drawn first (on top of everything else)
-        opened.sort_by_key(|(id, _)| Some(*id) != full);
+        // front to back: fullscreen, maximised, focused, then the tiles
+        let order = self.stacking();
+        let opened: Vec<(u64, R)> = order.iter().filter_map(|id| vis.iter().find(|v| v.0 == *id && v.3).map(|v| (v.0, v.1))).collect();
+        let titles = self.cfg.shell.titlebars;
         for (id, rect) in &opened {
             let Some(w) = self.win(*id) else { continue };
             let is_full = Some(*id) == full;
@@ -262,13 +276,21 @@ impl State {
                 out.push(El::Shader(self.render.shader(&format!("frame-{id}"), &p_frame, lrect(at.inset(-3.0)), fa * fade, u)));
                 continue;
             }
+            // the title bar: glyph, name (with its Japanese label), minimise / maximise / close
+            if titles && !is_full {
+                let (app, title) = (w.app_id.clone(), if w.title.is_empty() { w.app_id.clone() } else { w.title.clone() });
+                let maxed = w.size.max;
+                self.title_elements(r, &mut out, *id, *rect, &app, &title, Some(*id) == focus, maxed, fade * boot, &p_frame);
+            }
+            let Some(w) = self.win(*id) else { continue };
             let loc = (Point::<f64, Logical>::from((rect.x, rect.y)) - w.window.geometry().loc.to_f64()).to_physical(sc).to_i32_round();
             let els: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = w.window.render_elements(r, loc, sc, fade);
             out.extend(els.into_iter().map(El::Surface));
             if !is_full {
                 let f = if Some(*id) == focus { 1.0 } else { 0.0 };
                 let m = 3.0;
-                let fr = R { x: rect.x - m, y: rect.y - m, w: rect.w + 2.0 * m, h: rect.h + 2.0 * m };
+                let tb = if titles { crate::orbit::TITLE_H } else { 0.0 };
+                let fr = R { x: rect.x - m, y: rect.y - m - tb, w: rect.w + 2.0 * m, h: rect.h + 2.0 * m + tb };
                 let mut u = self.colors();
                 u.extend([("u_hi", hi.to_vec()), ("u_focus", vec![f]), ("u_fill", vec![0.0]), ("u_hover", vec![0.0])]);
                 out.push(El::Shader(self.render.shader(&format!("frame-{id}"), &p_frame, lrect(fr), boot * fade, u)));
@@ -281,7 +303,7 @@ impl State {
         if let (_, max, Some(band)) = self.grid() {
             if !tiles.is_empty() && max > 0.0 {
                 // scroll hint on the band's right edge
-                let n = self.ring.min.len();
+                let n = self.ring().min.len();
                 let s = format!("{n} MINIMISED · SCROLL");
                 let px = fpx * 0.72;
                 let w = self.text.width(&s, px);
@@ -346,6 +368,88 @@ impl State {
         }
         let _ = (&p_back, &p_bar, bar_px_unused());
         out
+    }
+
+    /// A window's title bar (10.0, Windows 11 layout in the glyph style): the app's glyph and its
+    /// bilingual label on the left, the title, then minimise · maximise / restore · close.
+    #[allow(clippy::too_many_arguments)]
+    fn title_elements(&mut self, r: &mut GlesRenderer, out: &mut Vec<El>, id: u64, content: R, app: &str, title: &str, focused: bool, maxed: bool, a: f32, p_frame: &GlesPixelProgram) {
+        let scale = self.scale();
+        let px = |v: f64| (v * scale).round() as i32;
+        let (bar, btns) = crate::orbit::title_bar(content);
+        let amber = rgb(&self.cfg.look.amber);
+        let hi = rgb(&self.cfg.look.cyan);
+        let crimson = rgb(&self.cfg.look.crimson);
+        let dim = [0.56, 0.5, 0.38];
+        let ptr = self.pointer_loc;
+        let fpx = self.cfg.look.font_px * scale as f32 * 0.86;
+        let ty = px(bar.y + (bar.h - fpx as f64 / scale * 1.25) / 2.0);
+        // buttons first (front), then the text, then the strip behind them
+        for (b, rr) in btns {
+            use crate::orbit::TitleBtn::*;
+            let hover = rr.contains(ptr.x, ptr.y);
+            if hover {
+                let c = if b == Close { [crimson[0], crimson[1], crimson[2], 0.9] } else { [amber[0] * 0.25, amber[1] * 0.25, amber[2] * 0.25, 0.9] };
+                out.push(El::Solid(self.render.solid(&format!("title-{id}-h{b:?}"), Rectangle::new((px(rr.x), px(rr.y)).into(), (px(rr.w), px(rr.h)).into()), c)));
+            }
+            let col = if hover && b == Close { [1.0, 0.95, 0.9] } else if hover { hi } else if focused { amber } else { dim };
+            // drawn as strokes: — ▢ (⧉ when maximised) ✕, centred in the button
+            let (cx, cy) = (rr.x + rr.w / 2.0, rr.y + rr.h / 2.0);
+            let s = 5.0;
+            let t = (1.2 * scale).max(1.0).round() as i32;
+            let mut line = |k: &str, x0: f64, y0: f64, w: f64, h: f64| {
+                let geo = Rectangle::new((px(x0), px(y0)).into(), (px(w).max(t), px(h).max(t)).into());
+                out.push(El::Solid(self.render.solid(&format!("title-{id}-{k}"), geo, [col[0], col[1], col[2], a])));
+            };
+            match b {
+                Min => line("min", cx - s, cy, 2.0 * s, 0.0),
+                Max if maxed => {
+                    // two overlapping squares: restore down
+                    line("mx1", cx - s + 2.0, cy - s, 2.0 * s - 2.0, 0.0);
+                    line("mx2", cx + s, cy - s, 0.0, 2.0 * s - 2.0);
+                    line("mx3", cx - s, cy - s + 2.0, 2.0 * s - 2.0, 0.0);
+                    line("mx4", cx - s, cy + s, 2.0 * s - 2.0, 0.0);
+                    line("mx5", cx - s, cy - s + 2.0, 0.0, 2.0 * s - 2.0);
+                    line("mx6", cx + s - 2.0, cy - s + 2.0, 0.0, 2.0 * s - 2.0);
+                }
+                Max => {
+                    line("mx1", cx - s, cy - s, 2.0 * s, 0.0);
+                    line("mx3", cx - s, cy + s, 2.0 * s, 0.0);
+                    line("mx5", cx - s, cy - s, 0.0, 2.0 * s);
+                    line("mx6", cx + s, cy - s, 0.0, 2.0 * s);
+                }
+                Close => {
+                    // an ✕ from short diagonal steps
+                    for i in 0..7 {
+                        let d = -s + i as f64 * (2.0 * s / 6.0);
+                        line(&format!("x{i}a"), cx + d - 0.6, cy + d - 0.6, 1.2, 1.2);
+                        line(&format!("x{i}b"), cx + d - 0.6, cy - d - 0.6, 1.2, 1.2);
+                    }
+                }
+                Bar => {}
+            }
+        }
+        // glyph + bilingual label (端末 TERMINAL) + title
+        let g = crate::glyphs::for_app(app);
+        let gpx = px(bar.h * 0.62);
+        let gb = self.glyph_buf(g, gpx, if focused { amber } else { dim });
+        let gat = Point::<f64, Physical>::from((px(bar.x + 10.0) as f64, px(bar.y) as f64 + (px(bar.h) - gpx) as f64 / 2.0));
+        if let Ok(el) = MemoryRenderBufferRenderElement::from_buffer(r, gat, &gb, Some(a), None, None, Kind::Unspecified) {
+            out.push(El::Mem(RescaleRenderElement::from_element(el, gat.to_i32_round(), Scale::from(1.0))));
+        }
+        let label = crate::glyphs::bilingual(g);
+        let lx = px(bar.x + 10.0) + gpx + px(8.0);
+        let lw = self.text_el(r, out, &format!("d:title-{id}-l"), &label, fpx, if focused { amber } else { dim }, (lx, ty), a);
+        let room = px(bar.w - 3.0 * crate::orbit::TITLE_BTN_W - 24.0) - (lx + lw - px(bar.x));
+        if room > px(40.0) && !title.is_empty() && !title.eq_ignore_ascii_case(app) {
+            let mut t: String = title.chars().take(120).collect();
+            while self.text.width(&t, fpx) > room && t.pop().is_some() {}
+            self.text_el(r, out, &format!("title-{id}-t"), &format!("· {t}"), fpx, if focused { [0.92, 0.88, 0.77] } else { dim }, (lx + lw + px(6.0), ty), a);
+        }
+        // the strip: a gold frame shader with fill, a hair brighter when focused
+        let mut u = self.colors();
+        u.extend([("u_hi", hi.to_vec()), ("u_focus", vec![if focused { 1.0 } else { 0.0 }]), ("u_fill", vec![1.0]), ("u_hover", vec![0.0])]);
+        out.push(El::Shader(self.render.shader(&format!("title-{id}"), p_frame, lrect(bar), a, u)));
     }
 
     /// The login / lock card under the Vitruvian figure: SHADOW in Shadow Glyph, the fields, the
@@ -470,6 +574,10 @@ impl State {
         if self.cursor_typing_hidden {
             return;
         }
+        let (ow, oh) = self.output_size();
+        if self.pointer_loc.x < 0.0 || self.pointer_loc.y < 0.0 || self.pointer_loc.x >= ow || self.pointer_loc.y >= oh {
+            return;
+        }
         let scale = self.scale();
         let (amber, cyan, crimson) = (rgb(&self.cfg.look.amber), rgb(&self.cfg.look.cyan), rgb(&self.cfg.look.crimson));
         let (buf, _) = self.cursors.get(crate::cursor::Shape::Arrow, scale, amber, cyan, crimson);
@@ -548,6 +656,12 @@ impl State {
         if !self.pointer_live || self.cursor_typing_hidden || self.ui.is_some() {
             return;
         }
+        // only on the screen the pointer is on (it is in this screen's coordinates here)
+        let (ow, oh) = self.output_size();
+        let p = self.pointer_loc;
+        if p.x < 0.0 || p.y < 0.0 || p.x >= ow || p.y >= oh {
+            return;
+        }
         let scale = self.scale();
         let sc = Scale::from(scale);
         match self.cursor_status.clone() {
@@ -578,6 +692,9 @@ impl State {
 
     /// FIELD TRAINING: a glass panel above the bottom edge; one hotkey at a time
     fn tutorial_elements(&mut self, r: &mut GlesRenderer, out: &mut Vec<El>, p_plate: &GlesPixelProgram) {
+        if self.cur != self.desk.focused.min(self.desk.screens.len().saturating_sub(1)) {
+            return; // on the screen with the keyboard
+        }
         self.tut_buttons.clear();
         if self.ui.is_some() {
             return;
@@ -633,7 +750,8 @@ impl State {
             let hover = {
                 let lp = self.pointer_loc;
                 let rr = R { x: bx as f64 / scale - 6.0, y: by as f64 / scale - 4.0, w: w as f64 / scale + 12.0, h: bpx as f64 * 1.5 / scale + 8.0 };
-                self.tut_buttons.push((name, rr));
+                let o = self.origin();
+                self.tut_buttons.push((name, R { x: rr.x + o.x, y: rr.y + o.y, ..rr }));
                 lp.x >= rr.x && lp.x < rr.x + rr.w && lp.y >= rr.y && lp.y < rr.y + rr.h
             };
             self.text_el(r, out, &format!("tut-b-{name}"), label, bpx, if hover { cyan } else { amber }, (bx, by), a * if hover { 1.0 } else { 0.8 });
@@ -680,7 +798,7 @@ impl State {
     pub fn send_frames(&self, output: &smithay::output::Output) {
         let t = self.start.elapsed();
         if self.ui.is_none() {
-            for id in &self.ring.order {
+            for id in self.ring().order.iter() {
                 if let Some(w) = self.win(*id) {
                     w.window.send_frame(output, t, Some(std::time::Duration::ZERO), |_, _| Some(output.clone()));
                 }

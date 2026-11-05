@@ -6,14 +6,12 @@
 %global debug_package %{nil}
 %global _build_id_links none
 %global __brp_check_rpaths %{nil}
-# Shadow's own compositor (preview). Leave it out with  --without compositor  — the niri session
-# does not need it; packaging/build-rpm.sh does this by itself when only the compositor fails to build
-%bcond_without compositor
+# 10.0: Shadow's own compositor is the desktop (niri is gone), so it is always built.
 
 Name:           shadow-tui-restricted
 Version:        9.0.0
 Release:        1%{?dist}
-Summary:        Keyboard-first tactical desktop on niri: vertex hub, Rust 2D apps, power/NPU daemon, Wi-Fi self-repair
+Summary:        Glyph desktop on its own Wayland compositor: web shell panels, Rust apps, power/NPU daemon, Wi-Fi self-repair
 License:        MIT
 URL:            https://github.com/namidelacruz/shadow-tui-restricted
 ExclusiveArch:  x86_64 aarch64
@@ -21,18 +19,18 @@ ExclusiveArch:  x86_64 aarch64
 BuildRequires:  gcc gcc-c++ make git pkgconf-pkg-config pam-devel libxkbcommon-devel
 # shadow-compositor (Shadow's own compositor): DRM/KMS, input, seat
 BuildRequires:  systemd-devel libinput-devel libseat-devel libdrm-devel mesa-libgbm-devel mesa-libEGL-devel wayland-devel
+# shadow-panel: the shell's web pages in frameless WebKitGTK windows
+BuildRequires:  webkit2gtk4.1-devel gtk3-devel libsoup3-devel
 # cargo/rustc >= 1.89: the distribution's or rustup's (install.sh checks and provides one)
 
 Requires:       mesa-dri-drivers mesa-libEGL mesa-libgbm libinput libseat libxkbcommon pam systemd fontconfig
 # the apps draw all text themselves: a monospace font must exist
 Requires:       dejavu-sans-mono-fonts
 Requires:       NetworkManager wpa_supplicant iproute util-linux kmod git-core openssh-clients wireplumber polkit
-# niri is the compositor: Fedora's own package, the yalter/niri COPR on EL10, or built from
-# source into /usr/local on EL9 by install.sh — hence a weak dependency
-Recommends:     niri
+Requires:       webkit2gtk4.1 gtk3 libsoup3
 # a polkit authentication agent: without one, actions that need a password fail instead of asking
 Recommends:     (mate-polkit or lxqt-policykit or polkit-gnome or lxpolkit)
-# X11 apps (older AppImages, Electron, Steam, Wine) on Shadow's own compositor; niri uses it too
+# X11 apps (older AppImages, Electron, Steam, Wine): the compositor starts xwayland-satellite
 Recommends:     xwayland-satellite xorg-x11-server-Xwayland
 Recommends:     greetd terminus-fonts-console brightnessctl xdg-desktop-portal-gnome libnotify
 Recommends:     alsa-sof-firmware alsa-ucm google-noto-sans-cjk-fonts
@@ -41,8 +39,9 @@ Provides:       shadow-network = %{version}-%{release}
 Obsoletes:      shadow-network < 7
 
 %description
-Shadow TUI Restricted (CR-SPEC-SHADOW-001) on niri: a vertex wireframe hub (3D field that follows the cursor, central hub,
-floating widgets; the side bar stays optional), dedicated Rust 2D
+Shadow TUI Restricted (CR-SPEC-SHADOW-001) on its own Smithay compositor: the Vitruvian glyph
+desktop with kinetic unfolding windows, a Windows 11-style taskbar, widgets and quick settings
+served as local web pages, multi-monitor workspaces, automatic updates, dedicated Rust 2D
 applications (launcher, network, settings, files, lock, terminal), self-resolving per-monitor
 scaling with text-size correction, a static console login for greetd, a power daemon with a
 weekly learning schedule, Wi-Fi self-repair for 802.1X campus networks, a sandboxed
@@ -69,7 +68,7 @@ export CARGO_TARGET_DIR="%{?shadow_target}%{!?shadow_target:%{_builddir}/target}
 unset RUSTFLAGS
 # one compile job per ~2 GB of available memory (SHADOW_BUILD_JOBS overrides)
 jobs=${SHADOW_BUILD_JOBS:-$(awk -v n="$(nproc)" '/^MemAvailable/{j=int($2/2097152); if(j<1)j=1; if(j>n)j=n; print j}' /proc/meminfo)}
-cargo build --release --locked --workspace -j "$jobs" %{!?with_compositor:--exclude shadow-compositor}
+cargo build --release --locked --workspace -j "$jobs"
 
 %check
 cd "%{shadow_src}"
@@ -80,12 +79,9 @@ export CARGO_TARGET_DIR="%{?shadow_target}%{!?shadow_target:%{_builddir}/target}
 unset RUSTFLAGS
 # one compile job per ~2 GB of available memory (SHADOW_BUILD_JOBS overrides)
 jobs=${SHADOW_BUILD_JOBS:-$(awk -v n="$(nproc)" '/^MemAvailable/{j=int($2/2097152); if(j<1)j=1; if(j>n)j=n; print j}' /proc/meminfo)}
-cargo test --release --locked --workspace -j "$jobs" %{!?with_compositor:--exclude shadow-compositor}
+cargo test --release --locked --workspace -j "$jobs"
 for m in modules/*.lua; do "$CARGO_TARGET_DIR/release/shadow" healer check "$m"; done
 for s in system/wifi-helper system/wifi-device-helper system/greeter-wrapper system/shadow-session system/shadow-tui.sleep packaging/install-files.sh packaging/post-install.sh; do sh -n "$s"; done
-if command -v niri >/dev/null; then
-  "$CARGO_TARGET_DIR/release/shadow-niri-gen" > "%{_builddir}/niri-check.kdl" && niri validate -c "%{_builddir}/niri-check.kdl"
-fi
 
 %install
 export CARGO_TARGET_DIR="%{?shadow_target}%{!?shadow_target:%{_builddir}/target}"
@@ -133,9 +129,7 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system-sleep/shadow-tui
 /usr/share/polkit-1/actions/org.shadownetwork.wifi.policy
 /usr/share/wayland-sessions/shadow-tui.desktop
-%if %{with compositor}
-/usr/share/wayland-sessions/shadow-tui-own.desktop
-%endif
+/usr/share/xdg-desktop-portal/shadow-portals.conf
 /usr/share/applications/shadow-*.desktop
 %config(noreplace) /etc/pam.d/shadow-lock
 %config(noreplace) /etc/pam.d/shadow-passtest

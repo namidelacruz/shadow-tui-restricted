@@ -57,13 +57,15 @@ pub fn pkg(arch_name: &str) -> Option<&'static str> {
         ("openssh", Some("openssh")),
         ("cryptsetup", Some("cryptsetup")),
         ("terminus-font", Some("terminus-fonts-console")),
-        ("niri", Some("niri")),
+        ("webkit2gtk-4.1", Some("webkit2gtk4.1")),
+        ("gtk3", Some("gtk3")),
+        ("libsoup3", Some("libsoup3")),
         ("pipewire", Some("pipewire")),
         ("wireplumber", Some("wireplumber")),
         ("pipewire-pulse", Some("pipewire-pulseaudio")),
         ("brightnessctl", Some("brightnessctl")),
         ("linux-lts", None),
-        // fix center: session pieces niri leaves to the distribution
+        // fix center: session pieces the compositor leaves to the distribution
         ("xwayland-satellite", Some("xwayland-satellite")),
         ("xdg-desktop-portal-gnome", Some("xdg-desktop-portal-gnome")),
         ("xdg-desktop-portal-gtk", Some("xdg-desktop-portal-gtk")),

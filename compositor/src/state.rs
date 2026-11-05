@@ -109,11 +109,14 @@ pub struct State {
     pub seat: Seat<State>,
 
     pub space: Space<Window>,
-    pub output: Option<Output>,
+    /// 10.0: every monitor with its workspaces (desk.rs)
+    pub desk: crate::desk::Desk<Output>,
+    /// the screen the geometry, hit-testing and drawing functions refer to right now: the focused
+    /// one, except inside `with_screen`
+    pub cur: usize,
     pub backend: Backend,
 
     pub wins: Vec<Win>,
-    pub ring: Ring,
     pub next_id: u64,
     pub anim: Option<Anim>,
     pub hud_visible: bool,
@@ -141,8 +144,6 @@ pub struct State {
     pub tut_buttons: Vec<(&'static str, R)>,
     /// fractional scroll steps toward the next ring turn
     pub ring_scroll: f64,
-    /// scroll offset of the minimised grid, logical px
-    pub grid_scroll: f64,
     /// index into layout.presets: the main tile's share
     pub main_preset: usize,
     /// the logout animation is running; the session ends when it finishes
@@ -153,6 +154,8 @@ pub struct State {
     pub folds: HashMap<u64, crate::unfold::Fold>,
     /// where the next window unfolds from (a widget's centre, sent with `origin` over IPC), and when
     pub pending_origin: Option<((f64, f64), Instant)>,
+    /// the last click on a title bar (a second one within 400 ms maximises)
+    pub last_title_click: Option<(u64, Instant)>,
     pub suppressed_keys: Vec<u32>,
     pub key_times: Vec<Instant>,
     pub last_input: Instant,
@@ -209,28 +212,130 @@ impl State {
             output_manager_state, seat_state, data_device_state, primary_selection_state, fractional_state, viewporter_state,
             activation_state, cursor_shape_state, idle_notifier, pointer_constraints_state, relative_pointer_state, constrained: None,
             popups: PopupManager::default(), seat,
-            space: Space::default(), output: None, backend: Backend::None,
-            wins: vec![], ring: Ring::default(), next_id: 1, anim: None, hud_visible: !crate::config::hub_enabled(), hud: None, hud_extra: vec![],
+            space: Space::default(), desk: Default::default(), cur: 0, backend: Backend::None,
+            wins: vec![], next_id: 1, anim: None, hud_visible: !crate::config::hub_enabled(), hud: None, hud_extra: vec![],
             refresh_hz: 60, wanted_refresh: None,
             ui: None, greeter_mode: greeter, boot: (!greeter).then(Instant::now),
             pointer_loc: (0.0, 0.0).into(), pointer_live: false,
             cursor_status: CursorImageStatus::default_named(), cursors: Default::default(), cursor_typing_hidden: false,
-            layer_kb_focus: None, tutorial: None, tut_buttons: vec![], ring_scroll: 0.0, grid_scroll: 0.0, main_preset: 1, logout: None, on_ac: true, folds: HashMap::new(), pending_origin: None, suppressed_keys: vec![], key_times: vec![], last_input: Instant::now(),
+            layer_kb_focus: None, tutorial: None, tut_buttons: vec![], ring_scroll: 0.0, main_preset: 1, logout: None, on_ac: true, folds: HashMap::new(), pending_origin: None, last_title_click: None, suppressed_keys: vec![], key_times: vec![], last_input: Instant::now(),
             text, render: Default::default(), lua: None, dirty: true, mem_high_seen: 0,
             binds: vec![], ui_tx: None, exit_code: 0,
         }
     }
 
+    // ------------------------------------------------------------------ screens
+    /// the current screen's output
+    pub fn output(&self) -> Option<&Output> {
+        self.desk.screens.get(self.cur).map(|s| &s.out)
+    }
+    /// the current screen's active workspace
+    pub fn ring(&self) -> &Ring {
+        self.desk.ring(self.cur)
+    }
+    pub fn ring_mut(&mut self) -> &mut Ring {
+        self.desk.ring_mut(self.cur)
+    }
+    pub fn grid_scroll(&self) -> f64 {
+        self.desk.screens.get(self.cur).map(|s| s.grid_scroll).unwrap_or(0.0)
+    }
+    pub fn set_grid_scroll(&mut self, v: f64) {
+        if let Some(s) = self.desk.screens.get_mut(self.cur) {
+            s.grid_scroll = v;
+        }
+    }
+    /// the current screen's top-left corner in the global logical space
+    pub fn origin(&self) -> Point<f64, Logical> {
+        self.desk.screens.get(self.cur).map(|s| Point::from(s.loc)).unwrap_or_default()
+    }
+    /// Run `f` with screen `i` as the current one. The pointer is in that screen's coordinates
+    /// meanwhile (as every geometry function is).
+    pub fn with_screen<T>(&mut self, i: usize, f: impl FnOnce(&mut State) -> T) -> T {
+        let keep = self.cur;
+        self.cur = i.min(self.desk.screens.len().saturating_sub(1));
+        let o = self.origin();
+        self.pointer_loc -= o;
+        let r = f(self);
+        self.pointer_loc += o;
+        self.cur = keep;
+        r
+    }
+    /// A monitor appeared: add it as a screen (laid out left to right, the panel first).
+    pub fn add_screen(&mut self, o: Output) {
+        let size = o.current_mode().map(|m| {
+            let s = o.current_scale().fractional_scale();
+            let t = o.current_transform().transform_size(m.size);
+            ((t.w as f64 / s).round(), (t.h as f64 / s).round())
+        }).unwrap_or((1280.0, 800.0));
+        self.desk.screens.push(crate::desk::Screen::new(o.clone(), &o.name(), size));
+        self.place_screens();
+        if self.desk.screens.len() == 1 {
+            self.desk.focused = 0;
+        }
+        self.cur = self.desk.focused;
+        self.relayout();
+    }
+    /// A monitor went away: its windows move to the primary screen.
+    pub fn remove_screen(&mut self, name: &str) {
+        let Some(i) = self.desk.screens.iter().position(|s| s.name == name) else { return };
+        let max = self.cfg.layout.max_open;
+        if let Some(gone) = self.desk.remove_screen(i, max) {
+            self.space.unmap_output(&gone.out);
+        }
+        self.place_screens();
+        self.cur = self.desk.focused;
+        self.relayout();
+    }
+    /// sizes from the outputs' current modes, then left-to-right positions; maps the outputs
+    pub fn place_screens(&mut self) {
+        for s in &mut self.desk.screens {
+            if let Some(m) = s.out.current_mode() {
+                let sc = s.out.current_scale().fractional_scale();
+                let t = s.out.current_transform().transform_size(m.size);
+                s.size = ((t.w as f64 / sc).round(), (t.h as f64 / sc).round());
+            }
+        }
+        self.desk.arrange();
+        for s in &self.desk.screens {
+            let loc = (s.loc.0 as i32, s.loc.1 as i32);
+            if s.out.current_location() != loc.into() {
+                s.out.change_current_state(None, None, None, Some(loc.into()));
+            }
+            self.space.map_output(&s.out, loc);
+            layer_map_for_output(&s.out).arrange();
+        }
+    }
+    /// Give window `id` the keyboard wherever it is: its screen gets the focus, its workspace is
+    /// shown, a minimised window is restored.
+    pub fn focus_window(&mut self, id: u64) {
+        let Some((si, wi)) = self.desk.locate(id) else { return };
+        let switched = self.desk.switch(si, wi);
+        self.desk.focused = si;
+        self.cur = si;
+        if switched {
+            self.relayout();
+        }
+        if self.ring().min.contains(&id) {
+            self.restore(id);
+        } else {
+            self.transition(|r| { r.focus(id); });
+        }
+    }
+    /// the screen holding `output`
+    pub fn screen_of_output(&self, o: &Output) -> Option<usize> {
+        self.desk.screens.iter().position(|s| &s.out == o)
+    }
+
     // ------------------------------------------------------------------ geometry
     pub fn output_size(&self) -> (f64, f64) {
-        self.output.as_ref().and_then(|o| self.space.output_geometry(o)).map(|g| (g.size.w as f64, g.size.h as f64)).unwrap_or((1280.0, 800.0))
+        self.output().and_then(|o| self.space.output_geometry(o)).map(|g| (g.size.w as f64, g.size.h as f64)).unwrap_or((1280.0, 800.0))
     }
     /// the output's connector name ("eDP-1"; "winit" nested)
     pub fn output_name(&self) -> String {
-        self.output.as_ref().map(|o| o.name()).unwrap_or_else(|| "none".into())
+        self.output().map(|o| o.name()).unwrap_or_else(|| "none".into())
     }
     pub fn scale(&self) -> f64 {
-        self.output.as_ref().map(|o| o.current_scale().fractional_scale()).unwrap_or(1.0)
+        self.output().map(|o| o.current_scale().fractional_scale()).unwrap_or(1.0)
     }
     /// HUD bar height in logical px
     pub fn bar_h(&self) -> f64 {
@@ -239,7 +344,7 @@ impl State {
     /// The app area: the screen minus the widget columns (layer-shell exclusive zones) and a gap.
     pub fn area(&self) -> R {
         let (w, h) = self.output_size();
-        let z = self.output.as_ref().map(|o| layer_map_for_output(o).non_exclusive_zone());
+        let z = self.output().map(|o| layer_map_for_output(o).non_exclusive_zone());
         let b = self.bar_h();
         let r = match z {
             Some(z) if z.size.w > 0 && z.size.h > 0 => R { x: z.loc.x as f64, y: z.loc.y as f64 + b, w: z.size.w as f64, h: z.size.h as f64 - 2.0 * b },
@@ -251,10 +356,10 @@ impl State {
     /// and takes the whole area when none are
     pub fn areas(&self) -> (R, Option<R>) {
         let a = self.area();
-        if self.ring.min.is_empty() {
+        if self.ring().min.is_empty() {
             return (a, None);
         }
-        if self.ring.order.is_empty() {
+        if self.ring().order.is_empty() {
             return (a, Some(a));
         }
         let g = self.cfg.layout.gap as f64;
@@ -280,16 +385,16 @@ impl State {
         let gap = self.cfg.layout.gap as f64;
         // one row (apps open): a strip that scrolls sideways; the whole area: a grid scrolling down
         let (rects, max) = if cell.h < 2.0 * side + gap + label {
-            let n = self.ring.min.len();
+            let n = self.ring().min.len();
             let content = n as f64 * (side + gap) - gap;
             let max = (content - cell.w).max(0.0);
-            let s = self.grid_scroll.clamp(0.0, max);
+            let s = self.grid_scroll().clamp(0.0, max);
             let x0 = cell.x + ((cell.w - content) / 2.0).max(0.0);
             ((0..n).map(|i| R { x: (x0 + i as f64 * (side + gap) - s).round(), y: cell.y, w: side, h: side }).collect(), max)
         } else {
-            orbit::grid(cell, self.ring.min.len(), self.cfg.layout.tile_px as f64, gap + label, self.grid_scroll)
+            orbit::grid(cell, self.ring().min.len(), self.cfg.layout.tile_px as f64, gap + label, self.grid_scroll())
         };
-        (self.ring.min.iter().copied().zip(rects).collect(), max, Some(band))
+        (self.ring().min.iter().copied().zip(rects).collect(), max, Some(band))
     }
     /// where every window is drawn right now, without animation: (id, rect, scale, open?).
     /// Open apps get their tile (or the whole screen in fullscreen); minimised apps their square
@@ -297,10 +402,13 @@ impl State {
     pub fn targets(&self) -> Vec<(u64, R, f64, bool)> {
         let (tiles_area, _) = self.areas();
         let (ow, oh) = self.output_size();
-        let tiles = orbit::tile(tiles_area, self.ring.order.len(), self.cfg.layout.gap as f64, self.main_share());
-        let mut v: Vec<(u64, R, f64, bool)> = self.ring.order.iter().zip(tiles).map(|(id, r)| {
-            let full = self.win(*id).map(|w| w.size.full).unwrap_or(false);
-            (*id, if full { R { x: 0.0, y: 0.0, w: ow, h: oh } } else { r }, 1.0, true)
+        let tiles = orbit::tile(tiles_area, self.ring().order.len(), self.cfg.layout.gap as f64, self.main_share());
+        let tb = if self.cfg.shell.titlebars { orbit::TITLE_H } else { 0.0 };
+        let mut v: Vec<(u64, R, f64, bool)> = self.ring().order.iter().zip(tiles).map(|(id, r)| {
+            let (full, max) = self.win(*id).map(|w| (w.size.full, w.size.max)).unwrap_or((false, false));
+            // maximised: the whole app area; the title bar sits on top of the content
+            let r = if max { tiles_area } else { r };
+            (*id, if full { R { x: 0.0, y: 0.0, w: ow, h: oh } } else { R { y: r.y + tb, h: (r.h - tb).max(40.0), ..r } }, 1.0, true)
         }).collect();
         let (grid, _, band) = self.grid();
         if let Some(b) = band {
@@ -330,28 +438,47 @@ impl State {
     }
     /// the window that is fullscreen right now (it covers the widget columns too)
     pub fn fullscreen(&self) -> Option<u64> {
-        self.ring.order.iter().copied().find(|id| self.win(*id).map(|w| w.size.full).unwrap_or(false))
+        self.ring().order.iter().copied().find(|id| self.win(*id).map(|w| w.size.full).unwrap_or(false))
+    }
+    /// the maximised window of this workspace (drawn above the other tiles)
+    pub fn maximized(&self) -> Option<u64> {
+        self.ring().order.iter().copied().find(|id| self.win(*id).map(|w| w.size.max && !w.size.full).unwrap_or(false))
+    }
+    /// open windows front to back: fullscreen, maximised, then the focused, then tile order
+    pub fn stacking(&self) -> Vec<u64> {
+        let (full, max, focus) = (self.fullscreen(), self.maximized(), self.ring().center());
+        let mut v: Vec<u64> = self.ring().order.clone();
+        v.sort_by_key(|id| (Some(*id) != full, Some(*id) != max, Some(*id) != focus));
+        v
+    }
+    /// bounding box of every screen (the global logical space)
+    pub fn total_size(&self) -> (f64, f64) {
+        let w = self.desk.screens.iter().map(|s| s.loc.0 + s.size.0).fold(0.0, f64::max);
+        let h = self.desk.screens.iter().map(|s| s.loc.1 + s.size.1).fold(0.0, f64::max);
+        if w > 0.0 { (w, h) } else { self.output_size() }
     }
 
     /// Change the window order with an animated transition, then reconfigure clients.
     pub fn transition(&mut self, f: impl FnOnce(&mut Ring)) {
-        let before = self.ring.center();
+        let before = self.ring().center();
         let (vis, _) = self.visual();
         let from: HashMap<u64, R> = vis.into_iter().map(|(id, r, _, _)| (id, r)).collect();
-        f(&mut self.ring);
+        f(self.ring_mut());
         let ms = self.cfg.layout.anim_ms;
         self.anim = (ms > 0).then(|| Anim::Move { start: Instant::now(), dur: Duration::from_millis(ms), from });
         self.relayout();
-        if self.ring.center() != before {
+        if self.ring().center() != before {
             self.on_focus_changed();
         }
     }
 
-    /// Send sizes/states to clients and keyboard focus to the focused app.
-    pub fn relayout(&mut self) {
-        let center = self.ring.center();
+    /// configure the current screen's visible windows
+    fn relayout_screen(&mut self) {
+        let center = if self.cur == self.desk.focused { self.ring().center() } else { None };
+        let o = self.origin();
         let targets = self.targets();
-        for w in &self.wins {
+        let mine: Vec<u64> = self.ring().all().copied().collect();
+        for w in self.wins.iter().filter(|w| mine.contains(&w.id)) {
             let Some(top) = w.window.toplevel() else { continue };
             let open = targets.iter().find(|t| t.0 == w.id && t.3).map(|t| t.1);
             if let Some(r) = open {
@@ -364,7 +491,7 @@ impl State {
                     }
                     if w.size.full { s.states.set(xdg_toplevel::State::Fullscreen) } else { s.states.unset(xdg_toplevel::State::Fullscreen) }
                 });
-                self.space.map_element(w.window.clone(), (r.x as i32, r.y as i32), focused);
+                self.space.map_element(w.window.clone(), ((r.x + o.x) as i32, (r.y + o.y) as i32), focused);
             } else {
                 // minimised: keeps its last buffer for the grid tile
                 top.with_pending_state(|s| {
@@ -375,16 +502,39 @@ impl State {
                 top.send_pending_configure();
             }
         }
+    }
+
+    /// Send sizes/states to clients (every screen) and keyboard focus to the focused app.
+    pub fn relayout(&mut self) {
+        let keep = self.cur;
+        for i in 0..self.desk.screens.len() {
+            self.cur = i;
+            self.relayout_screen();
+        }
+        // windows on hidden workspaces: off the space (no frames, no output), keep their buffers
+        for w in &self.wins {
+            if !self.desk.visible(w.id) && self.desk.locate(w.id).is_some() {
+                self.space.unmap_elem(&w.window);
+                if let Some(top) = w.window.toplevel() {
+                    top.with_pending_state(|s| s.states.unset(xdg_toplevel::State::Activated));
+                    if top.is_initial_configure_sent() {
+                        top.send_pending_configure();
+                    }
+                }
+            }
+        }
+        self.cur = self.desk.focused.min(self.desk.screens.len().saturating_sub(1));
+        let center = self.ring().center();
         let focus = if self.ui.is_some() { None } else { center.and_then(|id| self.win(id)).and_then(|w| w.window.toplevel().map(|t| t.wl_surface().clone())) };
         // an exclusive layer surface (launcher overlay) keeps the keyboard
-        let layer_focus = self.output.as_ref().and_then(|o| {
-            let map = layer_map_for_output(o);
+        let layer_focus = self.desk.screens.iter().find_map(|s| {
+            let map = layer_map_for_output(&s.out);
             let found = map.layers().find(|l| l.can_receive_keyboard_focus() && matches!(l.cached_state().keyboard_interactivity, smithay::wayland::shell::wlr_layer::KeyboardInteractivity::Exclusive)).map(|l| l.wl_surface().clone());
             found
         });
         // a layer surface clicked into (OnDemand) keeps the keyboard while it is still mapped
         let clicked = self.layer_kb_focus.clone().filter(|s| {
-            self.output.as_ref().map(|o| layer_map_for_output(o).layers().any(|l| l.wl_surface() == s && l.can_receive_keyboard_focus())).unwrap_or(false)
+            self.desk.screens.iter().any(|o| layer_map_for_output(&o.out).layers().any(|l| l.wl_surface() == s && l.can_receive_keyboard_focus()))
         });
         if clicked.is_none() {
             self.layer_kb_focus = None;
@@ -396,13 +546,14 @@ impl State {
             }
         }
         self.update_pointer_policy();
+        self.cur = keep.min(self.desk.screens.len().saturating_sub(1));
         self.dirty = true;
     }
 
     /// minimise: the window folds up toward the grid band, then joins the grid
     pub fn minimize(&mut self, id: u64) {
         let ms = self.cfg.layout.unfold_ms;
-        if ms == 0 || !self.ring.order.contains(&id) {
+        if ms == 0 || !self.ring().order.contains(&id) {
             self.transition(|r| { r.minimize(id); });
             return;
         }
@@ -430,17 +581,17 @@ impl State {
     }
     /// may the centre window receive pointer events?
     pub fn center_takes_pointer(&self) -> bool {
-        self.cfg.input.pointer != "apps" || self.ring.center().and_then(|id| self.win(id)).map(|w| w.pointer).unwrap_or(false)
+        self.cfg.input.pointer != "apps" || self.ring().center().and_then(|id| self.win(id)).map(|w| w.pointer).unwrap_or(false)
     }
 
     pub fn on_focus_changed(&mut self) {
         // the HUD names the focused binary: refresh it now rather than at the next 2 s tick
-        let n = self.ring.order.len();
-        let focused = self.ring.center().and_then(|id| self.win(id)).map(|w| if w.app_id.is_empty() { w.title.clone() } else { w.app_id.clone() }).unwrap_or_default();
+        let n = self.ring().order.len();
+        let focused = self.ring().center().and_then(|id| self.win(id)).map(|w| if w.app_id.is_empty() { w.title.clone() } else { w.app_id.clone() }).unwrap_or_default();
         if let Some(h) = self.hud.as_mut() {
             h.top_left = format!("◢ SHADOW//RING {:02}/{:02}  ▸ {}", if n > 0 { 1 } else { 0 }, n, if focused.is_empty() { "—" } else { &focused });
         }
-        let (app, title) = self.ring.center().and_then(|id| self.win(id)).map(|w| (w.app_id.clone(), w.title.clone())).unwrap_or_default();
+        let (app, title) = self.ring().center().and_then(|id| self.win(id)).map(|w| (w.app_id.clone(), w.title.clone())).unwrap_or_default();
         crate::telemetry::send(self, &app);
         if let Some(l) = self.lua.as_mut() {
             l.event("focus", &app, &title);
@@ -464,7 +615,7 @@ impl State {
 
     /// Mod+Q: the focused app folds up toward the middle, then is asked to close
     pub fn close_center(&mut self) {
-        let Some(id) = self.ring.center() else { return };
+        let Some(id) = self.ring().center() else { return };
         let ms = self.cfg.layout.unfold_ms;
         if ms == 0 {
             if let Some(t) = self.win(id).and_then(|w| w.window.toplevel().cloned()) {
@@ -540,7 +691,7 @@ impl CompositorHandler for State {
             if let Some(w) = self.wins.iter().find(|w| w.window.toplevel().map(|t| t.wl_surface() == &root).unwrap_or(false)) {
                 w.window.on_commit();
                 // open apps redraw; minimised ones only refresh their grid tile on the next frame
-                if self.ring.order.contains(&w.id) {
+                if self.desk.visible(w.id) {
                     self.dirty = true;
                 }
             }
@@ -581,8 +732,9 @@ impl CompositorHandler for State {
             }
             self.dirty = true;
         }
-        // layer surfaces
-        if let Some(o) = self.output.clone() {
+        // layer surfaces (on whichever screen they live)
+        let outs: Vec<Output> = self.desk.screens.iter().map(|s| s.out.clone()).collect();
+        for o in outs {
             let mut map = layer_map_for_output(&o);
             if let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL).cloned() {
                 let initial = with_states(surface, |st| st.data_map.get::<LayerSurfaceData>().map(|d| d.lock().unwrap().initial_configure_sent).unwrap_or(true));
@@ -593,6 +745,7 @@ impl CompositorHandler for State {
                 drop(map);
                 self.dirty = true;
                 self.relayout();
+                break;
             }
         }
     }
@@ -625,10 +778,23 @@ impl XdgShellHandler for State {
         let id = self.next_id;
         self.next_id += 1;
         self.wins.push(Win {
-            id, window: window.clone(), size: Size { preset: self.cfg.layout.default_preset, full: false },
+            id, window: window.clone(), size: Size { preset: self.cfg.layout.default_preset, full: false, max: false },
             app_id: String::new(), title: String::new(), pid, pointer: false, spark: vec![], cpu_prev: None, rss_mb: 0,
         });
-        self.space.map_element(window, (0, 0), true);
+        // which screen: a dialog follows its parent; an app opens on the second screen when one
+        // is connected ([display] open_apps_on), and that screen gets the keyboard
+        let parent = window.toplevel().and_then(|t| t.parent()).and_then(|p| self.window_for_surface(&p)).and_then(|pid| self.desk.locate(pid));
+        let si = match parent {
+            Some((si, wi)) => {
+                self.desk.switch(si, wi);
+                si
+            }
+            None => self.desk.open_on(&self.cfg.display.open_apps_on),
+        };
+        self.desk.focused = si;
+        self.cur = si;
+        let o = self.origin();
+        self.space.map_element(window, (o.x as i32, o.y as i32), true);
         // a new app takes the main tile; past max_open the oldest open app is minimised
         let max = self.cfg.layout.max_open;
         self.transition(|r| { r.spawn(id, max); });
@@ -649,7 +815,14 @@ impl XdgShellHandler for State {
         self.folds.remove(&id);
         self.render.forget_window(id);
         self.text.forget(&format!("node-{id}-"));
-        self.transition(|r| r.remove(id));
+        // the screen it was on keeps the keyboard there
+        match self.desk.locate(id) {
+            Some((si, wi)) if si == self.cur && self.desk.screens[si].active == wi => self.transition(|r| r.remove(id)),
+            _ => {
+                self.desk.remove(id);
+                self.relayout();
+            }
+        }
     }
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
@@ -711,11 +884,11 @@ impl XdgShellHandler for State {
 }
 
 impl State {
-    fn unconstrain_popup(&self, popup: &PopupSurface) {
+    fn unconstrain_popup(&mut self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else { return };
-        let Some(w) = self.wins.iter().find(|w| w.window.toplevel().map(|t| t.wl_surface() == &root).unwrap_or(false)) else { return };
-        let r = self.targets().into_iter().find(|t| t.0 == w.id).map(|t| t.1).unwrap_or(self.area());
-        let (ow, oh) = self.output_size();
+        let Some(id) = self.wins.iter().find(|w| w.window.toplevel().map(|t| t.wl_surface() == &root).unwrap_or(false)).map(|w| w.id) else { return };
+        let si = self.desk.locate(id).map(|l| l.0).unwrap_or(self.cur);
+        let (r, (ow, oh)) = self.with_screen(si, |st| (st.targets().into_iter().find(|t| t.0 == id).map(|t| t.1).unwrap_or(st.area()), st.output_size()));
         let mut target = Rectangle::new((0, 0).into(), (ow as i32, oh as i32).into());
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
         target.loc -= Point::from((r.x as i32, r.y as i32));
@@ -745,15 +918,17 @@ impl WlrLayerShellHandler for State {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
         &mut self.layer_shell_state
     }
-    fn new_layer_surface(&mut self, surface: WlrLayerSurface, _output: Option<wl_output::WlOutput>, _layer: Layer, namespace: String) {
-        let Some(o) = self.output.clone() else { return };
+    fn new_layer_surface(&mut self, surface: WlrLayerSurface, output: Option<wl_output::WlOutput>, _layer: Layer, namespace: String) {
+        // the output it asked for, else the focused screen
+        let o = output.as_ref().and_then(Output::from_resource).or_else(|| self.desk.screens.get(self.desk.focused).map(|s| s.out.clone()));
+        let Some(o) = o else { return };
         self.send_scale(surface.wl_surface());
         let mut map = layer_map_for_output(&o);
         let _ = map.map_layer(&LayerSurface::new(surface, namespace));
     }
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        if let Some(o) = self.output.clone() {
-            let mut map = layer_map_for_output(&o);
+        for s in &self.desk.screens {
+            let mut map = layer_map_for_output(&s.out);
             let layer = map.layers().find(|l| l.layer_surface() == &surface).cloned();
             if let Some(l) = layer {
                 map.unmap_layer(&l);
@@ -818,8 +993,16 @@ impl State {
     }
 
     /// Apply a new output scale live (config-reload) and re-announce it to every client.
-    pub fn set_output_scale(&mut self, scale: f64) {
-        let Some(o) = self.output.clone() else { return };
+    pub fn set_output_scale(&mut self, name: Option<&str>, scale: f64) {
+        let outs: Vec<Output> = self.desk.screens.iter().filter(|s| name.is_none_or(|n| n == s.name)).map(|s| s.out.clone()).collect();
+        for o in outs {
+            self.set_scale_of(&o, scale);
+        }
+        self.place_screens();
+        self.relayout();
+    }
+    fn set_scale_of(&mut self, o: &Output, scale: f64) {
+        let o = o.clone();
         if (o.current_scale().fractional_scale() - scale).abs() < 1e-6 {
             return;
         }
@@ -830,7 +1013,6 @@ impl State {
             self.send_scale(s);
         }
         self.text.forget("");
-        self.relayout();
     }
 }
 
@@ -899,7 +1081,7 @@ impl XdgActivationHandler for State {
         // only tokens younger than 10 s, as other compositors do
         if data.timestamp.elapsed() < Duration::from_secs(10) {
             if let Some(id) = self.window_for_surface(&surface) {
-                self.transition(|r| { r.focus(id); });
+                self.focus_window(id);
             }
         }
         self.activation_state.remove_token(&token);

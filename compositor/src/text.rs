@@ -9,6 +9,8 @@ pub struct Text {
     font: Option<fontdue::Font>,
     /// Shadow Glyph, for lines whose key starts with "d:" (titles, the login screen)
     display: Option<fontdue::Font>,
+    /// Japanese (and other CJK) glyphs the faces above don't have: loaded on first use only
+    cjk: Option<Option<fontdue::Font>>,
     cache: HashMap<String, (String, u32, MemoryRenderBuffer, (i32, i32))>,
 }
 
@@ -42,23 +44,56 @@ impl Text {
             .chain(std::env::var("SHADOW_DISPLAY_FONT").ok().iter())
             .find_map(|p| std::fs::read(p).ok())
             .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok());
-        Text { font, display, cache: HashMap::new() }
+        Text { font, display, cjk: None, cache: HashMap::new() }
+    }
+
+    /// the CJK fallback face (fontconfig's choice for Japanese), loaded once, on demand
+    fn cjk(&mut self) -> Option<&fontdue::Font> {
+        if self.cjk.is_none() {
+            let f = std::process::Command::new("fc-match").args(["-f", "%{file}|%{index}", "sans:lang=ja"]).output().ok().and_then(|o| {
+                let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                let (p, i) = out.split_once('|')?;
+                let bytes = std::fs::read(p).ok()?;
+                fontdue::Font::from_bytes(bytes, fontdue::FontSettings { collection_index: i.parse().unwrap_or(0), ..Default::default() }).ok()
+            });
+            if f.is_none() {
+                tracing::info!("no Japanese font found (install google-noto-sans-cjk-fonts / noto-fonts-cjk): CJK text shows as boxes");
+            }
+            self.cjk = Some(f);
+        }
+        self.cjk.as_ref().and_then(|f| f.as_ref())
+    }
+
+    fn needs_cjk(font: &fontdue::Font, text: &str) -> bool {
+        text.chars().any(|c| (c as u32) >= 0x2E80 && font.lookup_glyph_index(c) == 0)
     }
 
     /// Rasterise `text` at `px` (physical) in `rgb`; returns the buffer and its physical size.
     /// `key` identifies the slot (e.g. "hud-top"), so a changed string reuses the slot.
     /// A line of text as a buffer, cached under `key`. Keys starting with "d:" use the display face.
     pub fn line(&mut self, key: &str, text: &str, px: f32, rgb: [f32; 3]) -> Option<(MemoryRenderBuffer, (i32, i32))> {
-        let font = if key.starts_with("d:") { self.display.as_ref().or(self.font.as_ref())? } else { self.font.as_ref()? };
         let col = ((rgb[0] * 255.0) as u32) << 16 | ((rgb[1] * 255.0) as u32) << 8 | (rgb[2] * 255.0) as u32;
         if let Some((t, c, b, s)) = self.cache.get(key) {
             if t == text && *c == col {
                 return Some((b.clone(), *s));
             }
         }
+        let want_cjk = {
+            let font = if key.starts_with("d:") { self.display.as_ref().or(self.font.as_ref())? } else { self.font.as_ref()? };
+            Self::needs_cjk(font, text)
+        };
+        if want_cjk {
+            self.cjk();
+        }
+        let font = if key.starts_with("d:") { self.display.as_ref().or(self.font.as_ref())? } else { self.font.as_ref()? };
+        let cjk = self.cjk.as_ref().and_then(|f| f.as_ref());
         let lm = font.horizontal_line_metrics(px)?;
         let h = (lm.ascent - lm.descent).ceil().max(1.0) as i32 + 2;
-        let glyphs: Vec<(fontdue::Metrics, Vec<u8>)> = text.chars().map(|ch| font.rasterize(ch, px)).collect();
+        // each character from the first face that has it (Japanese from the CJK face)
+        let glyphs: Vec<(fontdue::Metrics, Vec<u8>)> = text.chars().map(|ch| match cjk {
+            Some(c) if (ch as u32) >= 0x2E80 && font.lookup_glyph_index(ch) == 0 => c.rasterize(ch, px * 0.92),
+            _ => font.rasterize(ch, px),
+        }).collect();
         let w = glyphs.iter().map(|(m, _)| m.advance_width.round() as i32).sum::<i32>().max(1) + 2;
         let mut buf = vec![0u8; (w * h * 4) as usize];
         let base = lm.ascent.round() as i32 + 1;
@@ -90,10 +125,17 @@ impl Text {
 
     /// width in the display face
     pub fn width_d(&self, text: &str, px: f32) -> i32 {
-        self.display.as_ref().or(self.font.as_ref()).map(|f| text.chars().map(|c| f.metrics(c, px).advance_width.round() as i32).sum::<i32>() + 2).unwrap_or(0)
+        self.display.as_ref().or(self.font.as_ref()).map(|f| self.measure(f, text, px)).unwrap_or(0)
     }
     pub fn width(&self, text: &str, px: f32) -> i32 {
-        self.font.as_ref().map(|f| text.chars().map(|c| f.metrics(c, px).advance_width.round() as i32).sum::<i32>() + 2).unwrap_or(0)
+        self.font.as_ref().map(|f| self.measure(f, text, px)).unwrap_or(0)
+    }
+    fn measure(&self, f: &fontdue::Font, text: &str, px: f32) -> i32 {
+        let cjk = self.cjk.as_ref().and_then(|c| c.as_ref());
+        text.chars().map(|c| match cjk {
+            Some(k) if (c as u32) >= 0x2E80 && f.lookup_glyph_index(c) == 0 => k.metrics(c, px * 0.92).advance_width.round() as i32,
+            _ => f.metrics(c, px).advance_width.round() as i32,
+        }).sum::<i32>() + 2
     }
 
     /// memory pressure: drop every cached line (they are rebuilt on demand)

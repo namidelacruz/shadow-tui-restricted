@@ -1,6 +1,8 @@
-//! shadow-webd — the local API behind Shadow's settings web app (9.0). Settings, the fix center,
-//! default apps, the raw config and the crash log are one installable web app (PWA) served from
-//! this machine; this service is its only way to read or change anything.
+//! shadow-webd — the local API behind Shadow's settings web app (9.0) and, since 10.0, the shell:
+//! the taskbar, start menu, widgets and quick settings are web pages shown by shadow-panel in
+//! frameless WebKitGTK windows (`/shell?role=…`). Settings, the fix center, default apps, the raw
+//! config and the crash log are one installable web app (PWA) served from this machine; this
+//! service is the only way either reads or changes anything.
 //!
 //!   shadow-webd            serve (started with the session); prints nothing, logs to stderr
 //!   shadow-webd url [PAGE] the URL that unlocks the app for this session (used by shadow-settings)
@@ -23,6 +25,9 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+#[path = "webd/shell.rs"]
+mod shell;
+
 const INDEX: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
 const STYLE: &str = include_str!("../web/style.css");
@@ -30,6 +35,9 @@ const SW: &str = include_str!("../web/sw.js");
 const MANIFEST: &str = include_str!("../web/manifest.webmanifest");
 const ICON: &str = include_str!("../web/icon.svg");
 const FONT: &[u8] = include_bytes!("../../../assets/fonts/ShadowGlyph-Regular.ttf");
+const SHELL_HTML: &str = include_str!("../web/shell.html");
+const SHELL_JS: &str = include_str!("../web/shell.js");
+const SHELL_CSS: &str = include_str!("../web/shell.css");
 
 pub fn port() -> u16 {
     // SAFETY: getuid never fails
@@ -231,7 +239,7 @@ fn conf() -> String {
     std::fs::read_to_string(config_path()).unwrap_or_default()
 }
 
-/// write config.toml and apply: niri's file is regenerated and a running Shadow compositor reloads
+/// write config.toml and apply: the running compositor reloads it
 fn apply(text: &str) -> Result<String, String> {
     let p = config_path();
     if let Some(d) = p.parent() {
@@ -239,9 +247,9 @@ fn apply(text: &str) -> Result<String, String> {
     }
     let _ = std::fs::copy(&p, p.with_extension("toml.bak"));
     atomic_write(&p, text).map_err(|e| e.to_string())?;
-    let (c, o) = cmd_out(&["shadow", "setup", "niri"]);
+    let (c, o) = cmd_out(&["shadow", "setup", "compositor"]);
     let _ = shadow_niri::compositor_command("config-reload");
-    Ok(if c == 0 { "applied".into() } else { format!("saved; niri: {}", o.lines().last().unwrap_or("")) })
+    Ok(if c == 0 { "applied".into() } else { format!("saved; compositor: {}", o.lines().last().unwrap_or("")) })
 }
 
 fn settings_get() -> serde_json::Value {
@@ -385,6 +393,15 @@ fn handle(mut s: TcpStream, sh: Arc<Mutex<Shared>>) {
         ("GET", "/manifest.webmanifest") => return respond(&mut s, 200, "application/manifest+json", MANIFEST.as_bytes(), &[]),
         ("GET", "/icon.svg") => return respond(&mut s, 200, "image/svg+xml", ICON.as_bytes(), &[]),
         ("GET", "/font.ttf") => return respond(&mut s, 200, "font/ttf", FONT, &[]),
+        ("GET", "/shell") | ("GET", "/shell.html") => return respond(&mut s, 200, "text/html; charset=utf-8", SHELL_HTML.as_bytes(), &[]),
+        ("GET", "/shell.js") => return respond(&mut s, 200, "text/javascript", SHELL_JS.as_bytes(), &[]),
+        ("GET", "/shell.css") => return respond(&mut s, 200, "text/css", SHELL_CSS.as_bytes(), &[]),
+        // the app glyphs as SVG (drawn in currentColor), from the same strokes the apps use
+        ("GET", p) if p.starts_with("/glyph/") && p.ends_with(".svg") => {
+            let name = &p["/glyph/".len()..p.len() - 4];
+            let g = shadow_ui::glyphs::by_name(name).unwrap_or(shadow_ui::glyphs::G::Generic);
+            return respond(&mut s, 200, "image/svg+xml", shadow_ui::glyphs::svg(g).as_bytes(), &[("Cache-Control", "max-age=86400".into())]);
+        }
         _ => {}
     }
     let (key, cookie) = {
@@ -434,6 +451,16 @@ fn handle(mut s: TcpStream, sh: Arc<Mutex<Shared>>) {
         ("GET", "/api/config") => Ok(serde_json::json!({ "text": conf() })),
         ("PUT", "/api/config") => config_put(j["text"].as_str().unwrap_or("")).map(|m| serde_json::json!({ "ok": m })),
         ("GET", "/api/crash") => Ok(crash_get()),
+        // the shell (10.0)
+        ("GET", "/api/shell") => shell::state(),
+        ("GET", "/api/shell/events") => return shell_events(s),
+        ("POST", "/api/shell") => shell::act(&j),
+        ("GET", "/api/apps") => Ok(shell::apps()),
+        ("POST", "/api/launch") => shell::launch(&j),
+        ("POST", "/api/pin") => shell::pin(&j),
+        ("GET", "/api/status") => Ok(shell::status()),
+        ("POST", "/api/quick") => shell::quick(&j),
+        ("POST", "/api/power") => shell::power(&j),
         ("POST", "/api/crash/report") => {
             let (c, o) = cmd_out(&["shadow-prefs", "report"]);
             if c == 0 { Ok(serde_json::json!({ "ok": o.trim() })) } else { Err(o.trim().to_string()) }
@@ -443,6 +470,34 @@ fn handle(mut s: TcpStream, sh: Arc<Mutex<Shared>>) {
     match res {
         Ok(v) => json_ok(&mut s, v),
         Err(e) => json_err(&mut s, 400, &e),
+    }
+}
+
+/// Server-sent events: the compositor's shell state, pushed when it changes (checked 5× a second
+/// while a page listens; one stream per taskbar).
+fn shell_events(mut s: TcpStream) {
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\nX-Content-Type-Options: nosniff\r\n\r\n";
+    if s.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    let _ = s.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+    let mut last = String::new();
+    let mut quiet = 0u32;
+    loop {
+        let now = shell::state().map(|v| v.to_string()).unwrap_or_else(|e| serde_json::json!({ "error": e }).to_string());
+        let msg = if now != last {
+            last = now.clone();
+            quiet = 0;
+            format!("data: {now}\n\n")
+        } else {
+            quiet += 1;
+            // a comment now and then: finds a closed page (the write fails) without waking it
+            if quiet % 50 == 0 { ": .\n\n".to_string() } else { String::new() }
+        };
+        if !msg.is_empty() && s.write_all(msg.as_bytes()).is_err() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 

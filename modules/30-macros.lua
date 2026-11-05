@@ -1,5 +1,5 @@
 -- Key macros: shadow.bind(key, fn). Only layout actions, notifications and spawning are possible.
--- shadow-sessiond turns each key into a niri bind (core binds always win).
+-- shadow-sessiond turns each key into a compositor bind (core binds always win).
 
 shadow.bind("Mod+Shift+N", function()
   shadow.spawn("shadow-net")

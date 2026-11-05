@@ -188,13 +188,13 @@ impl Config {
         let shown = literal.clone().unwrap_or_else(|| "auto".into());
         match r.section.as_str() {
             "layout" | "look" | "input" => {
-                let (code, out) = cmd_out(&["shadow", "setup", "niri"]);
+                let (code, out) = cmd_out(&["shadow", "setup", "compositor"]);
                 if code == 0 || code == 127 {
                     self.status = (format!("{} = {shown} · applied live", unq(&r.key)), false);
                 } else {
                     let _ = atomic_write(&config_path(), &before);
                     self.text = before;
-                    let _ = cmd_out(&["shadow", "setup", "niri"]);
+                    let _ = cmd_out(&["shadow", "setup", "compositor"]);
                     self.status = (format!("rejected, rolled back: {}", out.lines().last().unwrap_or("").trim()), true);
                     return;
                 }

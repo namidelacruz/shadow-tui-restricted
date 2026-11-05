@@ -485,7 +485,7 @@ impl Shell {
     fn place_layer(&mut self, output: Option<String>, qh: &QueueHandle<Shell>) -> Result<(), String> {
         let SurfaceKind::Layer { namespace, layer, anchor, size, margin, exclusive, keyboard } = self.app.kind() else { return Ok(()) };
         self.surfs.retain(|s| !matches!(s.role, Role::Layer(_)));
-        let ls = self.layer.as_ref().ok_or("zwlr_layer_shell_v1 missing (niri provides it)")?;
+        let ls = self.layer.as_ref().ok_or("zwlr_layer_shell_v1 missing (shadow-compositor provides it)")?;
         let out = output.as_deref().and_then(|n| self.output_named(n));
         let surface = self.compositor.create_surface(qh);
         let l = ls.create_layer_surface(qh, surface, layer, Some(namespace), out.as_ref());
@@ -693,7 +693,7 @@ impl Shell {
         let outs: Vec<wl_output::WlOutput> = self.output_state.outputs().filter(|o| !self.surfs.iter().any(|s| s.output.as_ref() == Some(o))).collect();
         let mut made = vec![];
         {
-            let ls = self.layer.as_ref().ok_or("zwlr_layer_shell_v1 missing (niri provides it)")?;
+            let ls = self.layer.as_ref().ok_or("zwlr_layer_shell_v1 missing (shadow-compositor provides it)")?;
             for o in outs {
                 let surface = self.compositor.create_surface(qh);
                 let l = ls.create_layer_surface(qh, surface, Layer::Background, Some(namespace.clone()), Some(&o));

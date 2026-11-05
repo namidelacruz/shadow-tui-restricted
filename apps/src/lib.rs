@@ -86,7 +86,7 @@ pub fn local_hour() -> usize {
     }
 }
 
-/// app id of the window niri has focused right now ("" if none / not in niri)
+/// app id of the focused window right now ("" if none / no compositor)
 pub fn focused_app() -> String {
     shadow_niri::json(&["focused-window"]).ok().and_then(|v| v.get("app_id").and_then(|a| a.as_str()).map(|s| s.to_lowercase())).unwrap_or_default()
 }
